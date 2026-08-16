@@ -626,6 +626,66 @@ done
 [ "$auth_count" -eq 0 ] || fail "a result already durably handled was authorized again: count=$auth_count"
 pass "a drained-but-unhandled result survives a replacement session and is retired only by explicit handling, never twice"
 
+# --- end-user-aligned regression: one captured answer, one forwarded message -
+# The dogfood defect: a real armed Lavish source captured one piece of human
+# feedback, and firstmate forwarded that one captured generation downstream
+# five separate times - four described as a quadruplication plus a fifth copy
+# - because forwarding ran a command (standing in for fm-send.sh) and only
+# afterward, manually and separately, remembered to call `handled`. Every one
+# of the five forwarding attempts was really the SAME unacknowledged captured
+# generation re-surfacing, exactly like the drained-but-unhandled case above,
+# except the handler this time ran a paired external effect instead of a bare
+# acknowledgement. `deliver` closes that gap: the effect and the acknowledgement
+# happen as one call under one lock, so five attempts against the same
+# generation run the downstream command once and report the other four as
+# already delivered rather than repeating the send.
+HD="$TMP_ROOT/hd"; new_home "$HD"
+mkdir -p "$HD/state/procevent-inbox"
+printf 'session:\n  file: /spec.html\n  status: feedback\nfeedback[1]{text}:\n  spectra design answers\n' \
+  > "$HD/state/procevent-inbox/spec-questions.9.result"
+printf 'lavish\n' > "$HD/state/procevent-inbox/spec-questions.9.adapter"
+chmod 0600 "$HD/state/procevent-inbox/spec-questions.9.result" "$HD/state/procevent-inbox/spec-questions.9.adapter"
+FORWARD_LOG="$TMP_ROOT/forward-log"
+FORWARD_CMD="$TMP_ROOT/forward-cmd.sh"
+cat > "$FORWARD_CMD" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$FORWARD_LOG"
+SH
+chmod +x "$FORWARD_CMD"
+deliver_outs=()
+for _ in 1 2 3 4 5; do
+  deliver_outs+=("$(pe "$HD" deliver spec-questions 9 -- "$FORWARD_CMD" spotfx "spectra design answers")")
+done
+[ "$(wc -l < "$FORWARD_LOG" | tr -d ' ')" = 1 ] \
+  || fail "one captured answer was forwarded $(wc -l < "$FORWARD_LOG" | tr -d ' ') times instead of once: $(cat "$FORWARD_LOG")"
+assert_contains "${deliver_outs[0]}" "delivered: spec-questions 9" "the first delivery attempt runs the forwarding command"
+for i in 1 2 3 4; do
+  assert_contains "${deliver_outs[$i]}" "already-delivered: spec-questions 9" \
+    "repeat delivery attempt $((i + 1)) observes the prior delivery instead of repeating it"
+done
+assert_present "$HD/state/procevent-inbox/spec-questions.9.handled" "a successful delivery durably marks the generation handled"
+pass "five delivery attempts against one captured generation forward the message exactly once"
+
+# A failing forwarding command must not be mistaken for a delivered one: the
+# generation stays unhandled and the very next attempt retries it, so a real
+# transport failure is never silently swallowed by the same gate that stops
+# duplicates.
+mkdir -p "$HD/state/procevent-inbox"
+printf 'session:\n  file: /spec.html\n  status: feedback\nfeedback[1]{text}:\n  other answers\n' \
+  > "$HD/state/procevent-inbox/spec-questions.10.result"
+printf 'lavish\n' > "$HD/state/procevent-inbox/spec-questions.10.adapter"
+chmod 0600 "$HD/state/procevent-inbox/spec-questions.10.result" "$HD/state/procevent-inbox/spec-questions.10.adapter"
+fail_status=0
+pe "$HD" deliver spec-questions 10 -- /bin/sh -c 'exit 1' >/dev/null 2>&1 || fail_status=$?
+[ "$fail_status" -ne 0 ] || fail "a failing forwarding command was reported as delivered"
+assert_absent "$HD/state/procevent-inbox/spec-questions.10.handled" \
+  "a failed forwarding attempt left the generation marked handled"
+retry_out=$(pe "$HD" deliver spec-questions 10 -- "$FORWARD_CMD" spotfx "other answers")
+assert_contains "$retry_out" "delivered: spec-questions 10" "the generation is retried after a failed attempt, not dropped"
+[ "$(wc -l < "$FORWARD_LOG" | tr -d ' ')" = 2 ] \
+  || fail "the retried delivery did not run the forwarding command exactly once"
+pass "a failed delivery attempt leaves the generation eligible for retry instead of being dropped or repeated"
+
 HP="$TMP_ROOT/hp"; new_home "$HP"
 mkdir -p "$HP/state/procevent-inbox"
 for seq in 10 2 1; do
