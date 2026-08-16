@@ -284,6 +284,45 @@ SH
   chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
 }
 
+# Override `gh pr view` to report the recorded PR as OPEN, regardless of target.
+add_gh_pr_open() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+  "pr view")
+    case " $* " in
+      *"state,headRefOid"*) printf '%s\t%s\n' 'OPEN' '' ; exit 0 ;;
+    esac
+    ;;
+esac
+echo "error: pull request not found" >&2
+exit 1
+SH
+  chmod +x "$case_dir/fakebin/gh"
+}
+
+# Override `gh pr view` to report the recorded PR as CLOSED (not merged, not open),
+# regardless of target. Used both by the closed-PR-allows case and by tests that
+# record a pr= only incidentally and do not care about its state, so they are not
+# newly refused by the open-PR guard's default-stub "not found" error.
+add_gh_pr_closed() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+  "pr view")
+    case " $* " in
+      *"state,headRefOid"*) printf '%s\t%s\n' 'CLOSED' '' ; exit 0 ;;
+    esac
+    ;;
+esac
+echo "error: pull request not found" >&2
+exit 1
+SH
+  chmod +x "$case_dir/fakebin/gh"
+}
+
 append_pr_meta_for_current_head() {
   local case_dir=$1 head
   head=$(git -C "$case_dir/wt" rev-parse HEAD)
@@ -584,6 +623,7 @@ test_teardown_prompts_tasks_axi_done_when_compatible() {
   case_dir=$(make_case tasks-axi-reminder)
   write_meta "$case_dir" no-mistakes ship
   printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
+  add_gh_pr_closed "$case_dir"
   add_compatible_tasks_axi "$case_dir"
 
   out=$(run_teardown "$case_dir") || fail "teardown failed with compatible tasks-axi"
@@ -604,6 +644,7 @@ test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present() {
   write_meta "$case_dir" no-mistakes ship
   printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
   printf '%s\n' manual > "$case_dir/config/backlog-backend"
+  add_gh_pr_closed "$case_dir"
   add_compatible_tasks_axi "$case_dir"
 
   out=$(run_teardown "$case_dir") || fail "teardown failed with manual backlog backend"
@@ -949,6 +990,87 @@ test_gh_error_and_content_absent_refuses() {
   expect_code 1 "$rc" "gh-error: teardown should refuse when the PR lookup errors and content is not landed"
   grep -q REFUSED "$case_dir/stderr" || fail "gh-error: no REFUSED line in stderr"
   pass "gh lookup error with content not in default refuses (fail-safe)"
+}
+
+# Open-PR guard: teardown deletes state/<id>.meta, which is what fm-pr-merge.sh
+# resolves the recorded PR through. A branch can be fully pushed and reachable from
+# a remote-tracking branch (so the dirty/unpushed/landed checks above find nothing
+# to refuse) while its own PR still sits open - exactly tonight's incident. No
+# wt_commit is needed to set these cases up: make_case's worktree branch starts at
+# the same commit already pushed as origin/main, so it is dirty=empty,
+# unpushed=empty by construction, isolating the open-PR check from the checks above.
+#   (z1) recorded PR confirmed OPEN                    -> REFUSE (the fix)
+#   (z2) recorded PR confirmed OPEN + --force           -> ALLOW  (escape hatch)
+#   (z3) recorded PR lookup errors (forge unreachable)  -> REFUSE (fail-safe)
+#   (z4) recorded PR confirmed CLOSED (not merged)       -> ALLOW  (not open, not blocking)
+test_open_pr_on_clean_pushed_branch_refuses() {
+  local case_dir rc
+  case_dir=$(make_case open-pr-clean)
+  write_meta "$case_dir" no-mistakes ship
+  printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
+  add_gh_pr_open "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "open-pr-clean: teardown should refuse a still-open recorded PR"
+  grep -q REFUSED "$case_dir/stderr" || fail "open-pr-clean: no REFUSED line in stderr"
+  grep -q "pull/7" "$case_dir/stderr" || fail "open-pr-clean: refusal did not name the open PR"
+  grep -q "fm-pr-merge.sh" "$case_dir/stderr" || fail "open-pr-clean: refusal did not point at the guarded merge path"
+  pass "teardown refuses a task whose recorded PR is still open, even on an otherwise clean pushed branch"
+}
+
+test_open_pr_force_overrides() {
+  local case_dir rc
+  case_dir=$(make_case open-pr-force)
+  write_meta "$case_dir" no-mistakes ship
+  printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
+  add_gh_pr_open "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "open-pr-force: --force should bypass the open-PR check"
+  pass "task with an open recorded PR is torn down under --force (escape hatch)"
+}
+
+test_open_pr_lookup_error_refuses() {
+  local case_dir rc
+  case_dir=$(make_case open-pr-gh-error)
+  write_meta "$case_dir" no-mistakes ship
+  printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
+  add_gh_axi_error "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "open-pr-gh-error: teardown should refuse when it cannot confirm the recorded PR is closed"
+  grep -q REFUSED "$case_dir/stderr" || fail "open-pr-gh-error: no REFUSED line in stderr"
+  grep -q "cannot confirm" "$case_dir/stderr" || fail "open-pr-gh-error: refusal did not say it could not confirm the PR state"
+  pass "teardown refuses rather than guess when it cannot confirm a recorded PR's open/closed state"
+}
+
+test_closed_pr_on_clean_pushed_branch_allows() {
+  local case_dir rc
+  case_dir=$(make_case closed-pr-clean)
+  write_meta "$case_dir" no-mistakes ship
+  printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
+  add_gh_pr_closed "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "closed-pr-clean: teardown should allow a confirmed-closed (not open) recorded PR"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "closed-pr-clean: teardown printed a REFUSED line"
+  pass "a recorded PR that is confirmed closed (not merged, not open) does not block teardown"
 }
 
 test_stale_index_lock_cleared_and_teardown_succeeds() {
@@ -2622,6 +2744,10 @@ test_content_in_default_fallback_allows
 test_content_fallback_refreshes_stale_origin_ref
 test_dirty_worktree_refuses
 test_gh_error_and_content_absent_refuses
+test_open_pr_on_clean_pushed_branch_refuses
+test_open_pr_force_overrides
+test_open_pr_lookup_error_refuses
+test_closed_pr_on_clean_pushed_branch_allows
 test_stale_index_lock_cleared_and_teardown_succeeds
 test_live_index_lock_is_never_removed_and_teardown_refuses
 test_lsof_error_never_clears_index_lock
