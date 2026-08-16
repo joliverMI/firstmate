@@ -8,6 +8,7 @@
 #   fm-procevent.sh start <source-id>
 #   fm-procevent.sh reconcile
 #   fm-procevent.sh handled <source-id> <sequence>
+#   fm-procevent.sh deliver <source-id> <sequence> -- <command>...
 #   fm-procevent.sh retire <source-id>
 #   fm-procevent.sh sweep-home [--preflight]
 #   fm-procevent.sh list
@@ -37,6 +38,20 @@
 #            twice. Until this is called, the result stays eligible for
 #            bounded re-announcement on every reconcile. Marking a result
 #            handled does not retire its source registration or claim.
+# deliver    Run one paired external effect for a captured generation AT MOST
+#            ONCE: <source-id> <sequence> -- <command>.... Holds the source
+#            lock for the exact same generation `handled` acknowledges, so a
+#            repeat call for a generation already marked handled - from a
+#            second reconcile re-announcement, a restarted session, or a
+#            re-read wake - reports "already-delivered: id seq" and never
+#            re-runs <command>. The command runs only when this call is the
+#            first to see the generation unhandled, and the generation is
+#            marked handled only after <command> exits 0, so a failing command
+#            leaves the generation eligible for the next retry instead of
+#            being silently dropped or replayed. Use this instead of running a
+#            downstream command directly and separately remembering to call
+#            `handled` whenever that command's effect must not repeat, such as
+#            forwarding a captured result to a task through fm-send.sh.
 # retire     Drop a registration, stop a runner this home owns, release the claim.
 #            Idempotent, and still the supported explicit path after a source has
 #            already retired itself on its adapter's terminal verdict.
@@ -120,7 +135,7 @@ REG=$(fm_procevent_registry_dir "$STATE")
 MAX_OUTPUT_BYTES=${FM_PROCEVENT_MAX_OUTPUT_BYTES:-1048576}
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,104p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,119p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 adapter_script() { printf '%s/bin/fm-procevent-%s.sh\n' "$FM_ROOT" "$1"; }
 
@@ -677,6 +692,55 @@ cmd_handled() {
   esac
 }
 
+# Run one paired external effect for a captured generation at most once. The
+# check-then-run-then-acknowledge sequence happens under the same per-source
+# lock `handled` uses, so a second `deliver` call for a generation this call
+# already marked handled - however it arrives: a duplicate reconcile
+# re-announcement, a restarted session with no memory of the first call, or a
+# repeat wake read a second time - observes "already-delivered" under that
+# same lock and never re-runs <command>. This is what closes the gap `handled`
+# alone leaves open: calling `handled` is easy to forget after a manual
+# effect, and every forgotten call left the generation eligible for exactly
+# the re-announce-then-repeat-the-effect cycle this command makes impossible.
+# The generation is marked handled only once <command> exits 0, so a failing
+# command is never mistaken for a delivered one: it leaves the generation
+# unhandled and therefore eligible for the ordinary reconcile retry, exactly
+# like an adapter's own failed autohandle.
+cmd_deliver() {  # <source-id> <sequence> -- <command>...
+  local id=${1-} seq=${2-} sep=${3-} inbox result rc status
+  shift 3 2>/dev/null || usage
+  fm_procevent_source_id_valid "$id" || die "source id must be path-safe: $id"
+  case "$seq" in ''|*[!0-9]*) die "sequence must be a nonnegative integer: $seq" ;; esac
+  [ "$sep" = -- ] || usage
+  [ "$#" -ge 1 ] || die "deliver needs at least one command element after --"
+  fm_procevent_source_lock_acquire "$id" || die "cannot lock source: $id"
+  if fm_procevent_is_handled "$STATE" "$id" "$seq"; then
+    fm_procevent_source_lock_release "$id"
+    printf 'already-delivered: %s %s\n' "$id" "$seq"
+    return 0
+  fi
+  inbox=$(fm_procevent_inbox_dir "$STATE")
+  result="$inbox/$id.$seq.result"
+  if [ ! -f "$result" ] || [ -L "$result" ]; then
+    fm_procevent_source_lock_release "$id"
+    die "no captured result for this generation: $id $seq"
+  fi
+  "$@"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    fm_procevent_source_lock_release "$id"
+    die "delivery command failed (exit $rc); the generation stays unhandled and eligible for retry: $id $seq"
+  fi
+  fm_procevent_mark_handled "$STATE" "$id" "$seq"
+  status=$?
+  fm_procevent_source_lock_release "$id"
+  case "$status" in
+    0) printf 'delivered: %s %s\n' "$id" "$seq" ;;
+    1) printf 'already-delivered: %s %s\n' "$id" "$seq" ;;
+    *) die "delivery command succeeded but could not be durably acknowledged; a retry could repeat it: $id $seq" ;;
+  esac
+}
+
 cmd_retire() {
   local id=${1-} owner='' pid='' token='' identity='' stop_state
   fm_procevent_source_id_valid "$id" || die "source id must be path-safe: $id"
@@ -848,6 +912,7 @@ case "${1-}" in
   _start)    shift; cmd_start "$@" ;;
   reconcile) shift; cmd_reconcile "$@" ;;
   handled)   shift; cmd_handled "$@" ;;
+  deliver)   shift; cmd_deliver "$@" ;;
   retire)    shift; cmd_retire "$@" ;;
   sweep-home) shift; cmd_sweep_home "$@" ;;
   list)      shift; cmd_list "$@" ;;
