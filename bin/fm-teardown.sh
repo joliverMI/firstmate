@@ -22,6 +22,15 @@
 # A gh lookup error falls back to the content check; if that is also inconclusive,
 # teardown refuses rather than risk discarding unlanded work.
 # Uncommitted changes are never landed.
+# Once the dirty/unpushed/landed checks above pass, teardown separately REFUSES if
+# the task's recorded pr= is still open on GitHub: a fully pushed, git-history-landed
+# branch can still have its own PR sitting open, and teardown deletes
+# state/<id>.meta - the record bin/fm-pr-merge.sh resolves that PR through - so
+# tearing down now would strand a mergeable PR with no guarded path to land it. A gh
+# lookup error here refuses loudly too (naming the PR firstmate could not confirm)
+# rather than tearing down blind, because "unreachable" and "confirmed closed" are
+# not the same fact. This check only fires when a pr= is actually recorded, so scout,
+# local-only, and secondmate teardowns (none of which ever record one) are unaffected.
 # local-only projects additionally accept work merged into the local default
 # branch (firstmate performs that merge after configured approval) as a fallback
 # for the common case where there is no remote at all.
@@ -55,9 +64,11 @@
 # never left leased forever. If the treehouse return fails, teardown leaves the
 # leased home and state in place instead of hiding a still-held lease.
 # Usage: fm-teardown.sh <task-id> [--force]
-#   --force skips ordinary-task dirty and landed-work checks, skips scout report
-#   checks, and discards secondmate child work for kind=secondmate. Only use it
-#   when the captain has explicitly said to discard the work.
+#   --force skips ordinary-task dirty, landed-work, and open-PR checks, skips scout
+#   report checks, and discards secondmate child work for kind=secondmate. Only use
+#   it when the captain has explicitly said to discard the work (for the open-PR
+#   check specifically, that means accepting the PR will need to be merged or closed
+#   by hand, outside fm-pr-merge.sh's guarded path).
 #
 # Transient / stale worktree git lock recovery (teardown-lock-race): a crew process
 # killed mid-git-operation can leave a .git/worktrees/<wt>/index.lock (or, for a
@@ -856,6 +867,24 @@ pr_is_merged() {
   unpushed_patches_are_in_pr_head "$head"
 }
 
+# Is the task's recorded PR ($PR_URL) still open? Only called when PR_URL is
+# non-empty - a task with no recorded PR has nothing for this check to guard.
+# Uses the same gh query shape as pr_is_merged so a single GitHub call answers
+# both. Returns 0 when GitHub confirms OPEN, 1 when GitHub confirms a
+# non-open state (MERGED or CLOSED), and 2 when the state could not be
+# confirmed at all (gh/network error, or a malformed response) - the caller
+# refuses loudly on that uncertainty rather than guess it is safe.
+pr_open_state() {
+  local view state
+  view=$(cd "$WT" && gh pr view "$PR_URL" --json state,headRefOid -q '.state + "\t" + .headRefOid' 2>/dev/null) || return 2
+  state=${view%%$'\t'*}
+  [ -n "$state" ] && [ "$state" != "$view" ] || return 2
+  case "$state" in
+    OPEN|open) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Is the branch's content already present in the up-to-date default branch? Fetches
 # first, then 3-way merges the default branch with HEAD: when HEAD introduces nothing
 # the default branch does not already contain (e.g. its change landed via squash) the
@@ -1197,6 +1226,29 @@ validate_worktree_teardown_safety() {
       echo "Push the branch, land its PR, or get the captain's explicit OK to discard, then --force." >&2
       return 1
     fi
+  fi
+
+  # Local git state is clean (or already refused above), so now check the higher-level
+  # question the dirty/unpushed/landed checks above cannot answer: is this task's own
+  # PR actually done? A pushed, fully-landed-by-git-history branch can still have its
+  # PR sitting open - teardown deletes state/<id>.meta, which is what fm-pr-merge.sh
+  # resolves that PR through, so tearing down now would strand a mergeable PR with no
+  # guarded path to land it.
+  if [ -n "$PR_URL" ]; then
+    pr_open_state
+    case $? in
+      0)
+        echo "REFUSED: worktree $WT belongs to task $ID, whose recorded PR is still open: $PR_URL" >&2
+        echo "Tearing down now deletes the metadata bin/fm-pr-merge.sh needs, stranding a PR with no guarded path to land it." >&2
+        echo "Get the PR merged with bin/fm-pr-merge.sh once it is green and merge is authorized, or close it on GitHub, then retry teardown." >&2
+        return 1
+        ;;
+      2)
+        echo "REFUSED: cannot confirm whether task $ID's recorded PR ($PR_URL) is still open; GitHub was unreachable or returned an error." >&2
+        echo "Retry once GitHub is reachable, confirm the PR's state directly on GitHub, or get the captain's explicit OK to discard, then --force." >&2
+        return 1
+        ;;
+    esac
   fi
 }
 
