@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Behavior tests for the render-from-state web status board.
 # Covers section order/labels, the fixed dedup rule, expandable full-detail
-# rendering (untruncated body text, clickable PR links), the ready-to-merge
-# reclassification, the "ready: " marker that promotes a landed item into
-# Ready for you to look at, and HTML escaping of state-sourced text.
+# rendering (untruncated body text, never a pull request or GitHub link),
+# the ready-to-merge reclassification, the "ready: " marker that promotes a
+# landed item into Ready for you to look at, HTML escaping of state-sourced
+# text, honest reachability for reports and cross-home detail, and the
+# in-progress row preferring its fuller current-state text.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -93,6 +95,43 @@ SH
   printf '%s\n' "$fb"
 }
 
+fixture_mate_home() {  # <parent-home>
+  printf '%s/%s-secondmate-home\n' "$TMP_ROOT" "$(basename "$1")"
+}
+
+# A registered secondmate whose own Done row has no ready: marker, so it
+# surfaces under Recently completed as a cross-home item with bounded detail.
+write_cross_home_fixture() {  # <home>
+  local home=$1 mate
+  mate=$(fixture_mate_home "$home")
+  mkdir -p "$mate/state" "$mate/data" "$mate/config" "$mate/projects" "$mate/bin"
+  printf '# Firstmate fixture\n' > "$mate/AGENTS.md"
+  printf 'mate\n' > "$mate/.fm-secondmate-home"
+  printf -- '- mate - fixture domain (home: %s; scope: fixture work; projects: alpha; added 2026-08-01)\n' \
+    "$mate" > "$home/data/secondmates.md"
+  fm_write_secondmate_meta "$home/state/mate.meta" "$mate" "firstmate:fm-mate" alpha
+  cat > "$mate/data/backlog.md" <<'EOF'
+## Done
+- [x] mate-landed - Secondmate-managed fix https://github.com/kunchenguid/firstmate/pull/50 (repo: alpha) (kind: ship) (merged 2026-08-01)
+EOF
+}
+
+test_cross_home_detail_is_honest_not_a_dead_pointer() {
+  local home fakebin out completed_block
+  home=$(make_home crosshome)
+  write_cross_home_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" "$BOARD")
+  completed_block=$(printf '%s' "$out" | sed -n '/<section id="recently-completed">/,/<\/section>/p')
+  assert_contains "$completed_block" "Secondmate-managed fix" "the cross-home landed item must still appear"
+  assert_not_contains "$completed_block" "github.com" "a cross-home item must never link its pull request either"
+  assert_contains "$completed_block" "not reachable from this page" \
+    "a bounded cross-home detail must say plainly it cannot be reached, not just name a home record"
+  assert_not_contains "$completed_block" "Fuller detail lives in the mate home record; this cross-home view is bounded." \
+    "the old vague bounded phrasing must be gone"
+  pass "a cross-home item's bounded detail states plainly that the rest is not reachable, with no dead pointer or PR link"
+}
+
 test_empty_fleet_renders_all_empty_states() {
   local home out
   home=$(make_home empty)
@@ -161,7 +200,7 @@ test_ready_to_merge_reclassified() {
   pass "a task whose validation finished (state=done) is reclassified as needs-captain, not in-progress"
 }
 
-test_pr_link_is_clickable_full_url() {
+test_pr_is_never_linked() {
   local home out
   home=$(make_home landed)
   cat > "$home/data/backlog.md" <<'EOF'
@@ -169,10 +208,72 @@ test_pr_link_is_clickable_full_url() {
 - [x] fixture-done - Done task https://github.com/kunchenguid/firstmate/pull/42 (repo: alpha) (kind: ship) (done 2026-08-10)
 EOF
   out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$home" "$BOARD")
-  assert_contains "$out" '<a class="link" href="https://github.com/kunchenguid/firstmate/pull/42" target="_blank" rel="noopener noreferrer">https://github.com/kunchenguid/firstmate/pull/42</a>' \
-    "a landed PR must render as a real full-URL link that opens in a new tab"
+  assert_not_contains "$out" "github.com" "a pull request must never be linked or mentioned anywhere on the page"
+  assert_not_contains "$out" "<span>PR</span>" "the detail panel must not have a PR row at all"
+  assert_contains "$out" "Done task" "the outcome title should still render without the PR"
   assert_contains "$out" "2026-08-10" "the completion date should appear in the expandable detail"
-  pass "a recorded PR renders as a clickable full https link with target=_blank"
+  pass "a recorded PR never becomes a link or appears anywhere on the page"
+}
+
+test_report_without_url_marker_is_honest() {
+  local home out
+  home=$(make_home report-unlinked)
+  cat > "$home/data/backlog.md" <<'EOF'
+## Done
+- [x] fixture-scout - Investigated the thing data/fixture-scout/report.md (repo: alpha) (kind: scout) (done 2026-08-11)
+EOF
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$home" "$BOARD")
+  assert_not_contains "$out" "<code>data/fixture-scout/report.md</code>" \
+    "a report with no recorded report-url: must never show a raw, unclickable file path"
+  assert_contains "$out" "Not reachable from your phone yet" \
+    "a report with no recorded report-url: must say plainly that no link exists"
+  pass "a report renders an honest not-reachable statement when no report-url: marker was recorded"
+}
+
+test_report_url_marker_is_a_real_link() {
+  local home out
+  home=$(make_home report-linked)
+  cat > "$home/data/backlog.md" <<'EOF'
+## Done
+- [x] fixture-scout - Investigated the thing data/fixture-scout/report.md (repo: alpha) (kind: scout) (done 2026-08-11)
+  report-url: https://spectra.example.tailnet/session/abc123
+EOF
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$home" "$BOARD")
+  assert_contains "$out" \
+    '<a class="link" href="https://spectra.example.tailnet/session/abc123" target="_blank" rel="noopener noreferrer">https://spectra.example.tailnet/session/abc123</a>' \
+    "a recorded report-url: marker must render as a real full-URL link"
+  pass "a report renders as a tappable full https link once firstmate records a report-url: marker"
+}
+
+test_report_url_marker_rejects_localhost() {
+  local home out
+  home=$(make_home report-badurl)
+  cat > "$home/data/backlog.md" <<'EOF'
+## Done
+- [x] fixture-scout - Investigated the thing data/fixture-scout/report.md (repo: alpha) (kind: scout) (done 2026-08-11)
+  report-url: https://localhost:4387/session/abc123
+EOF
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$home" "$BOARD")
+  assert_not_contains "$out" 'href="https://localhost' "a localhost report-url: must never be turned into a phone link"
+  assert_contains "$out" "Not reachable from your phone yet" \
+    "a rejected localhost report-url: must fall back to the honest not-reachable statement"
+  pass "a localhost report-url: marker is ignored rather than rendered as a dead link"
+}
+
+test_ready_pointer_that_looks_like_a_path_is_flagged() {
+  local home out
+  home=$(make_home ready-path)
+  cat > "$home/data/backlog.md" <<'EOF'
+## Done
+- [x] fixture-spec - Spectra spec drafted https://github.com/kunchenguid/firstmate/pull/99 (repo: alpha) (kind: ship) (done 2026-08-12)
+  ready: /home/joliv/firstmate/projects/spectra/docs/spec.md
+EOF
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$home" "$BOARD")
+  assert_not_contains "$out" "/home/joliv/firstmate/projects/spectra/docs/spec.md" \
+    "a ready: marker that is really a repo path must never reach the page verbatim"
+  assert_contains "$out" "this pointer looks like a file path or pull-request link" \
+    "a path-shaped ready: marker must be flagged honestly instead of shown as a location"
+  pass "a ready: marker written as a raw repo path is replaced with an honest flag, not shown as a dead-end location"
 }
 
 test_ready_marker_promotes_landed_item() {
@@ -220,7 +321,12 @@ test_empty_fleet_renders_all_empty_states
 test_section_order
 test_decision_and_texture_and_dedup
 test_ready_to_merge_reclassified
-test_pr_link_is_clickable_full_url
+test_pr_is_never_linked
+test_report_without_url_marker_is_honest
+test_report_url_marker_is_a_real_link
+test_report_url_marker_rejects_localhost
+test_ready_pointer_that_looks_like_a_path_is_flagged
+test_cross_home_detail_is_honest_not_a_dead_pointer
 test_ready_marker_promotes_landed_item
 test_help_and_bad_flag
 test_json_debug_format
