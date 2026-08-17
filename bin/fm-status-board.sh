@@ -22,6 +22,38 @@
 # the item's "where to see it" and is shown as-is; a landed row with no
 # marker keeps showing only under Recently completed, same as today.
 #
+# A report (data/<id>/report.md) lives only in this repo's checkout today -
+# there is no passive web route that maps that path to a URL. Lavish (the
+# tool that already renders this repo's other rich pages for the phone) is a
+# publish-one-artifact-at-a-time surface, not a static file server: it has no
+# formula that would turn a report path into a working link on its own. So a
+# report follows the exact same convention as "ready:" above: a backlog body
+# line starting with the literal marker "report-url:" (case-insensitive)
+# records the https URL firstmate got back after explicitly publishing that
+# report (e.g. via lavish-axi) - a positive assertion, never guessed from the
+# path. Present and a genuine https URL, it renders as a real link; absent,
+# malformed, or a localhost address, the board says plainly that no link
+# exists yet rather than naming the unreachable file path.
+#
+# Every pointer on this page is a real tappable link or an honest "not
+# reachable from your phone" statement, never a bare repo path, local file
+# path, or GitHub/pull-request URL:
+#   - A pull request is never linked, in any section. The captain does not
+#     review PRs from this page; a "READY TO MERGE" row states the outcome
+#     (title, reason) so he can approve by word instead of opening GitHub.
+#   - A report links only when its backlog note carries a "report-url:"
+#     marker (above); otherwise it says plainly that no link exists rather
+#     than naming the file path.
+#   - A Ready item's "where to see it" text is replaced with an honest
+#     placeholder when it looks like a filesystem path or a github.com/
+#     pull-request URL, so a hand-written note can never hand the captain
+#     an unreachable location.
+#   - A cross-home (secondmate) item's expandable detail says plainly that
+#     fuller text is not reachable from this page, instead of naming a home
+#     record he cannot open.
+#   - An in-progress row prefers the fuller "current state" text over the
+#     shortened one-line summary, so its own expander is never a dead end.
+#
 # This command intentionally does not maintain its own store. It reads two
 # existing read-only structured sources and renders them:
 #   - fm-bearings-snapshot.sh --json owns the four-bucket classification
@@ -32,10 +64,10 @@
 #     buckets as authoritative and only maps them onto this page's section
 #     order and labels.
 #   - fm-fleet-snapshot.sh --json supplies untruncated per-item detail (full
-#     title, full free-form backlog note, PR url, report path, completion
-#     date) for the expandable panel. Cross-home detail stays bounded by
-#     whatever that home's own structured summary already carries; the "What
-#     this board cannot show" section on the page says so explicitly.
+#     title, full free-form backlog note, report path, completion date) for
+#     the expandable panel. Cross-home detail stays bounded by whatever that
+#     home's own structured summary already carries; the "What this board
+#     cannot show" section on the page says so explicitly.
 # Both are fetched read-only and independently; see docs in this repo on
 # fm-bearings-snapshot.sh and fm-fleet-snapshot.sh for their own contracts.
 #
@@ -51,7 +83,9 @@
 # rule 2 means a green PR always waits on the captain's word, never on a
 # worker.
 #
-# Read-only: makes no GitHub/network call of its own and mutates no state.
+# Read-only: makes no GitHub/network call of its own and mutates no state. It
+# never publishes a report itself (that would be a side effect this command
+# does not have); "report-url:" above is only ever read, never written, here.
 # fm-bearings-snapshot.sh's own away-mode return catch-up guard applies here
 # too, since this command surfaces the same captain-facing state.
 #
@@ -67,7 +101,7 @@ BEARINGS="$SCRIPT_DIR/fm-bearings-snapshot.sh"
 FLEET="$SCRIPT_DIR/fm-fleet-snapshot.sh"
 
 usage() {
-  sed -n '2,62p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,96p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 FORMAT=html
@@ -107,11 +141,32 @@ def esc_attr: esc | gsub("\""; "&quot;");
 def owner_label:
   if . == "(main)" then "main fleet" else . end;
 
+def unreachable_text:
+  type == "string" and (
+    test("^/\\S") or
+    test("^(data|projects)/") or
+    test("github\\.com"; "i") or
+    test("gitlab\\.com"; "i") or
+    test("/pull/[0-9]"; "i") or
+    test("/merge_requests/[0-9]"; "i")
+  );
+
 def ready_pointer($d):
   (($d.body_lines // []) | join(" ")) as $body
   | if ($body | ascii_downcase | startswith("ready:"))
     then ($body[6:] | sub("^[ \t]+"; ""))
     else null end;
+
+def report_url_pointer($lines):
+  ($lines // []) | map(select(ascii_downcase | startswith("report-url:")))
+  | if length > 0 then (.[0][11:] | sub("^[ \t]+"; "")) else null end;
+
+def valid_https_url:
+  type == "string"
+  and test("^https://"; "i")
+  and (test("localhost"; "i") | not)
+  and (test("127\\.0\\.0\\.1") | not)
+  and (test("0\\.0\\.0\\.0") | not);
 
 def owner_of($item):
   if ($item.owner != null) then $item.owner
@@ -140,8 +195,8 @@ def detail_for($main_backlog; $main_tasks; $mates; $item):
           hold_reason: ($b.hold_reason // null),
           blocked_reason: ($b.blocked_reason // null),
           body_lines: ($b.body_lines // []),
-          pr_url: ($b.pr_url // null),
           report_path: ($b.report_path // null),
+          report_url: report_url_pointer($b.body_lines // []),
           local_note: ($b.local_note // null),
           repo: ($b.repo // null),
           kind: ($b.kind // $item.kind // null),
@@ -154,7 +209,7 @@ def detail_for($main_backlog; $main_tasks; $mates; $item):
       ($mates[$item.id] // {}) as $m
       | {
           title: null, hold_reason: null, blocked_reason: null, body_lines: [],
-          pr_url: null, report_path: null, local_note: null, repo: null,
+          report_path: null, report_url: null, local_note: null, repo: null,
           kind: "secondmate", completion_date: null, current_detail: null,
           active_children: ($m.active_children // []), bounded: true
         }
@@ -166,8 +221,8 @@ def detail_for($main_backlog; $main_tasks; $mates; $item):
           hold_reason: ($d.hold_reason // null),
           blocked_reason: ($d.blocked_reason // $d.reason // null),
           body_lines: [],
-          pr_url: ($d.pr_url // null),
           report_path: ($d.report_path // null),
+          report_url: null,
           local_note: ($d.local_note // null),
           repo: ($d.repo // null),
           kind: ($d.kind // null),
@@ -182,6 +237,15 @@ def link_html:
   if . == null or . == "" then empty
   else "<a class=\"link\" href=\"\(esc_attr)\" target=\"_blank\" rel=\"noopener noreferrer\">\(esc)</a>" end;
 
+def report_row($path; $url):
+  if ($path == null or $path == "") and ($url == null or $url == "") then empty
+  else
+    (if ($url | valid_https_url) then ($url | link_html)
+     else "<span class=\"unreachable\">Not reachable from your phone yet - no web link exists for it.</span>"
+     end) as $value
+    | "<div class=\"kv\"><span>Report</span> " + $value + "</div>"
+  end;
+
 def detail_block($owner; $d):
   [
     (if $d.repo or $d.kind then "<div class=\"kv\"><span>Repo/kind</span> \((($d.repo // "-") | esc)) / \((($d.kind // "-") | esc))</div>" else empty end),
@@ -191,21 +255,20 @@ def detail_block($owner; $d):
     (if ($d.active_children // [] | length) > 0 then
        "<div class=\"kv\"><span>Active work</span> " + (($d.active_children | map(esc) | join("; "))) + "</div>"
      else empty end),
-    (if $d.pr_url then "<div class=\"kv\"><span>PR</span> " + ($d.pr_url | link_html) + "</div>" else empty end),
-    (if $d.report_path then "<div class=\"kv\"><span>Report</span> <code>\($d.report_path | esc)</code></div>" else empty end),
+    report_row($d.report_path; $d.report_url),
     (if $d.local_note then "<div class=\"kv\"><span>Note</span> \($d.local_note | esc)</div>" else empty end),
     (if $d.completion_date then "<div class=\"kv\"><span>Completed</span> \($d.completion_date | esc)</div>" else empty end),
     (($d.body_lines // []) | if length > 0 then
        "<div class=\"texture\">" + (map("<p>" + esc + "</p>") | join("")) + "</div>"
      else empty end),
-    (if $d.bounded and $owner != "(main)" then "<div class=\"bound\">Fuller detail lives in the " + ($owner | esc) + " home record; this cross-home view is bounded.</div>" else empty end)
+    (if $d.bounded and $owner != "(main)" then "<div class=\"bound\">This is a shortened summary from the " + ($owner | esc) + " team. The rest is not reachable from this page - there is no phone-openable link for it yet.</div>" else empty end)
   ] | map(select(. != null)) | join("");
 
 def detail_block_ready($owner; $d):
   [
     (if $d.repo or $d.kind then "<div class=\"kv\"><span>Repo/kind</span> \((($d.repo // "-") | esc)) / \((($d.kind // "-") | esc))</div>" else empty end),
     (if $d.completion_date then "<div class=\"kv\"><span>Landed</span> \($d.completion_date | esc)</div>" else empty end),
-    (if $d.bounded and $owner != "(main)" then "<div class=\"bound\">Fuller detail lives in the " + ($owner | esc) + " home record; this cross-home view is bounded.</div>" else empty end)
+    (if $d.bounded and $owner != "(main)" then "<div class=\"bound\">This is a shortened summary from the " + ($owner | esc) + " team. The rest is not reachable from this page - there is no phone-openable link for it yet.</div>" else empty end)
   ] | map(select(. != null)) | join("");
 
 def item_html($cls; $bullet; $detail_html):
@@ -265,16 +328,20 @@ section_html("ready"; "Ready for you to look at";
   "Nothing is ready for you to look at right now.";
   $ready;
   (. as $it | ($it.owner | owner_label) as $ownerlabel
+   | (if ($it.ready_pointer | unreachable_text)
+      then "Not phone-reachable - this pointer looks like a file path or pull-request link. Ask your first mate."
+      else $it.ready_pointer end) as $where
    | ("<b>" + ($ownerlabel|esc) + "</b> " + (($it.detail.title // $it.what // $it.id) | esc)
-      + " &mdash; " + ($it.ready_pointer | esc)) as $bullet
+      + " &mdash; " + ($where | esc)) as $bullet
    | item_html("ready"; $bullet; detail_block_ready($it.owner; $it.detail)))),
 
 section_html("in-progress"; "In progress";
   "Nothing is in progress right now.";
   $in_progress;
   (. as $it | ($it.owner | owner_label) as $ownerlabel
+   | ($it.detail.current_detail // $it.doing) as $doing_text
    | ("<b>" + ($ownerlabel|esc) + "</b> " + (($it.detail.title // $it.doing // $it.id) | esc)
-      + (if $it.doing then " &mdash; " + ($it.doing | esc) else "" end)) as $bullet
+      + (if $doing_text then " &mdash; " + ($doing_text | esc) else "" end)) as $bullet
    | item_html("in-progress"; $bullet; detail_block($it.owner; $it.detail)))),
 
 section_html("waiting"; "Waiting";
@@ -301,8 +368,10 @@ section_html("recently-completed"; "Recently completed";
 | ([
     "Ready-to-merge is a local signal only (validation finished on this machine); it is not a live GitHub review or mergeability check.",
     "A needed credential or login has no distinct marker here; if one is stuck on that, it shows up as an ordinary waiting or in-progress item with whatever reason was recorded.",
-    "Detail for a secondmate-owned item is bounded by what its cross-home summary carries; fuller texture lives directly in that home.",
+    "Detail for a secondmate-owned item is bounded by what its cross-home summary carries; fuller texture lives directly in that home, not reachable from this page.",
     "Ready for you to look at only shows a landed change once firstmate has explicitly confirmed it is deployed and recorded where to find it; a merged change with no such confirmation still only shows up under Recently completed, never here.",
+    "Pull requests and GitHub links are never shown on this page; a ready-to-merge row states the outcome so you can approve by word instead of opening GitHub.",
+    "A report links only when its backlog note carries an explicit report-url: marker firstmate wrote after actually publishing it; without one it says plainly that no link exists rather than naming a file path.",
     "This is a snapshot as of the generated time above; it does not update itself, so re-run the command for a fresh read."
   ] + $dynamic_gaps) as $gaps
 |
@@ -344,6 +413,7 @@ summary::marker{color:var(--muted)}
 .kv span{color:var(--text);font-weight:600;margin-right:4px}
 .texture p{margin:8px 0;color:var(--text)}
 .bound{margin-top:8px;font-style:italic;font-size:12.5px}
+.unreachable{font-style:italic}
 .link{color:var(--accent)}
 code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
 #cannot-show{margin-top:36px}
