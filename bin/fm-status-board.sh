@@ -1,9 +1,26 @@
 #!/usr/bin/env bash
 # fm-status-board.sh - render-from-state web status board.
 #
-# Prints one self-contained HTML page to stdout with four sections, in this
-# fixed order: Needs you to continue, In progress, Waiting, Recently completed.
+# Prints one self-contained HTML page to stdout with five sections, in this
+# fixed order: Needs you to continue, Ready for you to look at, In progress,
+# Waiting, Recently completed. "Ready for you to look at" sits second because
+# it is the captain's own no-action-required-yet, worth-a-glance queue: less
+# urgent than something that needs his word, but more worth surfacing than
+# passive in-progress/waiting rows or aged Recently completed history.
 # Each item is a bullet, expandable (native <details>) to its full detail.
+#
+# "Ready for you to look at" is deliberately NOT "landed" (merged): a merged
+# change is not necessarily deployed or usable yet (self-update propagation,
+# a redeploy, a service restart), and this board cannot observe any of that.
+# It renders an item here ONLY when a landed backlog row's free-form body
+# text (the indented note under the row, same "texture" already shown in the
+# expandable detail) starts with the literal marker "ready:" (case-insensitive),
+# e.g. "ready: the new tab on the home screen". Firstmate writes that note by
+# hand, once it has actually confirmed the change is live and knows where the
+# captain would look for it - the marker is a positive assertion, never
+# inferred from merge/landed state alone. The text after the marker becomes
+# the item's "where to see it" and is shown as-is; a landed row with no
+# marker keeps showing only under Recently completed, same as today.
 #
 # This command intentionally does not maintain its own store. It reads two
 # existing read-only structured sources and renders them:
@@ -50,7 +67,7 @@ BEARINGS="$SCRIPT_DIR/fm-bearings-snapshot.sh"
 FLEET="$SCRIPT_DIR/fm-fleet-snapshot.sh"
 
 usage() {
-  sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,62p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 FORMAT=html
@@ -89,6 +106,12 @@ def esc_attr: esc | gsub("\""; "&quot;");
 
 def owner_label:
   if . == "(main)" then "main fleet" else . end;
+
+def ready_pointer($d):
+  (($d.body_lines // []) | join(" ")) as $body
+  | if ($body | ascii_downcase | startswith("ready:"))
+    then ($body[6:] | sub("^[ \t]+"; ""))
+    else null end;
 
 def owner_of($item):
   if ($item.owner != null) then $item.owner
@@ -178,6 +201,13 @@ def detail_block($owner; $d):
     (if $d.bounded and $owner != "(main)" then "<div class=\"bound\">Fuller detail lives in the " + ($owner | esc) + " home record; this cross-home view is bounded.</div>" else empty end)
   ] | map(select(. != null)) | join("");
 
+def detail_block_ready($owner; $d):
+  [
+    (if $d.repo or $d.kind then "<div class=\"kv\"><span>Repo/kind</span> \((($d.repo // "-") | esc)) / \((($d.kind // "-") | esc))</div>" else empty end),
+    (if $d.completion_date then "<div class=\"kv\"><span>Landed</span> \($d.completion_date | esc)</div>" else empty end),
+    (if $d.bounded and $owner != "(main)" then "<div class=\"bound\">Fuller detail lives in the " + ($owner | esc) + " home record; this cross-home view is bounded.</div>" else empty end)
+  ] | map(select(. != null)) | join("");
+
 def item_html($cls; $bullet; $detail_html):
   "<details class=\"item " + $cls + "\"><summary>" + $bullet + "</summary><div class=\"detail\">" + $detail_html + "</div></details>";
 
@@ -204,16 +234,19 @@ def section_html($id; $label; $empty_sentence; $items; render_item):
 | ([$in_flight_raw[] | select(.state != "done")]) as $in_progress_all
 | $gates_raw as $waiting_all
 | $landed_raw as $completed_all
+| ([$completed_all[] | . + {owner: owner_of(.), detail: detail_for($main_backlog; $main_tasks; $mates; .)}]) as $completed_all_d
+| ([$completed_all_d[] | ready_pointer(.detail) as $rp | select($rp != null and $rp != "") | . + {ready_pointer: $rp}]) as $ready_all
 | (reduce $needs_captain_all[] as $it ({}; .[$it.id] = true)) as $seen1
-| ([$in_progress_all[] | select(($seen1[.id] // false) | not)]) as $in_progress_dd
-| (reduce $in_progress_dd[] as $it ($seen1; .[$it.id] = true)) as $seen2
+| ([$ready_all[] | select(($seen1[.id] // false) | not)]) as $ready
+| (reduce $ready[] as $it ($seen1; .[$it.id] = true)) as $seen1r
+| ([$in_progress_all[] | select(($seen1r[.id] // false) | not)]) as $in_progress_dd
+| (reduce $in_progress_dd[] as $it ($seen1r; .[$it.id] = true)) as $seen2
 | ([$waiting_all[] | select(($seen2[.id] // false) | not)]) as $waiting_dd
 | (reduce $waiting_dd[] as $it ($seen2; .[$it.id] = true)) as $seen3
-| ([$completed_all[] | select(($seen3[.id] // false) | not)]) as $completed_dd
+| ([$completed_all_d[] | select(($seen3[.id] // false) | not)]) as $completed
 | [$needs_captain_all[] | . + {owner: owner_of(.), detail: detail_for($main_backlog; $main_tasks; $mates; .)}] as $needs_captain
 | [$in_progress_dd[] | . + {owner: owner_of(.), detail: detail_for($main_backlog; $main_tasks; $mates; .)}] as $in_progress
 | [$waiting_dd[] | . + {owner: owner_of(.), detail: detail_for($main_backlog; $main_tasks; $mates; .)}] as $waiting
-| [$completed_dd[] | . + {owner: owner_of(.), detail: detail_for($main_backlog; $main_tasks; $mates; .)}] as $completed
 |
 "<h1>Fleet status</h1>",
 "<p class=\"meta\">Home: <code>" + ($bearings.home | esc) + "</code> &middot; generated " + ($bearings.generated | esc) + "</p>",
@@ -227,6 +260,14 @@ section_html("needs-captain"; "Needs you to continue";
       + (($it.detail.title // $it.summary // $it.id) | esc)
       + (if $it.detail.hold_reason then " &mdash; " + ($it.detail.hold_reason | esc) else "" end)) as $bullet
    | item_html("needs-captain"; $bullet; detail_block($it.owner; $it.detail)))),
+
+section_html("ready"; "Ready for you to look at";
+  "Nothing is ready for you to look at right now.";
+  $ready;
+  (. as $it | ($it.owner | owner_label) as $ownerlabel
+   | ("<b>" + ($ownerlabel|esc) + "</b> " + (($it.detail.title // $it.what // $it.id) | esc)
+      + " &mdash; " + ($it.ready_pointer | esc)) as $bullet
+   | item_html("ready"; $bullet; detail_block_ready($it.owner; $it.detail)))),
 
 section_html("in-progress"; "In progress";
   "Nothing is in progress right now.";
@@ -261,6 +302,7 @@ section_html("recently-completed"; "Recently completed";
     "Ready-to-merge is a local signal only (validation finished on this machine); it is not a live GitHub review or mergeability check.",
     "A needed credential or login has no distinct marker here; if one is stuck on that, it shows up as an ordinary waiting or in-progress item with whatever reason was recorded.",
     "Detail for a secondmate-owned item is bounded by what its cross-home summary carries; fuller texture lives directly in that home.",
+    "Ready for you to look at only shows a landed change once firstmate has explicitly confirmed it is deployed and recorded where to find it; a merged change with no such confirmation still only shows up under Recently completed, never here.",
     "This is a snapshot as of the generated time above; it does not update itself, so re-run the command for a fresh read."
   ] + $dynamic_gaps) as $gaps
 |
@@ -277,7 +319,7 @@ cat <<HTML
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Fleet status</title>
 <style>
-:root{color-scheme:light dark;--bg:#0d0d0f;--surface:#17171a;--border:#2c2c30;--text:#e7e7ea;--muted:#9a9aa2;--accent:#7aa2ff;--red:#e5636b;--amber:#e0a940;--blue:#5b8cff;--green:#3fbf72;}
+:root{color-scheme:light dark;--bg:#0d0d0f;--surface:#17171a;--border:#2c2c30;--text:#e7e7ea;--muted:#9a9aa2;--accent:#7aa2ff;--red:#e5636b;--amber:#e0a940;--blue:#5b8cff;--green:#3fbf72;--purple:#b98eff;}
 *{box-sizing:border-box}
 body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:15px;line-height:1.5;margin:0;padding:24px 16px 64px}
 .wrap{max-width:880px;margin:0 auto}
@@ -290,6 +332,7 @@ section{margin-bottom:8px}
 .empty{color:var(--muted);font-size:14px;margin:6px 0 18px}
 details.item{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--border);border-radius:6px;padding:10px 14px;margin-bottom:8px}
 details.item.needs-captain{border-left-color:var(--red)}
+details.item.ready{border-left-color:var(--purple)}
 details.item.in-progress{border-left-color:var(--blue)}
 details.item.waiting{border-left-color:var(--amber)}
 details.item.recently-completed{border-left-color:var(--green)}

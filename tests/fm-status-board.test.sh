@@ -2,7 +2,8 @@
 # Behavior tests for the render-from-state web status board.
 # Covers section order/labels, the fixed dedup rule, expandable full-detail
 # rendering (untruncated body text, clickable PR links), the ready-to-merge
-# reclassification, and HTML escaping of state-sourced text.
+# reclassification, the "ready: " marker that promotes a landed item into
+# Ready for you to look at, and HTML escaping of state-sourced text.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -98,28 +99,30 @@ test_empty_fleet_renders_all_empty_states() {
   out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$home" "$BOARD")
   assert_contains "$out" "<h1>Fleet status</h1>" "board should render a title"
   assert_contains "$out" "Nothing needs your action right now." "empty needs-captain sentence"
+  assert_contains "$out" "Nothing is ready for you to look at right now." "empty ready sentence"
   assert_contains "$out" "Nothing is in progress right now." "empty in-progress sentence"
   assert_contains "$out" "Nothing is waiting right now." "empty waiting sentence"
   assert_contains "$out" "No recent completions are in the current baseline." "empty landed sentence"
   assert_contains "$out" "What this board cannot show" "disclosure section must always render"
-  pass "an empty fleet renders all four empty-state sentences plus the disclosure section"
+  pass "an empty fleet renders all five empty-state sentences plus the disclosure section"
 }
 
 test_section_order() {
-  local home fakebin out i_needs i_progress i_wait i_done
+  local home fakebin out i_needs i_ready i_progress i_wait i_done
   home=$(make_home order)
   write_fixture "$home"
   fakebin=$(make_fakebin "$home")
   out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" "$BOARD")
   i_needs=$(printf '%s' "$out" | grep -bo '<section id="needs-captain"' | head -1 | cut -d: -f1)
+  i_ready=$(printf '%s' "$out" | grep -bo '<section id="ready"' | head -1 | cut -d: -f1)
   i_progress=$(printf '%s' "$out" | grep -bo '<section id="in-progress"' | head -1 | cut -d: -f1)
   i_wait=$(printf '%s' "$out" | grep -bo '<section id="waiting"' | head -1 | cut -d: -f1)
   i_done=$(printf '%s' "$out" | grep -bo '<section id="recently-completed"' | head -1 | cut -d: -f1)
-  [ -n "$i_needs" ] && [ -n "$i_progress" ] && [ -n "$i_wait" ] && [ -n "$i_done" ] \
-    || fail "all four sections must be present"
-  [ "$i_needs" -lt "$i_progress" ] && [ "$i_progress" -lt "$i_wait" ] && [ "$i_wait" -lt "$i_done" ] \
-    || fail "sections must render in order: needs-captain, in-progress, waiting, recently-completed"
-  pass "the four sections render in the captain's fixed order"
+  [ -n "$i_needs" ] && [ -n "$i_ready" ] && [ -n "$i_progress" ] && [ -n "$i_wait" ] && [ -n "$i_done" ] \
+    || fail "all five sections must be present"
+  [ "$i_needs" -lt "$i_ready" ] && [ "$i_ready" -lt "$i_progress" ] && [ "$i_progress" -lt "$i_wait" ] && [ "$i_wait" -lt "$i_done" ] \
+    || fail "sections must render in order: needs-captain, ready, in-progress, waiting, recently-completed"
+  pass "the five sections render in the captain's fixed order"
 }
 
 test_decision_and_texture_and_dedup() {
@@ -172,6 +175,28 @@ EOF
   pass "a recorded PR renders as a clickable full https link with target=_blank"
 }
 
+test_ready_marker_promotes_landed_item() {
+  local home out ready_block completed_block
+  home=$(make_home readymarker)
+  cat > "$home/data/backlog.md" <<'EOF'
+## Done
+- [x] fixture-marked - Approvals tab shipped https://github.com/kunchenguid/firstmate/pull/77 (repo: alpha) (kind: ship) (done 2026-08-15)
+  ready: the new Approvals tab on the home screen
+- [x] fixture-unmarked - Plain merged thing https://github.com/kunchenguid/firstmate/pull/78 (repo: alpha) (kind: ship) (done 2026-08-14)
+  just a regular note, nothing special
+EOF
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$home" "$BOARD")
+  ready_block=$(printf '%s' "$out" | sed -n '/<section id="ready">/,/<\/section>/p')
+  completed_block=$(printf '%s' "$out" | sed -n '/<section id="recently-completed">/,/<\/section>/p')
+  assert_contains "$ready_block" "Approvals tab shipped" "a ready:-marked landed item must appear under Ready for you to look at"
+  assert_contains "$ready_block" "the new Approvals tab on the home screen" "the text after the ready: marker must render as where to see it"
+  assert_not_contains "$ready_block" "pull/77" "a ready:-marked item must never show its pull request in this section"
+  assert_not_contains "$completed_block" "Approvals tab shipped" "a ready:-marked item must not double into Recently completed"
+  assert_contains "$completed_block" "Plain merged thing" "a landed item with no ready: marker must still appear under Recently completed"
+  assert_not_contains "$ready_block" "Plain merged thing" "a landed item with no ready: marker must not appear under Ready for you to look at"
+  pass "a landed item's ready: marker promotes it into Ready for you to look at with its pointer text, never its PR, and dedupes out of Recently completed"
+}
+
 test_help_and_bad_flag() {
   local out code
   out=$("$BOARD" --help)
@@ -196,5 +221,6 @@ test_section_order
 test_decision_and_texture_and_dedup
 test_ready_to_merge_reclassified
 test_pr_link_is_clickable_full_url
+test_ready_marker_promotes_landed_item
 test_help_and_bad_flag
 test_json_debug_format
