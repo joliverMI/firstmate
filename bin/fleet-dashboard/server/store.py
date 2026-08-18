@@ -17,7 +17,7 @@ import threading
 import time
 from contextlib import contextmanager
 
-STATUSES = ("not_started", "working", "paused", "waiting", "testing", "complete")
+STATUSES = ("needs_attention", "not_started", "working", "paused", "waiting", "testing", "complete")
 CAPTAINS = ("firstmate", "captain_dj", "captain_river")
 NOTE_TABS = ("interpretation", "communication", "needs")
 NOTE_AUTHORS = ("agent", "firstmate", "admiral")
@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   status TEXT NOT NULL,
   waiting_on_id TEXT,
   waiting_reason TEXT,
+  needs_attention_reason TEXT,
   starred INTEGER NOT NULL DEFAULT 0,
   backlog_ref TEXT,
   initial_prompt TEXT NOT NULL,
@@ -85,6 +86,14 @@ CREATE TABLE IF NOT EXISTS settings (
 
 DEFAULT_AUDIT_INTERVAL_MINUTES = 15
 
+# Columns added after the initial schema. CREATE TABLE IF NOT EXISTS leaves an
+# already-created table untouched, so a database created before a column
+# existed needs it added explicitly - this keeps existing cards and their
+# history intact instead of requiring a fresh database.
+_TASK_COLUMN_MIGRATIONS = (
+    ("needs_attention_reason", "TEXT"),
+)
+
 _write_lock = threading.Lock()
 
 
@@ -100,6 +109,10 @@ class Store:
             os.makedirs(directory, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(SCHEMA)
+            existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
+            for name, coltype in _TASK_COLUMN_MIGRATIONS:
+                if name not in existing_columns:
+                    conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} {coltype}")
             conn.execute(
                 "INSERT OR IGNORE INTO settings(key, value) VALUES ('audit_interval_minutes', ?)",
                 (str(DEFAULT_AUDIT_INTERVAL_MINUTES),),
@@ -248,15 +261,19 @@ class Store:
             raise KeyError(task_id)
         if waiting_on_id and not self.task_exists(waiting_on_id):
             raise ValueError(f"waiting_on_id does not exist: {waiting_on_id!r}")
+        # `reason` is repurposed per status: what a card is waiting on for
+        # `waiting`, what is being asked of him for `needs_attention`. The two
+        # are mutually exclusive, so only the active status's column is kept.
+        waiting_reason = reason if status == "waiting" else None
+        needs_attention_reason = reason if status == "needs_attention" else None
         if status != "waiting":
             waiting_on_id = None
-            reason = reason if reason else None
         ts = now_iso()
         with self._cursor(write=True) as cur:
             cur.execute(
                 """UPDATE tasks SET status = ?, waiting_on_id = ?, waiting_reason = ?,
-                   updated_at = ? WHERE id = ?""",
-                (status, waiting_on_id, reason, ts, task_id),
+                   needs_attention_reason = ?, updated_at = ? WHERE id = ?""",
+                (status, waiting_on_id, waiting_reason, needs_attention_reason, ts, task_id),
             )
             cur.execute(
                 """INSERT INTO status_history (task_id, from_status, to_status, changed_at, note)

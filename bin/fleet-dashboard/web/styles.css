@@ -12,12 +12,14 @@
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, system-ui, sans-serif;
 
   /* status colors */
+  --st-needs_attention: #ff3b30;
   --st-not_started: #7a8699;
   --st-working: #1db954;
   --st-paused: #e0a940;
   --st-waiting: #a970ff;
   --st-testing: #ffd700;
   --st-complete: #5b8cff;
+  --st-needs_attention-bg: rgba(255, 59, 48, .12);
 
   /* captain tag colors */
   --cap-firstmate: #9a9aa2;
@@ -139,6 +141,10 @@ h2.section .count { color: var(--text); font-weight: 700; }
   display: flex; flex-direction: column; gap: 8px; min-width: 0;
 }
 .card:hover { border-color: #4a4a4a; }
+.card.st-needs_attention {
+  border-left-width: 6px; border-left-color: var(--st-needs_attention);
+  border-color: var(--st-needs_attention); background: var(--st-needs_attention-bg);
+}
 .card.st-not_started { border-left-color: var(--st-not_started); }
 .card.st-working { border-left-color: var(--st-working); }
 .card.st-paused { border-left-color: var(--st-paused); }
@@ -160,6 +166,7 @@ h2.section .count { color: var(--text); font-weight: 700; }
   padding: 2.5px 8px; border-radius: 99px; white-space: nowrap;
 }
 .pill.status { color: #06110b; }
+.pill.status.st-needs_attention { background: var(--st-needs_attention); color: #2b0503; }
 .pill.status.st-not_started { background: var(--st-not_started); color: #0c1116; }
 .pill.status.st-working { background: var(--st-working); }
 .pill.status.st-paused { background: var(--st-paused); color: #221a04; }
@@ -174,6 +181,16 @@ h2.section .count { color: var(--text); font-weight: 700; }
 
 .card-meta { font-size: 12px; color: var(--text-muted); display: flex; justify-content: space-between; gap: 8px; }
 .card-agent { color: var(--text); font-weight: 500; }
+
+.needs-attention-banner {
+  font-size: 13px; font-weight: 700; color: #ffb4ac;
+  background: var(--danger-bg); border: 1px solid var(--st-needs_attention);
+  border-radius: 6px; padding: 8px 10px;
+}
+
+h2.section.needs-attention-section { color: var(--st-needs_attention); }
+h2.section.needs-attention-section::after { background: var(--st-needs_attention); opacity: .4; }
+.needs-attention-grid { margin-top: 10px; margin-bottom: 6px; }
 
 .waiting-link-btn, .quick-action {
   font-size: 12px; font-weight: 600; border-radius: 6px; padding: 6px 10px;

@@ -24,6 +24,8 @@
 #   fm-dashboard.sh captain <id> <firstmate|dj|river>
 #   fm-dashboard.sh ref <id> <backlog-ref>
 #   fm-dashboard.sh status <id> <status> [--waiting-on <id>] [--reason <text>]
+#       --reason is what the card is waiting on for `waiting`, or what is
+#       being asked of him for `needs-attention`; ignored for other statuses.
 #   fm-dashboard.sh star <id>
 #   fm-dashboard.sh unstar <id>
 #   fm-dashboard.sh note <id> --tab <interpretation|communication|needs> \
@@ -36,7 +38,7 @@
 #   fm-dashboard.sh start|stop|restart|server-status   (server process lifecycle)
 #   fm-dashboard.sh --help
 #
-# statuses: not-started working paused waiting testing complete
+# statuses: needs-attention not-started working paused waiting testing complete
 # tabs:     interpretation communication needs
 # captain shorthands: dj -> captain_dj, river -> captain_river, firstmate -> firstmate
 #
@@ -110,8 +112,9 @@ json_escape() { need_tool jq; jq -Rs . <<<"$1"; }
 canon_status() {
   case "$1" in
     not-started|not_started) printf 'not_started' ;;
+    needs-attention|needs_attention) printf 'needs_attention' ;;
     working|paused|waiting|testing|complete) printf '%s' "$1" ;;
-    *) die "unknown status '$1' - valid: not-started working paused waiting testing complete" ;;
+    *) die "unknown status '$1' - valid: needs-attention not-started working paused waiting testing complete" ;;
   esac
 }
 
@@ -203,6 +206,7 @@ cmd_show() {
     "agent:    \(.agent)",
     "starred:  \(.starred == 1)",
     (if .status == "waiting" then "waiting on: \(.waiting_on_id // "(no card)") - \(.waiting_reason // "")" else empty end),
+    (if .status == "needs_attention" then "needs attention: \(.needs_attention_reason // "(no reason recorded)")" else empty end),
     (if .backlog_ref then "ref:      \(.backlog_ref)" else empty end),
     "",
     "--- prompt ---",
@@ -432,7 +436,7 @@ main() {
     stop) cmd_server_stop ;;
     restart) cmd_server_stop 2>/dev/null; cmd_server_start ;;
     server-status) cmd_server_status ;;
-    ""|--help|-h|help) sed -n '2,45p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+    ""|--help|-h|help) sed -n '2,48p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
     *) die "unknown command '$cmd' - run: fm-dashboard.sh --help" ;;
   esac
 }

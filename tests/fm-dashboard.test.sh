@@ -94,6 +94,27 @@ test_waiting_status_carries_target_and_reason() {
   pass "waiting status carries its target card and reason"
 }
 
+test_needs_attention_status_carries_reason_and_sorts_first() {
+  local id working_id out
+  id=$("$DASH" add --title "Needs a decision" --captain firstmate --prompt "checking needs-attention" | awk '{print $1}')
+  working_id=$("$DASH" add --title "Being actively worked" --captain firstmate --prompt "sort-order control" --status working | awk '{print $1}')
+
+  "$DASH" status "$id" needs-attention --reason "pick red or blue for the trim" >/dev/null \
+    || fail "status transition to needs-attention failed"
+  out=$("$DASH" show "$id")
+  assert_contains "$out" "status:   needs_attention" "needs-attention status did not persist"
+  assert_contains "$out" "needs attention: pick red or blue for the trim" "needs-attention reason did not persist"
+
+  local first_id
+  first_id=$("$DASH" list --sort status | head -n1 | awk '{print $1}')
+  [ "$first_id" = "$id" ] || fail "needs-attention ($id) did not sort above a working card ($working_id) under --sort status, got: $first_id"
+
+  "$DASH" status "$id" working >/dev/null || fail "leaving needs-attention failed"
+  assert_not_contains "$("$DASH" show "$id")" "needs attention:" "needs-attention reason was not cleared on status change"
+
+  pass "needs-attention status carries a reason and sorts above every other status"
+}
+
 test_star_and_delete() {
   local id
   id=$(cat "$FM_HOME/task-id")
@@ -181,6 +202,7 @@ test_status_and_captain_and_title_updates
 test_waiting_status_carries_target_and_reason
 test_notes_tabs_and_empty_tab_semantics
 test_link_policy_rejects_github_and_localhost
+test_needs_attention_status_carries_reason_and_sorts_first
 test_audit_log_run_and_interval
 test_bad_input_fails_with_nonzero_exit
 test_star_and_delete
