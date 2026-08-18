@@ -83,6 +83,8 @@ If you are the fleet auditor (or standing in for it), your job every cycle is to
 8. If the sweep itself fails partway (a source you needed was unreadable, a check errored out), log that with `--kind error` via `audit-log --fleet "<what broke>"` rather than silently posting a shorter, quieter run. A failed check must never look identical to a clean one.
 9. Read the current cadence with `bin/fm-dashboard.sh audit-interval get` at the start of each cycle rather than assuming the last-known value; the Admiral can change it from the page at any time.
 
+The routine, on-interval cadence above runs on its own now, on a host timer, whether or not any agent is present to remember it - see `docs/dashboard.md` "The timer". Doing a live sweep by hand is still the right move for the judgment calls that timer cannot make mechanically (cross-home working verification, whether a paused card is still genuinely paused), or when the Admiral asks for one directly; record it through the same `audit-log`/`audit-run` commands either way.
+
 ## What not to do
 
 - Do not write to `bin/fleet-dashboard/web/*` or the SQLite file to "fix" a card faster - that is exactly the bypass this skill and the API exist to prevent.

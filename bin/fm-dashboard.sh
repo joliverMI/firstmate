@@ -33,10 +33,20 @@
 #   fm-dashboard.sh link <id> --url <url> [--label <text>] [--tab <tab>]
 #   fm-dashboard.sh delete <id> --confirm
 #   fm-dashboard.sh audit-log (<id> | --fleet) <text> [--kind discrepancy|error]
-#   fm-dashboard.sh audit-run --duration-seconds <n> --checked <n> [--discrepancies <n>]
+#   fm-dashboard.sh audit-run --duration-seconds <n> --checked <n> \
+#       [--discrepancies <n>] [--forced] [--started-at <iso>]
 #   fm-dashboard.sh audit-interval [get | <minutes>]
+#   fm-dashboard.sh audit-status [--json]
+#   fm-dashboard.sh audit-tick
+#   fm-dashboard.sh audit-claim [--forced] [--json]
+#   fm-dashboard.sh audit-release
 #   fm-dashboard.sh start|stop|restart|server-status   (server process lifecycle)
 #   fm-dashboard.sh --help
+#
+# The audit-tick/audit-claim/audit-release/audit-status quartet is the fleet
+# auditor's own timer plumbing (bin/fm-fleet-audit-tick.sh and
+# bin/fm-fleet-audit-sweep.sh are the actual timer and sweep executor); an
+# agent doing ordinary dashboard work never needs them directly.
 #
 # statuses: needs-attention not-started working paused waiting testing complete
 # tabs:     interpretation communication needs
@@ -338,20 +348,25 @@ cmd_audit_log() {
 }
 
 cmd_audit_run() {
-  local duration="" checked="" discrepancies="0"
+  local duration="" checked="" discrepancies="0" forced="false" started_at=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --duration-seconds) duration=$2; shift 2 ;;
       --checked) checked=$2; shift 2 ;;
       --discrepancies) discrepancies=$2; shift 2 ;;
+      --forced) forced="true"; shift ;;
+      --started-at) started_at=$2; shift 2 ;;
       *) die "audit-run: unknown argument '$1'" ;;
     esac
   done
   [ -n "$duration" ] && [ -n "$checked" ] || die "audit-run: --duration-seconds and --checked are required"
   local body
   body=$(jq -n --argjson d "$duration" --argjson c "$checked" --argjson x "$discrepancies" \
-    '{duration_seconds:$d, tasks_checked:$c, discrepancies_found:$x}')
-  dash_call POST /api/audit/run "$body" >/dev/null && printf 'audit run recorded: %ss, %s task(s), %s discrepancy(ies)\n' "$duration" "$checked" "$discrepancies"
+              --argjson f "$forced" --arg s "$started_at" \
+    '{duration_seconds:$d, tasks_checked:$c, discrepancies_found:$x, forced:$f} + (if $s=="" then {} else {started_at:$s} end)')
+  dash_call POST /api/audit/run "$body" >/dev/null \
+    && printf 'audit run recorded: %ss, %s task(s), %s discrepancy(ies)%s\n' \
+         "$duration" "$checked" "$discrepancies" "$([ "$forced" = "true" ] && printf ' (forced)' || true)"
 }
 
 cmd_audit_interval() {
@@ -363,6 +378,56 @@ cmd_audit_interval() {
     dash_call PUT /api/settings/audit-interval "$(jq -n --argjson m "$arg" '{minutes:$m}')" \
       | jq -r '"every \(.minutes) minute(s)"'
   fi
+}
+
+cmd_audit_status() {
+  local as_json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in --json) as_json=1; shift ;; *) die "audit-status: unknown argument '$1'" ;; esac
+  done
+  local out
+  out=$(dash_call GET /api/audit/status) || return 1
+  if [ "$as_json" -eq 1 ]; then
+    printf '%s\n' "$out"
+    return 0
+  fi
+  printf '%s\n' "$out" | jq -r '
+    "interval_minutes: \(.interval_minutes)",
+    "last_tick_at:     \(.last_tick_at // "never")",
+    "sweep running:    \(.sweep_lock.running)\(if .sweep_lock.running then " (forced: \(.sweep_lock.forced), since \(.sweep_lock.started_at))" else "" end)",
+    (if .last_run then
+      "last_run:         \(.last_run.completed_at) - \(.last_run.duration_seconds)s, \(.last_run.tasks_checked) checked, \(.last_run.discrepancies_found) discrepancy(ies)\(if .last_run.forced==1 then " (forced)" else "" end)"
+    else
+      "last_run:         never"
+    end)
+  '
+}
+
+cmd_audit_tick() {
+  dash_call POST /api/audit/tick >/dev/null && printf 'tick recorded\n'
+}
+
+cmd_audit_claim() {
+  local forced="false" as_json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --forced) forced="true"; shift ;;
+      --json) as_json=1; shift ;;
+      *) die "audit-claim: unknown argument '$1'" ;;
+    esac
+  done
+  local out
+  out=$(dash_call POST /api/audit/claim "$(jq -n --argjson f "$forced" '{forced:$f}')") || return 1
+  if [ "$as_json" -eq 1 ]; then
+    printf '%s\n' "$out"
+  else
+    printf '%s\n' "$out" | jq -r 'if .claimed then "claimed: true started_at: \(.started_at)" else "claimed: false running_since: \(.running_since) forced: \(.forced)" end'
+  fi
+  printf '%s' "$out" | jq -e '.claimed' >/dev/null
+}
+
+cmd_audit_release() {
+  dash_call POST /api/audit/release >/dev/null && printf 'sweep lock released\n'
 }
 
 pidfile() { printf '%s/state/dashboard.pid' "$FM_HOME"; }
@@ -432,11 +497,15 @@ main() {
     audit-log) cmd_audit_log "$@" ;;
     audit-run) cmd_audit_run "$@" ;;
     audit-interval) cmd_audit_interval "$@" ;;
+    audit-status) cmd_audit_status "$@" ;;
+    audit-tick) cmd_audit_tick "$@" ;;
+    audit-claim) cmd_audit_claim "$@" ;;
+    audit-release) cmd_audit_release "$@" ;;
     start) cmd_server_start ;;
     stop) cmd_server_stop ;;
     restart) cmd_server_stop 2>/dev/null; cmd_server_start ;;
     server-status) cmd_server_status ;;
-    ""|--help|-h|help) sed -n '2,48p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+    ""|--help|-h|help) sed -n '2,58p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
     *) die "unknown command '$cmd' - run: fm-dashboard.sh --help" ;;
   esac
 }
