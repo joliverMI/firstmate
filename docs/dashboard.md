@@ -1,7 +1,7 @@
 # The Admiral's Fleet Dashboard
 
 A purpose-built task board, styled to match Spectra, that replaced the generated Lavish status page (`bin/fm-status-board.sh`) as the Admiral's primary fleet surface.
-One card per task the fleet has been given; six statuses; a captain tag for who is driving it; four tabs per card; a bottom-of-page discrepancy log kept by the fleet auditor.
+One card per task the fleet has been given; seven statuses; a captain tag for who is driving it; four tabs per card; a bottom-of-page discrepancy log kept by the fleet auditor.
 
 For exact current command syntax, run `bin/fm-dashboard.sh --help`.
 For when and why an agent calls which command, see [`fleet-dashboard`](../.agents/skills/fleet-dashboard/SKILL.md) - that skill is the single owner of agent-facing usage guidance; this page stays architecture, setup, and the decisions behind the shape.
@@ -55,6 +55,14 @@ This was a deliberate choice among three options - read live from the backlog, o
 **The drift risk this creates is real and explicit, not hidden:** if firstmate (or a crew) forgets to call `bin/fm-dashboard.sh status` after a real change, the card goes stale silently from the board's own point of view - there is no automatic correction.
 The fleet auditor exists specifically to bound that risk: every sweep re-derives ground truth from live crew/session state and the real backlog, compares it to what each card claims, and logs a discrepancy the moment the two disagree, with a timed record of how long the check took so a silently-skipped sweep is itself visible (see "Auditor integration" below).
 An optional `backlog_ref` field on a card (`bin/fm-dashboard.sh ref <id> <home:task-id>`) lets the auditor cross-check a specific card against a specific backlog entry when one exists; a card with no ref is not treated as wrong for that - see the next section.
+
+## Why `needs-attention` is a separate status from `testing`
+
+Both statuses put a finished-enough card in front of the Admiral, which is why they used to get conflated - and why doing so once buried several of his genuinely open decisions in a place he had no reason to check closely.
+The two are opposite on the one axis that matters: whether the work still needs him to move forward.
+`testing` is done and optional - if he never opens the card, nothing is lost, it is otherwise complete.
+`needs-attention` is stuck without him - a decision, an answer, or a physical action only he can supply.
+That asymmetry is why `needs-attention` sorts first and renders loudest on the page, and why the fleet auditor treats its age as a finding in a way it never does for `testing` (see the [`fleet-dashboard`](../.agents/skills/fleet-dashboard/SKILL.md) skill for the exact status definitions and the auditor's per-status procedure).
 
 ## Link policy (standing order 17)
 
