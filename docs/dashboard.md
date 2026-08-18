@@ -71,16 +71,30 @@ This is enforcement, not just a written rule an agent has to remember: "never a 
 
 ## Auditor integration
 
-The fleet auditor (secondmate `fleet-auditor`) treats the board as its reference for what the fleet claims is happening, and is the authority on whether that claim is actually true - the board does not judge itself.
-Its exact per-cycle procedure, including how to distinguish a genuine discrepancy from a card it simply cannot verify, lives in the [`fleet-dashboard`](../.agents/skills/fleet-dashboard/SKILL.md) skill rather than here, so there is one place agents read it from.
+The fleet auditor treats the board as its reference for what the fleet claims is happening, and is the authority on whether that claim is actually true - the board does not judge itself.
+The mechanical subset of its per-cycle procedure - the checks that are a deterministic comparison, not a judgment call - is implemented directly in `bin/fm-fleet-audit-sweep.sh`, so the routine cadence never again depends on a live agent's session being the thing that remembers to run it (see "The timer" below for why that mattered). A live agent doing a deeper, judgment-based sweep (cross-home working verification, whether a paused card is still genuinely paused) still follows the full per-cycle procedure in the [`fleet-dashboard`](../.agents/skills/fleet-dashboard/SKILL.md) skill and records findings through the same `bin/fm-dashboard.sh audit-log`/`audit-run` commands, marked `--forced` the same way the button is.
 
-Two page-visible outcomes matter for how the Admiral reads this surface:
+Three page-visible outcomes matter for how the Admiral reads this surface:
 
-- **The discrepancy log** (bottom of the page) only ever shows something the auditor actually confirmed was wrong, timestamped. An empty log and a log that has never run are shown differently on purpose (see the next point) - an absence of findings is not the same claim as an absence of *checking*.
-- **The last-check indicator** shows when the last full sweep completed, how long it took, and how many tasks it covered, sourced from `bin/fm-dashboard.sh audit-run`. A sweep that never completes (crashes, hangs, or is simply never run) shows as "never run" rather than silently reusing the last good timestamp - this is the same "loud, not a quiet omission" principle applied to the auditor's own liveness, not just to its findings.
+- **The discrepancy log** (bottom of the page) only ever shows something a sweep actually confirmed was wrong, timestamped, with a button to jump straight to the named card (clearing whatever filter would have hidden it, and saying so) when that card still exists. An empty log and a log that has never run are shown differently on purpose (see the next point) - an absence of findings is not the same claim as an absence of *checking*.
+- **The last-check indicator** shows when the last full sweep completed, how long it took, how many tasks it covered, and whether it was scheduled or forced, sourced from `bin/fm-dashboard.sh audit-run`. A sweep that never completes (crashes, hangs, or is simply never run) shows as "never run" rather than silently reusing the last good timestamp - this is the same "loud, not a quiet omission" principle applied to the auditor's own liveness, not just to its findings.
+- **The timer indicator** shows when the timer itself last ticked, separately from when a sweep last completed - see "The timer" below for why the two can legitimately disagree, and why only the heartbeat catches a timer that has silently stopped.
 
-Audit frequency is a stored setting (`bin/fm-dashboard.sh audit-interval`), starting at 15 minutes, editable from the page itself.
-The dashboard stores and serves that setting; it does not itself schedule the auditor's wake cadence - wiring the fleet-auditor secondmate's actual run schedule to read and honor it is a deliberate follow-up outside this change's file scope (a secondmate's charter and schedule are firstmate-owned private state, not shared tracked material).
+### The timer
+
+Audit frequency is a stored setting (`bin/fm-dashboard.sh audit-interval`), starting at 15 minutes, editable from the page itself, and re-read fresh on every tick - never cached - so a change from the page takes effect on the very next tick with nobody told to re-arm anything.
+
+`bin/fm-fleet-audit-tick.sh` is the actual timer: install it as a host cron entry (or an equivalent OS-level scheduler) firing every minute, forever, pointed at the home whose board it should watch:
+
+```sh
+* * * * *  FM_HOME=/path/to/home  /path/to/firstmate/bin/fm-fleet-audit-tick.sh
+```
+
+Host cron, not another mechanism already in this fleet, because every other trigger this fleet has (`bin/fm-watch.sh`, the process-event-source runner) is polled by a live supervision cycle - see the `process-event-sources` skill. That is exactly the shape that broke the first time this was tried: the auditor registered a durable check correctly, but nothing polled it because its home had no live session running the watcher. A trigger that still depends on a live chat session cannot be the fix for "a live chat session was the single point of failure." Cron is already running on the host independent of any firstmate session, needs no new daemon and no new persistent store, and fires whether or not anyone is watching - surviving a restart of any agent, and a reboot of the machine, because cron re-reads its table on start.
+
+Every tick records a heartbeat (`bin/fm-dashboard.sh audit-tick`) regardless of whether a sweep was due, which is what lets the page distinguish "the timer is alive but nothing was due yet" from "the timer itself has stopped" - a 15-minute interval means up to 15 minutes between completed sweeps even with a perfectly healthy timer, so only the heartbeat (not the last-run timestamp) can catch a dead timer.
+
+The sweep itself (`bin/fm-fleet-audit-sweep.sh`) claims a single-slot lock stored in the dashboard's own settings table before it runs anything, and releases it when `audit-run` records the result - so a scheduled tick and a Force Audit press can never stack two sweeps, whichever gets there first wins the slot and the other is a clean no-op. The Force Audit button (bottom of the page) claims that same lock synchronously through `POST /api/audit/force`, so the response the button gets back is the real outcome of the real claim, not a guess - then launches the sweep script detached so the request returns immediately instead of the page hanging until the sweep finishes. A forced run records itself through the identical `audit-run --forced` path a scheduled tick uses, so it appears in the discrepancy log and the last-check indicator exactly like a scheduled one, just tagged.
 
 ## Reaching the board from a secondmate
 

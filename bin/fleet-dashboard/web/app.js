@@ -23,10 +23,16 @@ const STATUS_META = {
 };
 const CAPTAINS = ["firstmate", "captain_dj", "captain_river"];
 const CAPTAIN_META = {
-  firstmate: { label: "First Mate" },
+  firstmate: { label: "Firstmate" },
   captain_dj: { label: "Captain DJ" },
   captain_river: { label: "Captain River" },
 };
+
+// Ticks every minute (bin/fm-fleet-audit-tick.sh's header documents the cron
+// cadence it assumes). Three missed ticks before the page calls the timer
+// stalled, not one - a single slow tick is normal jitter, not an outage.
+const TICK_EXPECTED_SECONDS = 60;
+const TICK_STALE_SECONDS = TICK_EXPECTED_SECONDS * 3;
 const TABS = [
   { key: "prompt", label: "Prompt" },
   { key: "interpretation", label: "Interpretation" },
@@ -99,9 +105,17 @@ function ConnBanner({ error, lastOkAt }) {
   `;
 }
 
+// ---- transient toast: immediate confirmation for an action whose real
+// effect (a sweep completing) happens later, off-screen ----
+
+function Toast({ toast }) {
+  if (!toast) return null;
+  return html`<div class="toast ${toast.kind || ""}" role="status">${toast.text}</div>`;
+}
+
 // ---- card ----
 
-function Card({ task, allTasks, onOpen, onToggleStar, onQuickStatus }) {
+function Card({ task, allTasks, onOpen, onToggleStar, onQuickStatus, highlighted }) {
   const waitingOn = task.status === "waiting" && task.waiting_on_id
     ? allTasks.find((t) => t.id === task.waiting_on_id)
     : null;
@@ -109,7 +123,11 @@ function Card({ task, allTasks, onOpen, onToggleStar, onQuickStatus }) {
   const stop = (fn) => (e) => { e.stopPropagation(); fn(); };
 
   return html`
-    <div class="card st-${task.status}" onClick=${() => onOpen(task.id)}>
+    <div
+      id="card-${task.id}"
+      class="card st-${task.status} ${highlighted ? "highlight" : ""}"
+      onClick=${() => onOpen(task.id)}
+    >
       <div class="card-top">
         <div class="card-title">${task.title}</div>
         <button
@@ -149,7 +167,7 @@ function Card({ task, allTasks, onOpen, onToggleStar, onQuickStatus }) {
         </button>
       ` : null}
       <div class="card-meta">
-        <span class="card-agent">${task.agent || "unassigned"}</span>
+        <span class="card-captain">${CAPTAIN_META[task.captain]?.label || task.captain}</span>
         <span>${timeAgo(task.updated_at)}</span>
       </div>
     </div>
@@ -431,18 +449,40 @@ function Overlay({ task, allTasks, onClose, onPatch, onStatus, onAddNote, onTogg
 
 // ---- audit / discrepancy log section ----
 
-function AuditSection({ auditStatus, onSetInterval }) {
+function AuditSection({ auditStatus, onSetInterval, tasks, onGoToCard, onForceAudit, forcing }) {
   const [intervalDraft, setIntervalDraft] = useState("");
   const lastRun = auditStatus?.last_run;
   const log = auditStatus?.log || [];
+  const lock = auditStatus?.sweep_lock;
+  const sweeping = !!lock?.running;
+
+  const lastTick = auditStatus?.last_tick_at;
+  const tickAgeSec = lastTick
+    ? (Date.now() - new Date(lastTick.endsWith("Z") ? lastTick : lastTick + "Z").getTime()) / 1000
+    : null;
+  const timerDead = tickAgeSec === null || tickAgeSec > TICK_STALE_SECONDS;
 
   return html`
     <div class="audit-section">
       <h2 class="section">Fleet Auditor</h2>
       <div class="audit-summary">
+        <div class="audit-stat ${timerDead ? "alarm" : ""}">
+          <div class="k">Timer</div>
+          <div class="v">
+            ${lastTick === null || lastTick === undefined
+              ? "Never started - the interval timer is not installed."
+              : timerDead
+                ? `⚠ No heartbeat for ${timeAgo(lastTick)} - the timer may have stopped.`
+                : `Alive - ticked ${timeAgo(lastTick)}`}
+          </div>
+        </div>
         <div class="audit-stat ${lastRun ? "" : "never"}">
           <div class="k">Last full check</div>
-          <div class="v">${lastRun ? fmtDateTime(lastRun.completed_at) : "Never run yet"}</div>
+          <div class="v">
+            ${lastRun ? fmtDateTime(lastRun.completed_at) : "Never run yet"}
+            ${lastRun?.forced ? " (forced)" : ""}
+            ${sweeping ? " · sweeping now…" : ""}
+          </div>
         </div>
         <div class="audit-stat ${lastRun ? "" : "never"}">
           <div class="k">Time to check the whole board</div>
@@ -473,12 +513,27 @@ function AuditSection({ auditStatus, onSetInterval }) {
       <h2 class="section">Discrepancy Log</h2>
       ${log.length === 0
         ? html`<div class="log-none-yet">No discrepancies logged yet. This is not the same as "clean" - it means no audit run has flagged anything so far.</div>`
-        : log.map((entry) => html`
-            <div class="log-item ${entry.kind}" key=${entry.id}>
-              <div class="log-when">${fmtDateTime(entry.created_at)} · ${entry.kind}${entry.task_id ? ` · ${entry.task_id}` : ""}</div>
-              <div>${entry.text}</div>
-            </div>
-          `)}
+        : log.map((entry) => {
+            const target = entry.task_id ? tasks.find((t) => t.id === entry.task_id) : null;
+            return html`
+              <div class="log-item ${entry.kind}" key=${entry.id}>
+                <div class="log-when">${fmtDateTime(entry.created_at)} · ${entry.kind}${entry.task_id ? ` · ${entry.task_id}` : ""}</div>
+                <div>${entry.text}</div>
+                ${entry.task_id
+                  ? (target
+                      ? html`<button class="log-goto-btn" onClick=${() => onGoToCard(entry.task_id)}>↳ Go to card</button>`
+                      : html`<div class="log-goto-missing">That card no longer exists.</div>`)
+                  : null}
+              </div>
+            `;
+          })}
+
+      <div class="force-audit-row" style=${{ marginTop: 20 }}>
+        <button class="force-audit-btn" disabled=${sweeping || forcing} onClick=${onForceAudit}>
+          ${sweeping ? "Sweep running…" : forcing ? "Starting…" : "Force Audit Now"}
+        </button>
+        ${sweeping ? html`<span class="force-audit-status">A sweep is already in progress.</span>` : null}
+      </div>
     </div>
   `;
 }
@@ -495,6 +550,18 @@ function App() {
   const [filters, setFilters] = useState({
     status: new Set(), captain: new Set(), search: "", sort: "updated",
   });
+  const [pendingScrollId, setPendingScrollId] = useState(null);
+  const [highlightId, setHighlightId] = useState(null);
+  const [toast, setToast] = useState(null);
+  const [forcing, setForcing] = useState(false);
+  const [fastPolling, setFastPolling] = useState(false);
+  const toastTimer = useRef(null);
+
+  const showToast = useCallback((text, kind = "info") => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ text, kind });
+    toastTimer.current = setTimeout(() => setToast(null), 4000);
+  }, []);
 
   // The list endpoint stays lean (no notes/history) so it scales with the
   // board's size; the expanded card fetches its own full detail instead.
@@ -528,9 +595,9 @@ function App() {
 
   useEffect(() => {
     refresh();
-    const id = setInterval(refresh, POLL_MS);
+    const id = setInterval(refresh, fastPolling ? 3000 : POLL_MS);
     return () => clearInterval(id);
-  }, [refresh]);
+  }, [refresh, fastPolling]);
 
   useEffect(() => { refreshSelected(selectedId); }, [selectedId, refreshSelected]);
 
@@ -562,6 +629,25 @@ function App() {
   const setAuditInterval = async (minutes) => {
     await api("/settings/audit-interval", { method: "PUT", body: { minutes } });
     await refresh();
+  };
+
+  const onForceAudit = async () => {
+    setForcing(true);
+    try {
+      const res = await api("/audit/force", { method: "POST" });
+      if (res.started) {
+        showToast(`Audit sweep started at ${new Date().toLocaleTimeString()}.`);
+      } else {
+        showToast(res.reason || "A sweep is already in progress.", "warn");
+      }
+      setFastPolling(true);
+      setTimeout(() => setFastPolling(false), 60000);
+      await refresh();
+    } catch (e) {
+      showToast(`Could not start the sweep: ${e.message}`, "warn");
+    } finally {
+      setForcing(false);
+    }
   };
 
   const filtered = useMemo(() => {
@@ -596,6 +682,39 @@ function App() {
     return { status, captain };
   }, [tasks]);
 
+  // Jump to a card named by an audit log entry. Only clears a filter that
+  // would actually hide the target - sort is left alone, since it only
+  // reorders and scrollIntoView finds the card wherever it landed. Runs
+  // after the DOM reflects any filter clear (the effect below, keyed on
+  // `filtered`), so the node is guaranteed to exist by the time it scrolls.
+  const goToCard = useCallback((taskId) => {
+    const target = tasks.find((t) => t.id === taskId);
+    if (!target) return;
+    let overridden = false;
+    const next = { ...filters };
+    if (filters.status.size > 0 && !filters.status.has(target.status)) { next.status = new Set(); overridden = true; }
+    if (filters.captain.size > 0 && !filters.captain.has(target.captain)) { next.captain = new Set(); overridden = true; }
+    if (filters.search.trim() && !target.title.toLowerCase().includes(filters.search.trim().toLowerCase())) {
+      next.search = ""; overridden = true;
+    }
+    if (overridden) {
+      setFilters(next);
+      showToast("Cleared filters to show this card.");
+    }
+    setPendingScrollId(taskId);
+  }, [tasks, filters, showToast]);
+
+  useEffect(() => {
+    if (!pendingScrollId) return;
+    const el = document.getElementById(`card-${pendingScrollId}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+    setHighlightId(pendingScrollId);
+    setPendingScrollId(null);
+    const t = setTimeout(() => setHighlightId(null), 1800);
+    return () => clearTimeout(t);
+  }, [pendingScrollId, filtered]);
+
   const selected = selectedTask && selectedTask.id === selectedId ? selectedTask : null;
 
   return html`
@@ -616,6 +735,7 @@ function App() {
               key=${t.id} task=${t} allTasks=${tasks}
               onOpen=${setSelectedId} onToggleStar=${toggleStar}
               onQuickStatus=${(task, status) => setStatus(task.id, status)}
+              highlighted=${highlightId === t.id}
             />
           `)}
         </div>
@@ -629,6 +749,7 @@ function App() {
               key=${t.id} task=${t} allTasks=${tasks}
               onOpen=${setSelectedId} onToggleStar=${toggleStar}
               onQuickStatus=${(task, status) => setStatus(task.id, status)}
+              highlighted=${highlightId === t.id}
             />
           `)}
         </div>
@@ -648,16 +769,23 @@ function App() {
             key=${t.id} task=${t} allTasks=${tasks}
             onOpen=${setSelectedId} onToggleStar=${toggleStar}
             onQuickStatus=${(task, status) => setStatus(task.id, status)}
+            highlighted=${highlightId === t.id}
           />
         `)}
       </div>
 
-      <${AuditSection} auditStatus=${auditStatus} onSetInterval=${setAuditInterval} />
+      <${AuditSection}
+        auditStatus=${auditStatus} onSetInterval=${setAuditInterval}
+        tasks=${tasks} onGoToCard=${goToCard}
+        onForceAudit=${onForceAudit} forcing=${forcing}
+      />
 
       <footer class="page-foot">
         Fleet Dashboard · refreshes automatically every ${POLL_MS / 1000}s · agents update this board only through its API, never by editing this page.
       </footer>
     </div>
+
+    <${Toast} toast=${toast} />
 
     ${selected ? html`
       <${Overlay}

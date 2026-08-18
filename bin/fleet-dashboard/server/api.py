@@ -15,13 +15,23 @@ import json
 import mimetypes
 import os
 import re
+import subprocess
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from store import CAPTAINS, NOTE_AUTHORS, NOTE_TABS, STATUSES, Store
 from validation import InvalidLinkError, validate_review_link
 
-WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
+FLEET_DASHBOARD_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+WEB_DIR = os.path.join(FLEET_DASHBOARD_DIR, "web")
+# bin/fleet-dashboard/server/api.py -> bin/ , where fm-fleet-audit-sweep.sh
+# and fm-dashboard.sh (which the sweep script calls back through) live.
+BIN_DIR = os.path.dirname(FLEET_DASHBOARD_DIR)
+
+# Set by serve() before the handler is ever asked to launch a sweep - see
+# audit_force's docstring for why the Force Audit button needs both of these.
+FM_HOME_FOR_SUBPROCESS = ""
+SELF_URL = ""
 
 
 class ApiError(Exception):
@@ -228,11 +238,13 @@ def audit_run(store: Store, match, query, body):
     except (TypeError, ValueError) as exc:
         raise ApiError(400, f"duration_seconds and tasks_checked are required numbers: {exc}") from exc
     discrepancies = int(body.get("discrepancies_found", 0) or 0)
+    forced = bool(body.get("forced", False))
     store.record_audit_run(
         duration_seconds=duration,
         tasks_checked=checked,
         discrepancies_found=discrepancies,
         started_at=body.get("started_at") or None,
+        forced=forced,
     )
     return 201, {"recorded": True}
 
@@ -240,6 +252,57 @@ def audit_run(store: Store, match, query, body):
 @route("GET", r"/api/audit/status")
 def audit_status(store: Store, match, query, body):
     return 200, store.get_audit_status()
+
+
+@route("POST", r"/api/audit/tick")
+def audit_tick(store: Store, match, query, body):
+    return 201, {"tick_at": store.record_audit_tick()}
+
+
+@route("POST", r"/api/audit/claim")
+def audit_claim(store: Store, match, query, body):
+    forced = bool(body.get("forced", False))
+    return 200, store.claim_audit_sweep(forced=forced)
+
+
+@route("POST", r"/api/audit/release")
+def audit_release(store: Store, match, query, body):
+    store.release_audit_sweep()
+    return 200, {"released": True}
+
+
+@route("POST", r"/api/audit/force")
+def audit_force(store: Store, match, query, body):
+    """The Force Audit button's endpoint: claim, launch, return - in that
+    order, without waiting for the sweep to finish.
+
+    The claim happens here, synchronously, so the response the button gets
+    (started/already-running) is never a guess about what a background
+    process will do later - it is the actual outcome of the actual claim.
+    Only the sweep script itself, launched detached, does the (potentially
+    slow) checking; this handler's job ends the moment it is running.
+    """
+    claim = store.claim_audit_sweep(forced=True)
+    if not claim["claimed"]:
+        return 200, {"started": False, "reason": "a sweep is already in progress",
+                     "running_since": claim["running_since"]}
+    sweep_script = os.path.join(BIN_DIR, "fm-fleet-audit-sweep.sh")
+    env = dict(os.environ)
+    env["FM_HOME"] = FM_HOME_FOR_SUBPROCESS
+    env["FM_DASHBOARD_URL"] = SELF_URL
+    try:
+        # A fixed argv, not a shell string and not user input: nothing here
+        # is built from a request body or query parameter.
+        subprocess.Popen(
+            [sweep_script, "--forced", "--already-claimed"],
+            cwd=BIN_DIR, env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        store.release_audit_sweep()
+        raise ApiError(500, f"could not launch the sweep: {exc}") from exc
+    return 200, {"started": True, "started_at": claim["started_at"]}
 
 
 def _guess_type(path: str) -> str:
@@ -336,6 +399,21 @@ def make_handler(store: Store):
 
 
 def serve(host: str, port: int, db_path: str) -> ThreadingHTTPServer:
+    global FM_HOME_FOR_SUBPROCESS, SELF_URL
+    # FM_HOME is normally inherited from the environment `fm-dashboard.sh
+    # start` was launched in; when it is not (a bare `python3 main.py`), fall
+    # back to db_path's grandparent, since every caller passes --db as
+    # <FM_HOME>/data/dashboard.db (fm-dashboard.sh's cmd_server_start does,
+    # and so does the test suite). This is what the Force Audit button's
+    # detached sweep subprocess uses to find the right state/ and config/.
+    FM_HOME_FOR_SUBPROCESS = os.environ.get(
+        "FM_HOME", os.path.dirname(os.path.dirname(os.path.abspath(db_path)))
+    )
+    # A bind-all host (0.0.0.0 or ::) is not itself a reachable address for
+    # the loopback call the sweep subprocess makes back into this same
+    # server - use 127.0.0.1 in that case instead of the bind address.
+    call_host = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
+    SELF_URL = f"http://{call_host}:{port}"
     store = Store(db_path)
     handler = make_handler(store)
     httpd = ThreadingHTTPServer((host, port), handler)

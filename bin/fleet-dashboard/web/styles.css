@@ -180,7 +180,16 @@ h2.section .count { color: var(--text); font-weight: 700; }
 .pill.captain.cap-captain_river { color: var(--cap-captain_river); border-color: var(--cap-captain_river); }
 
 .card-meta { font-size: 12px; color: var(--text-muted); display: flex; justify-content: space-between; gap: 8px; }
-.card-agent { color: var(--text); font-weight: 500; }
+.card-captain { color: var(--text); font-weight: 500; }
+
+/* Scrolled-to-from the audit log: a brief, unmissable pulse, not a permanent
+   marker - it fades on its own so the card looks normal again shortly after
+   he's had a chance to see which one it was. */
+.card.highlight { animation: card-flash 1.8s ease-out; }
+@keyframes card-flash {
+  0% { box-shadow: 0 0 0 3px var(--neutral-info); background: var(--neutral-info-bg); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
 
 .needs-attention-banner {
   font-size: 13px; font-weight: 700; color: #ffb4ac;
@@ -299,7 +308,8 @@ h2.section.needs-attention-section::after { background: var(--st-needs_attention
 .audit-stat .v { font-size: 18px; font-weight: 700; margin-top: 3px; }
 .audit-stat.never .v { color: var(--text-muted); font-size: 14px; font-weight: 600; }
 .audit-stat.clean .v { color: var(--ok); }
-.audit-stat.found .v { color: var(--danger); }
+.audit-stat.found .v, .audit-stat.alarm .v { color: var(--danger); }
+.audit-stat.alarm .v { font-size: 14px; font-weight: 600; }
 
 .audit-interval-row {
   display: flex; align-items: center; gap: 8px; margin-bottom: 16px; font-size: 13px; color: var(--text-muted);
@@ -328,6 +338,34 @@ h2.section.needs-attention-section::after { background: var(--st-needs_attention
   color: var(--text-muted); font-size: 13.5px; background: var(--neutral-info-bg);
   border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 13px;
 }
+.log-goto-btn {
+  margin-top: 8px; background: var(--surface2); border: 1px solid var(--border); color: var(--neutral-info);
+  border-radius: 6px; padding: 6px 11px; font-size: 12.5px; font-weight: 600; cursor: pointer;
+}
+.log-goto-btn:hover { border-color: var(--neutral-info); }
+.log-goto-missing { margin-top: 8px; color: var(--text-muted); font-size: 12.5px; font-style: italic; }
+
+/* ---- force-audit control ---- */
+
+.force-audit-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 24px;
+}
+.force-audit-btn {
+  background: var(--surface2); border: 1px solid var(--st-working); color: var(--st-working);
+  border-radius: 6px; padding: 9px 16px; font-size: 13.5px; font-weight: 700; cursor: pointer;
+}
+.force-audit-btn:disabled { color: var(--text-muted); border-color: var(--border); cursor: not-allowed; }
+.force-audit-status { font-size: 12.5px; color: var(--text-muted); }
+
+/* ---- transient toast (phone-first: fixed, thumb-reachable, self-dismissing) ---- */
+
+.toast {
+  position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%);
+  max-width: min(92vw, 420px); background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 11px 16px; font-size: 13.5px; color: var(--text);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .45); z-index: 60; text-align: center;
+}
+.toast.warn { border-color: var(--danger); color: var(--danger); }
 
 footer.page-foot { margin-top: 26px; color: var(--text-muted); font-size: 12px; }
 
