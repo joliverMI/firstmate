@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
-#        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--card <card-id>]
+#        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--card <card-id>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
@@ -16,6 +16,20 @@
 #   loud one-line deviation notice is printed and the spawn continues.
 #   no-mistakes-prod-only is a registry policy rather than a task mode and is
 #   refused as a flag value.
+#   --card <card-id> names the Admiral's Fleet Dashboard card (bin/fm-dashboard.sh)
+#   this task serves, when one exists; most tasks have none, and omitting the flag
+#   is the normal case. When given, this script writes dashboard_card=<card-id> to
+#   state/<id>.meta (the durable identity link fm-teardown.sh later consumes) and
+#   best-effort links the card's ref to "<home>:<task-id>" and its agent to the
+#   task id, advancing a not_started card to working - all through
+#   bin/fm-dashboard.sh, never a second store. A card id that does not resolve, or
+#   an unreachable dashboard, never fails the spawn; it is reported loudly on
+#   stderr and, when the dashboard answers at all, recorded through
+#   `fm-dashboard.sh audit-log --fleet` so a failed link is visible to the fleet
+#   auditor rather than silently dropped (docs/dashboard.md "The mechanical card
+#   link"). Refused on --secondmate (cards are backlog work items, never a
+#   persistent secondmate) and on --relaunch (the card, like every other identity
+#   axis, is preserved from the existing task's own state/<id>.meta).
 #        fm-spawn.sh <task-id> --relaunch [--harness <name>] [--model <name>] [--effort <level>]
 #   --relaunch launches a replacement agent for an EXISTING task into that
 #   task's own recorded endpoint and worktree instead of creating either. It is
@@ -275,6 +289,7 @@ BACKEND_ARG=
 MODE=
 YOLO=
 TRACEPARENT_ARG=
+CARD_ARG=
 HARNESS_SET=0
 MODEL_SET=0
 EFFORT_SET=0
@@ -282,6 +297,7 @@ BACKEND_SET=0
 MODE_SET=0
 YOLO_SET=0
 TRACEPARENT_SET=0
+CARD_SET=0
 RELAUNCH=0
 POS=()
 want_value=
@@ -298,6 +314,7 @@ for a in "$@"; do
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
       traceparent) TRACEPARENT_ARG=$a; TRACEPARENT_SET=1 ;;
+      card) CARD_ARG=$a; CARD_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -321,6 +338,8 @@ for a in "$@"; do
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
     --traceparent) want_value=traceparent ;;
     --traceparent=*) TRACEPARENT_ARG=${a#--traceparent=}; TRACEPARENT_SET=1 ;;
+    --card) want_value=card ;;
+    --card=*) CARD_ARG=${a#--card=}; CARD_SET=1 ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -332,6 +351,8 @@ done
 [ "$MODE_SET" -eq 0 ] || [ -n "$MODE" ] || { echo "error: --mode requires a non-empty value" >&2; exit 1; }
 [ "$YOLO_SET" -eq 0 ] || [ -n "$YOLO" ] || { echo "error: --yolo requires a non-empty value" >&2; exit 1; }
 [ "$TRACEPARENT_SET" -eq 0 ] || [ -n "$TRACEPARENT_ARG" ] || { echo "error: --traceparent requires a non-empty value" >&2; exit 1; }
+[ "$CARD_SET" -eq 0 ] || [ -n "$CARD_ARG" ] || { echo "error: --card requires a non-empty value" >&2; exit 1; }
+[ "$CARD_SET" -eq 0 ] || [ "$KIND" != secondmate ] || { echo "error: --card applies only to ship and scout spawns; a secondmate is recorded in the secondmate registry, never as a dashboard card" >&2; exit 1; }
 # A parent-delivered carrier replaces this home's own resolution, so it is
 # refused unless it is a secondmate spawn carrying a strictly valid W3C value.
 # Nothing else may reach the pane's TRACEPARENT export.
@@ -359,6 +380,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   [ "$KIND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded kind; --scout/--secondmate cannot override it" >&2; exit 1; }
   [ "$MODE_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded delivery mode; --mode cannot override it" >&2; exit 1; }
   [ "$YOLO_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded yolo posture; --yolo cannot override it" >&2; exit 1; }
+  [ "$CARD_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded dashboard card; --card cannot override it" >&2; exit 1; }
 else
   # Delivery contract (AGENTS.md section 7). A ship task's mode and yolo are
   # firstmate's per-task decision, so they are required and closed-set validated
@@ -2680,6 +2702,7 @@ preserve_relaunch_meta() {
     echo "home=$PROJ_ABS"
     echo "projects=$SECONDMATE_PROJECTS"
   fi
+  [ "$CARD_SET" -eq 0 ] || echo "dashboard_card=$CARD_ARG"
   if [ "$RELAUNCH" -eq 1 ]; then
     preserve_relaunch_meta
   fi
@@ -2846,6 +2869,56 @@ if [ "$KIND" = secondmate ] && [ "${FM_SKIP_SECONDMATE_INHERIT:-0}" != 1 ]; then
     fi
   fi
 fi
+
+# Best-effort mechanical link to the Admiral's Fleet Dashboard (docs/dashboard.md
+# "The mechanical card link"): only when --card named a card, so the very common
+# no-card spawn never touches the dashboard at all. Every dashboard call is
+# guarded so a bad card id or an unreachable dashboard can only warn - the worker
+# above is already live, and this script must never fail (or make its caller
+# think it failed) purely because the board could not be updated. A failure still
+# gets a fleet-visible record: audit-log --fleet feeds the same discrepancy log
+# the fleet auditor already reads, so a silently-dropped link is never silent.
+spawn_dashboard_link() {
+  [ "$CARD_SET" -eq 1 ] || return 0
+  local dash home_name ref failed=0 out current_status
+  dash="$SCRIPT_DIR/fm-dashboard.sh"
+  home_name=$(basename "$FM_HOME")
+  ref="$home_name:$ID"
+
+  if out=$("$dash" ref "$CARD_ARG" "$ref" 2>&1); then
+    :
+  else
+    failed=1
+    echo "warning: dashboard card link failed for $ID -> card $CARD_ARG (ref): $out" >&2
+  fi
+
+  if out=$("$dash" agent "$CARD_ARG" "$ID" 2>&1); then
+    :
+  else
+    failed=1
+    echo "warning: dashboard card link failed for $ID -> card $CARD_ARG (agent): $out" >&2
+  fi
+
+  if [ "$failed" -eq 0 ]; then
+    if current_status=$("$dash" show "$CARD_ARG" --json 2>/dev/null | jq -r '.status // empty' 2>/dev/null) \
+       && [ "$current_status" = not_started ]; then
+      if out=$("$dash" status "$CARD_ARG" working 2>&1); then
+        echo "dashboard: linked card $CARD_ARG to $ID (ref=$ref, agent=$ID, status not_started -> working)"
+      else
+        failed=1
+        echo "warning: dashboard card link failed for $ID -> card $CARD_ARG (status working): $out" >&2
+      fi
+    else
+      echo "dashboard: linked card $CARD_ARG to $ID (ref=$ref, agent=$ID)"
+    fi
+  fi
+
+  if [ "$failed" -eq 1 ]; then
+    "$dash" audit-log --fleet "dashboard link failed for task $ID -> card $CARD_ARG at spawn; ref/agent/status may be stale" --kind error >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+spawn_dashboard_link
 
 SPAWN_DELIVERY=
 [ -z "$MODE" ] || SPAWN_DELIVERY=" mode=$MODE yolo=$YOLO"

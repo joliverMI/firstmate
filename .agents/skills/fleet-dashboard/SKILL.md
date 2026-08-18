@@ -35,6 +35,8 @@ Always pass `--prompt` (or `--prompt-file`) with his own words, unedited: that b
 `--captain` takes `firstmate`, `dj`, or `river` - whichever of the three is actually driving the work.
 New cards default to `not_started`; only set `--status` explicitly if work is already under way.
 
+When the task you are about to spawn or hand off is the thing that serves an existing card, pass `--card <card-id>` to `bin/fm-spawn.sh` instead of following up with `ref`/`agent`/`status` calls by hand: the spawn links the card's `backlog_ref`/`agent` to the task id and advances it to `working` itself, and `bin/fm-teardown.sh` later advances it to `testing` from that same recorded identity once the task actually lands - see `docs/dashboard.md` "The mechanical card link". Reach for the manual `ref`/`agent`/`status` calls below only for a card whose serving task was never spawned with `--card` (already under way before this existed, or run by hand outside `fm-spawn.sh`).
+
 ## The seven statuses
 
 Use exactly these, never a synonym, so the board's filters and the auditor's checks stay meaningful.

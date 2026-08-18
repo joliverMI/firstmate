@@ -56,6 +56,24 @@ This was a deliberate choice among three options - read live from the backlog, o
 The fleet auditor exists specifically to bound that risk: every sweep re-derives ground truth from live crew/session state and the real backlog, compares it to what each card claims, and logs a discrepancy the moment the two disagree, with a timed record of how long the check took so a silently-skipped sweep is itself visible (see "Auditor integration" below).
 An optional `backlog_ref` field on a card (`bin/fm-dashboard.sh ref <id> <home:task-id>`) lets the auditor cross-check a specific card against a specific backlog entry when one exists; a card with no ref is not treated as wrong for that - see the next section.
 
+## The mechanical card link
+
+A fleet audit once traced every status discrepancy it had ever raised to one root cause: no card carried `agent` or `backlog_ref`, so nothing connected a worker to the card it served. A status transition then only happened if someone remembered to make it by hand, and the transition needed most - the move to `testing` - fell due at exactly the moment the worker doing the remembering was being torn down. Cards with a live worker got maintained beautifully; cards whose worker had finished froze at whatever they last said.
+
+The fix establishes the link mechanically at the two points that already own a task's lifecycle, reusing the fields the board already had rather than adding a parallel path:
+
+- **`bin/fm-spawn.sh --card <card-id>`** (dispatch): when a task serves a card, passing this flag writes `dashboard_card=<card-id>` into the task's own `state/<id>.meta` - the durable identity link, established once, that teardown later consumes - and best-effort sets the card's `backlog_ref` to `<home>:<task-id>` (the exact format the fleet auditor's sweep already reads) and its `agent` to the task id, then advances a `not_started` card to `working`. A card already past `not_started` is left alone rather than overridden.
+- **`bin/fm-teardown.sh`** (completion): reads `dashboard_card=` back out of `state/<id>.meta` and, once cleanup has actually succeeded, advances that card to `testing` - the exact hand-off the audit named as most likely to be forgotten, now fired by the same script that already deletes the task's durable state rather than by a human remembering a second step.
+
+Both directions are deliberately narrow, and each narrowing is a specific decision, not an oversight:
+
+- **No `--card` is the default and stays completely silent.** Most fleet work is not on the board; a task with no card never touches the dashboard, and a missing or unreachable dashboard never blocks a spawn or a teardown - the worker is already live (or the cleanup already happened) by the time the link is attempted, so a board that will not answer cannot be allowed to fail either.
+- **A `--force` teardown never advances the card.** `--force` is the discard path (AGENTS.md hard rule 3); it can tear down work that never landed, and a discard must never read as a landing.
+- **Scout and secondmate teardowns never touch the card.** A scout's worktree is scratch by design and its report, not a card, is the deliverable; a secondmate is recorded in the secondmate registry, never as a backlog item.
+- **An already-`complete` card is never downgraded back to `testing`.** The Admiral's own approval is terminal until he reopens it from the card.
+
+A silent failure here would be the same shape as the bug this fixes, so neither direction is allowed to fail quietly. A card id that does not resolve, or a dashboard that will not answer, prints a loud `warning:` on the calling script's stderr and, whenever the dashboard answers at all, is also recorded through `bin/fm-dashboard.sh audit-log --fleet` - the same discrepancy log the fleet auditor already reads - so a link that could not fire is visible there even when nobody was watching the terminal at the time.
+
 ## Why `needs-attention` is a separate status from `testing`
 
 Both statuses put a finished-enough card in front of the Admiral, which is why they used to get conflated - and why doing so once buried several of his genuinely open decisions in a place he had no reason to check closely.
