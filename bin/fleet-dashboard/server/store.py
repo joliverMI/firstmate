@@ -8,6 +8,7 @@ fleet backlog; the board owns its own records deliberately (see docs/dashboard.m
 
 from __future__ import annotations
 
+import calendar
 import os
 import random
 import re
@@ -75,7 +76,8 @@ CREATE TABLE IF NOT EXISTS audit_runs (
   completed_at TEXT NOT NULL,
   duration_seconds REAL NOT NULL,
   tasks_checked INTEGER NOT NULL,
-  discrepancies_found INTEGER NOT NULL DEFAULT 0
+  discrepancies_found INTEGER NOT NULL DEFAULT 0,
+  forced INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -94,11 +96,37 @@ _TASK_COLUMN_MIGRATIONS = (
     ("needs_attention_reason", "TEXT"),
 )
 
+_AUDIT_RUN_COLUMN_MIGRATIONS = (
+    ("forced", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+# Settings keys used for the auditor's own liveness, distinct from the
+# audit_runs history. A tick is recorded on every timer invocation, whether or
+# not it decided a sweep was due, so a dead timer becomes a stale heartbeat
+# rather than a silently-aging "last run" that could still look recent. The
+# sweep lock is single-row state (not a table) for the same reason: one
+# auditor sweep at a time, no queue, claimed and released through ordinary
+# settings reads/writes under the existing write lock.
+SETTING_LAST_TICK_AT = "audit_last_tick_at"
+SETTING_SWEEP_RUNNING = "audit_sweep_running"
+SETTING_SWEEP_STARTED_AT = "audit_sweep_started_at"
+SETTING_SWEEP_FORCED = "audit_sweep_forced"
+
+# A claimed sweep that has not released itself within this long is treated as
+# abandoned (crashed subprocess, killed server) rather than left stuck forever
+# refusing every future tick and button press. Overridable so a test can prove
+# the reclaim path without a real 10-minute wait.
+MAX_SWEEP_SECONDS = int(os.environ.get("FM_AUDIT_MAX_SWEEP_SECONDS", "600"))
+
 _write_lock = threading.Lock()
 
 
 def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _iso_to_epoch(iso: str) -> float:
+    return calendar.timegm(time.strptime(iso, "%Y-%m-%dT%H:%M:%SZ"))
 
 
 class Store:
@@ -113,6 +141,10 @@ class Store:
             for name, coltype in _TASK_COLUMN_MIGRATIONS:
                 if name not in existing_columns:
                     conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} {coltype}")
+            existing_run_columns = {row[1] for row in conn.execute("PRAGMA table_info(audit_runs)")}
+            for name, coltype in _AUDIT_RUN_COLUMN_MIGRATIONS:
+                if name not in existing_run_columns:
+                    conn.execute(f"ALTER TABLE audit_runs ADD COLUMN {name} {coltype}")
             conn.execute(
                 "INSERT OR IGNORE INTO settings(key, value) VALUES ('audit_interval_minutes', ?)",
                 (str(DEFAULT_AUDIT_INTERVAL_MINUTES),),
@@ -312,6 +344,20 @@ class Store:
             cur.execute("UPDATE tasks SET updated_at = ? WHERE id = ?", (ts, task_id))
         return self.get_task(task_id)
 
+    # ---- settings (key/value) ----
+
+    def _get_setting(self, cur: sqlite3.Cursor, key: str) -> str | None:
+        cur.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        row = cur.fetchone()
+        return row["value"] if row else None
+
+    def _set_setting(self, cur: sqlite3.Cursor, key: str, value: str) -> None:
+        cur.execute(
+            "INSERT INTO settings(key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+
     # ---- audit ----
 
     def get_audit_interval_minutes(self) -> int:
@@ -341,14 +387,62 @@ class Store:
             )
 
     def record_audit_run(self, duration_seconds: float, tasks_checked: int,
-                          discrepancies_found: int = 0, started_at: str | None = None) -> None:
+                          discrepancies_found: int = 0, started_at: str | None = None,
+                          forced: bool = False) -> None:
+        # A completed run is the normal, successful way a claimed sweep ends,
+        # so recording one also releases the lock - see release_audit_sweep
+        # for the separate path a sweep that errors out uses instead.
         with self._cursor(write=True) as cur:
             cur.execute(
                 """INSERT INTO audit_runs
-                   (started_at, completed_at, duration_seconds, tasks_checked, discrepancies_found)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (started_at, now_iso(), duration_seconds, tasks_checked, discrepancies_found),
+                   (started_at, completed_at, duration_seconds, tasks_checked, discrepancies_found, forced)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (started_at, now_iso(), duration_seconds, tasks_checked, discrepancies_found, int(forced)),
             )
+            self._set_setting(cur, SETTING_SWEEP_RUNNING, "0")
+
+    def record_audit_tick(self) -> str:
+        ts = now_iso()
+        with self._cursor(write=True) as cur:
+            self._set_setting(cur, SETTING_LAST_TICK_AT, ts)
+        return ts
+
+    def claim_audit_sweep(self, forced: bool = False) -> dict:
+        """Atomically claim the single sweep slot, or report who already holds it.
+
+        A claim held past MAX_SWEEP_SECONDS is treated as abandoned (the
+        subprocess that held it crashed or was killed without releasing) and
+        is silently reclaimed rather than left stuck refusing every future
+        tick and button press.
+        """
+        ts = now_iso()
+        with self._cursor(write=True) as cur:
+            running = self._get_setting(cur, SETTING_SWEEP_RUNNING) == "1"
+            started_at = self._get_setting(cur, SETTING_SWEEP_STARTED_AT)
+            if running and started_at:
+                age = _iso_to_epoch(ts) - _iso_to_epoch(started_at)
+                if age > MAX_SWEEP_SECONDS:
+                    running = False
+            if running:
+                return {
+                    "claimed": False,
+                    "running_since": started_at,
+                    "forced": self._get_setting(cur, SETTING_SWEEP_FORCED) == "1",
+                }
+            self._set_setting(cur, SETTING_SWEEP_RUNNING, "1")
+            self._set_setting(cur, SETTING_SWEEP_STARTED_AT, ts)
+            self._set_setting(cur, SETTING_SWEEP_FORCED, "1" if forced else "0")
+        return {"claimed": True, "started_at": ts, "forced": forced}
+
+    def release_audit_sweep(self) -> None:
+        """Release a claimed sweep slot without recording a completed run.
+
+        Used when a sweep fails before it can call record_audit_run, so a
+        failed check never leaves the board looking like it is still sweeping
+        (or, worse, permanently locked out of ever sweeping again).
+        """
+        with self._cursor(write=True) as cur:
+            self._set_setting(cur, SETTING_SWEEP_RUNNING, "0")
 
     def get_audit_status(self, log_limit: int = 100) -> dict:
         with self._cursor() as cur:
@@ -361,8 +455,15 @@ class Store:
                 (log_limit,),
             )
             log = [dict(r) for r in cur.fetchall()]
+            last_tick_at = self._get_setting(cur, SETTING_LAST_TICK_AT)
+            running = self._get_setting(cur, SETTING_SWEEP_RUNNING) == "1"
+            started_at = self._get_setting(cur, SETTING_SWEEP_STARTED_AT)
+            forced = self._get_setting(cur, SETTING_SWEEP_FORCED) == "1"
         return {
             "last_run": dict(last_run) if last_run else None,
             "log": log,
             "interval_minutes": self.get_audit_interval_minutes(),
+            "last_tick_at": last_tick_at,
+            "sweep_lock": {"running": running, "started_at": started_at if running else None,
+                            "forced": forced if running else False},
         }
