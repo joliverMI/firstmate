@@ -35,10 +35,13 @@ Always pass `--prompt` (or `--prompt-file`) with his own words, unedited: that b
 `--captain` takes `firstmate`, `dj`, or `river` - whichever of the three is actually driving the work.
 New cards default to `not_started`; only set `--status` explicitly if work is already under way.
 
-## The six statuses
+## The seven statuses
 
-Use exactly these, never a synonym, so the board's filters and the auditor's checks stay meaningful:
+Use exactly these, never a synonym, so the board's filters and the auditor's checks stay meaningful.
 
+`needs-attention` and `testing` are easy to conflate and are opposite in the one way that matters: **`testing` is optional to him; `needs-attention` is blocking on him.** If he never looks at a `testing` card, nothing is lost - the work is otherwise complete. If he never looks at a `needs-attention` card, the work is stuck. Put a card in `needs-attention` only when it genuinely cannot proceed without him - a decision, an answer, a physical action, something only he can do or judge. A card that is simply done and could use his eyes stays in `testing`.
+
+- `needs-attention` - the work cannot proceed without him: a decision, an answer, a physical action, anything only he can supply. Use `--reason` to say what, briefly - that text renders directly on the card so he can act without opening it. This is the loudest status on the board and sorts first; do not use it for routine progress or for something an agent could resolve on its own.
 - `not-started` - received, nothing begun yet.
 - `working` - an agent is actively on it right now, not "queued" or "about to start."
 - `paused` - the Admiral paused it. Only he pauses a task; do not set this because a crew went idle for another reason - that is a stalled task, not a paused one, and belongs in a status update or the auditor's discrepancy log instead.
@@ -73,11 +76,12 @@ If you are the fleet auditor (or standing in for it), your job every cycle is to
 1. `bin/fm-dashboard.sh list --status working --json` - for each, confirm a real agent is actually on it (live crew/session state, not the card's own say-so). Anything claiming `working` with no corroborating live activity is a genuine discrepancy.
 2. `bin/fm-dashboard.sh list --status waiting --json` - confirm the blocker is still real. If a `waiting_on_id` card is already `complete`, or the external condition it names has cleared, that is a discrepancy: the card is stale, not honestly waiting.
 3. `bin/fm-dashboard.sh list --status paused --json` - confirm each is still genuinely paused by the Admiral's own word, not just quiet. If one has been unpaused, confirm it is *actually being worked* - an unpaused-but-idle task is exactly the failure this check exists to catch.
-4. For anything you log as a discrepancy, use `bin/fm-dashboard.sh audit-log <id> "<what you found>"`. Be concrete: state what the card claims and what you actually observed, so firstmate can act without re-deriving it.
-5. If you cannot verify a card at all (no linked reference, no way to check from where you sit), that is **not** a discrepancy - do not log it as one. Silence on an unverifiable card is correct; a false "wrong" trains the Admiral to ignore the log exactly the way an always-red marker already has once.
-6. When the sweep finishes, always call `bin/fm-dashboard.sh audit-run --duration-seconds <n> --checked <n> --discrepancies <n>`, even when nothing was wrong. This is what lets the page show "clean" as a real, timed answer instead of an absence.
-7. If the sweep itself fails partway (a source you needed was unreadable, a check errored out), log that with `--kind error` via `audit-log --fleet "<what broke>"` rather than silently posting a shorter, quieter run. A failed check must never look identical to a clean one.
-8. Read the current cadence with `bin/fm-dashboard.sh audit-interval get` at the start of each cycle rather than assuming the last-known value; the Admiral can change it from the page at any time.
+4. `bin/fm-dashboard.sh list --status needs-attention --json` - check each `needs_attention` card's own `show <id>` for how long it has actually sat in that status (its status history has the timestamp it last changed to `needs_attention`). **Age itself is the finding here, asymmetrically with every other status**: a `needs-attention` card that has sat for hours with no reply from him means he was not asked clearly, or the ask never reached him - log it even when the card's claim is otherwise accurate. A `testing` card sitting for the same length of time is not a discrepancy at all - `testing` is optional to him by design, so its age proves nothing. Do not apply this age check to any status but `needs-attention`.
+5. For anything you log as a discrepancy, use `bin/fm-dashboard.sh audit-log <id> "<what you found>"`. Be concrete: state what the card claims and what you actually observed, so firstmate can act without re-deriving it.
+6. If you cannot verify a card at all (no linked reference, no way to check from where you sit), that is **not** a discrepancy - do not log it as one. Silence on an unverifiable card is correct; a false "wrong" trains the Admiral to ignore the log exactly the way an always-red marker already has once.
+7. When the sweep finishes, always call `bin/fm-dashboard.sh audit-run --duration-seconds <n> --checked <n> --discrepancies <n>`, even when nothing was wrong. This is what lets the page show "clean" as a real, timed answer instead of an absence.
+8. If the sweep itself fails partway (a source you needed was unreadable, a check errored out), log that with `--kind error` via `audit-log --fleet "<what broke>"` rather than silently posting a shorter, quieter run. A failed check must never look identical to a clean one.
+9. Read the current cadence with `bin/fm-dashboard.sh audit-interval get` at the start of each cycle rather than assuming the last-known value; the Admiral can change it from the page at any time.
 
 ## What not to do
 

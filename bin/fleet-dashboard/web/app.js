@@ -11,8 +11,9 @@ import htm from "./vendor/htm.module.js";
 const { useState, useEffect, useCallback, useMemo, useRef } = React;
 const html = htm.bind(React.createElement);
 
-const STATUSES = ["not_started", "working", "paused", "waiting", "testing", "complete"];
+const STATUSES = ["needs_attention", "not_started", "working", "paused", "waiting", "testing", "complete"];
 const STATUS_META = {
+  needs_attention: { label: "Needs Attention" },
   not_started: { label: "Not Started" },
   working: { label: "Working" },
   paused: { label: "Paused" },
@@ -121,6 +122,11 @@ function Card({ task, allTasks, onOpen, onToggleStar, onQuickStatus }) {
         <${StatusPill} status=${task.status} />
         <${CaptainPill} captain=${task.captain} />
       </div>
+      ${task.status === "needs_attention" ? html`
+        <div class="needs-attention-banner">
+          ⚑ ${task.needs_attention_reason || "Needs his decision or action to continue."}
+        </div>
+      ` : null}
       ${task.status === "waiting" ? html`
         <div>
           ${waitingOn
@@ -574,8 +580,12 @@ function App() {
     return sorted;
   }, [tasks, filters]);
 
-  const favorites = useMemo(() => filtered.filter((t) => t.starred), [filtered]);
-  const rest = useMemo(() => filtered.filter((t) => !t.starred), [filtered]);
+  // Needs Attention is pulled out of every other section - blocking-on-him
+  // work must be the first thing he sees, never buried among starred or
+  // routine cards regardless of the active sort or filter.
+  const needsAttention = useMemo(() => filtered.filter((t) => t.status === "needs_attention"), [filtered]);
+  const favorites = useMemo(() => filtered.filter((t) => t.starred && t.status !== "needs_attention"), [filtered]);
+  const rest = useMemo(() => filtered.filter((t) => !t.starred && t.status !== "needs_attention"), [filtered]);
 
   const counts = useMemo(() => {
     const status = {}, captain = {};
@@ -597,6 +607,19 @@ function App() {
       </div>
 
       <${ConnBanner} error=${connError} lastOkAt=${lastOkAt} />
+
+      ${needsAttention.length > 0 ? html`
+        <h2 class="section needs-attention-section">Needs Attention <span class="count">(${needsAttention.length})</span></h2>
+        <div class="grid needs-attention-grid">
+          ${needsAttention.map((t) => html`
+            <${Card}
+              key=${t.id} task=${t} allTasks=${tasks}
+              onOpen=${setSelectedId} onToggleStar=${toggleStar}
+              onQuickStatus=${(task, status) => setStatus(task.id, status)}
+            />
+          `)}
+        </div>
+      ` : null}
 
       ${favorites.length > 0 ? html`
         <h2 class="section">Favorites <span class="count">(${favorites.length})</span></h2>
