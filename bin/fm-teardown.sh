@@ -70,6 +70,19 @@
 #   check specifically, that means accepting the PR will need to be merged or closed
 #   by hand, outside fm-pr-merge.sh's guarded path).
 #
+# Admiral's Fleet Dashboard card link (docs/dashboard.md "The mechanical card
+# link"): when the task's state/<id>.meta carries dashboard_card=<card-id> (written
+# by fm-spawn.sh --card at dispatch), a ship task whose landed-work checks actually
+# ran - not --force, which can discard rather than land - advances that card to
+# testing once cleanup succeeds, unless it is already complete (an Admiral approval
+# is never downgraded back to testing). Scout and secondmate teardowns never touch
+# the card: a scout's worktree is scratch by design and a secondmate is not a
+# backlog item. No card recorded is the normal case and this step is then a no-op.
+# Every dashboard call is guarded exactly like fm-spawn.sh's own link: a missing
+# card, an unreachable dashboard, or any other failure only warns on stderr and
+# best-effort records `fm-dashboard.sh audit-log --fleet` - it never turns an
+# already-complete teardown into a failure.
+#
 # Transient / stale worktree git lock recovery (teardown-lock-race): a crew process
 # killed mid-git-operation can leave a .git/worktrees/<wt>/index.lock (or, for a
 # non-linked worktree, .git/index.lock) that makes `treehouse return --force` fail
@@ -462,6 +475,7 @@ if [ -z "$BUSY_GEN" ]; then
 fi
 ORCA_WORKTREE_ID=$(fm_meta_get "$META" orca_worktree_id)
 ORCA_PATH_MATCH_VERIFIED=0
+DASHBOARD_CARD=$(fm_meta_get "$META" dashboard_card)
 
 KIND=$(grep '^kind=' "$META" | cut -d= -f2- || true)
 [ -n "$KIND" ] || KIND=ship
@@ -947,6 +961,41 @@ backlog_refresh_reminder() {
   else
     printf '%s\n' "Backlog: $ID just finished. Update data/backlog.md - move $ID to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due."
   fi
+}
+
+# Consumes the identity fm-spawn.sh --card established at dispatch
+# (state/<id>.meta's dashboard_card=), advancing that Admiral's Fleet Dashboard
+# card to testing now that cleanup has actually succeeded. See docs/dashboard.md
+# "The mechanical card link" for the full design; this function only implements
+# it. No card recorded, a scout or secondmate teardown, or a --force teardown
+# (which can discard rather than land) are all silent no-ops - none of those is
+# an error. A card already complete is left alone rather than downgraded back to
+# testing. Every dashboard call is guarded exactly like fm-spawn.sh's own link:
+# a failure only warns on stderr and best-effort records
+# `fm-dashboard.sh audit-log --fleet`, so cleanup that has already finished is
+# never turned into a failure by a board that will not answer.
+dashboard_advance_card() {
+  [ -n "$DASHBOARD_CARD" ] || return 0
+  case "$KIND" in scout | secondmate) return 0 ;; esac
+  [ "$FORCE" != "--force" ] || return 0
+  local dash out current_status
+  dash="$FM_ROOT/bin/fm-dashboard.sh"
+  if ! current_status=$("$dash" show "$DASHBOARD_CARD" --json 2>&1 | jq -r '.status // empty' 2>/dev/null) \
+     || [ -z "$current_status" ]; then
+    echo "warning: dashboard card advance failed for $ID -> card $DASHBOARD_CARD (show): $current_status" >&2
+    "$dash" audit-log --fleet "dashboard card advance failed for task $ID -> card $DASHBOARD_CARD at teardown; status may be stale" --kind error >/dev/null 2>&1 || true
+    return 0
+  fi
+  if [ "$current_status" = complete ]; then
+    return 0
+  fi
+  if out=$("$dash" status "$DASHBOARD_CARD" testing 2>&1); then
+    echo "dashboard: advanced card $DASHBOARD_CARD to testing for $ID"
+  else
+    echo "warning: dashboard card advance failed for $ID -> card $DASHBOARD_CARD (status testing): $out" >&2
+    "$dash" audit-log --fleet "dashboard card advance failed for task $ID -> card $DASHBOARD_CARD at teardown; status may be stale" --kind error >/dev/null 2>&1 || true
+  fi
+  return 0
 }
 
 path_is_ancestor_of() {
@@ -2602,4 +2651,5 @@ if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only 
   "$FM_ROOT/bin/fm-fleet-sync.sh" "$PROJ" || true
 fi
 echo "teardown $ID complete (window $T, worktree $WT)"
+dashboard_advance_card
 backlog_refresh_reminder
