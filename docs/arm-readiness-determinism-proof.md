@@ -26,7 +26,12 @@ At the time of the diagnosis the case slept a fixed 120ms between starting the f
 That await drains the in-flight attempt before the flip: both callers now evaluate the *same* foreign lock, and caller 1's `finally` clears `launchInFlight` in an earlier microtask than caller 2's resumption, so the flip is always evaluated by a fresh attempt.
 The consequence is narrow and is only about which artifact can serve as the witness.
 Cause A is real, was demonstrated when it was diagnosed, and is fixed here; what this branch's inherited test can no longer do is re-demonstrate it, which is why the race is instead pinned by a new test built for exactly that purpose - `test_opencode_primary_watch_plugin_requires_session_lock`'s `ps`-shim rewrite, which forces the lock to change while a caller is pinned mid-evaluation.
-None of this reassigns the lock assertion to cause B: its pre-change wait was a 5s budget against a `bash -lc` start measured at ~1150ms and at most ~1740ms, so unlike the two Pi cases below it had ample headroom and cause B is not what was failing it.
+The lock assertion still belongs to cause A, but on the reproduction above rather than on a budget-headroom argument.
+An earlier draft of this record also excluded cause B from it by arguing that its pre-change 5s wait had ample headroom over a `bash -lc` start of ~1150ms (at most ~1740ms).
+That figure was inherited from `main`'s comment rather than re-measured at this record's own load level, and it understates this host.
+Re-measured at the same 5x oversubscription the loaded phase below uses (160 busy loops on 32 cores, 1-minute load average ~151, 30 samples), a loaded `bash -lc true` is min 1096ms, median ~1620ms, max 4246ms, with two samples above 3.9s; idle matches `main`'s reading at ~131ms median.
+Against a real 4246ms worst case a 5s budget leaves ~18% headroom, not ample, so that secondary exclusion is withdrawn: budget arithmetic cannot rule cause B out as a contributor to the lock assertion.
+It does not need to. The attribution rests on the direct reproduction - reverting the `ensureArm` fix fails that assertion deterministically - and cause B is not what the fix for it addresses.
 
 **Cause B - the test measured something it did not intend to.**
 Both adapters spawn their arm child through `bash -lc`.
@@ -35,13 +40,14 @@ That unbounded, machine-specific, load-dependent cost sat inside the tight readi
 
 One residual instance of this shape survives, deliberately, in exactly one case.
 `test_watch_arm_login_shell_default_reaches_the_arm_child` exists to verify that the production default still reaches the arm child, so its `login` branch must pay the real `/etc/profile` cost and then wait a bounded 10s for the marker row - a bounded wait on an unbounded cost, which is the very shape the rest of this change removes.
-It cannot be removed there without defeating what the case verifies; the bound is sized well above the ~1740ms worst case measured above, but it is a headroom argument rather than a guarantee, and it applies to that one case only.
+It cannot be removed there without defeating what the case verifies; the bound is ~2.4x the 4246ms worst case re-measured above, but it is a headroom argument rather than a guarantee, and it applies to that one case only.
 
 ## Base state (already on `main` before this change)
 
 `main` independently raised `FM_PI_ARM_READY_TIMEOUT_MS` / `FM_OPENCODE_ARM_READY_TIMEOUT_MS` from 250ms to 2000ms and rewrote `test_pi_session_transition_generation_owner`'s fixture to write its arm-log row before the pid-file row that its waiters gate on, both landed independently of this change.
 `882004e` on `main` also replaced the lock test's fixed 120ms sleep with a direct `coordinator.ensureArmed(...)` await, again independently of this change; that is what stops this branch's inherited copy of that case from reconstructing cause A, as described above.
 None of those addresses cause A: `ensureArm` still reused an in-flight attempt's result unconditionally, and its own comment on the timeout raise records a measured worst case of ~1740ms against the new 2000ms budget under contention - narrower headroom, not a removed confound.
+The re-measurement above sharpens that second point rather than softening it: at 4246ms the loaded worst case sits *above* the raised 2000ms budget outright, so the raise narrowed the confound without removing it, which is what the opt-out below does instead.
 This change does not touch any of those base fixes and does not re-litigate the timeout value; all are kept exactly as `main` has them.
 
 ## What this change adds
@@ -93,3 +99,15 @@ Two regression tests were added inside the arm-readiness suite itself; the exist
 | Total | | **40/40** |
 
 No run was short of clean, and no assertion failed in either phase.
+
+### Independent checks run against the same tree and host
+
+- **Pre-change baseline control.** The base commit's copy of the suite (`git show 45bd292:tests/fm-pi-watch-extension.test.sh`) was run on this same tree and host to confirm the red behaviour is reproducible here at all: **0/10 passed under the 5x load above**, and **3/12 passed at 1.5x load** (48 busy loops, 1-minute load average ~51).
+  That reproduces the reported flakiness - a different assertion failing per run - but with one nuance worth stating rather than glossing: on this host the load exposed a *different subset* of the suite than the four assertions in the original report.
+  The four that failed across those 22 baseline runs were `Pi redundant tool call must remain an ownership-based no-op with repair-only guidance` (8 runs), `Pi established clean closes must honor the continuity retry limit` (5), `OpenCode established clean closes must honor the continuity retry limit` (4), and `Pi extension must surface an external healthy watcher as an owned-wake failure` (2).
+  So this is evidence that the pre-change suite is load-sensitive on this host and that the post-change suite is not; it is not a re-observation of the four originally-reported assertions specifically, and the cause attributions above do not rest on it.
+- **Each regression-table claim reproduced by reverting its fix.** Every "fails against" claim in the table above was checked by reverting that one fix in turn, confirming the expected failure, then restoring and confirming the suite clean again, rather than by inspection:
+  - pre-change unconditional `ensureArm` in-flight reuse - `test_opencode_primary_watch_plugin_requires_session_lock` fails on its 20s settling guard with "the reacquired-lock arm attempt never settled", while `test_opencode_watch_arm_coalesces_callers_on_an_unchanged_lock` still passes, confirming the coalescing case does not itself catch cause A;
+  - the rejected fully-serialized variant - the lock case deadlocks on the same guard and the coalescing case fails with "two callers on an unchanged lock must share one evaluation, got 2";
+  - the `child.stdin.on("error")` EPIPE guard removed from `.opencode/plugins/lib/fm-operational-input.js` - the host node process dies with an unhandled EPIPE and `test_adapter_surfaces_encoder_exit_instead_of_killing_the_host` reports the host as dead.
+- **Login-shell cost re-measurement.** The loaded `bash -lc` figure the residual-bound argument cites was re-measured here rather than inherited; see the numbers under cause A above.

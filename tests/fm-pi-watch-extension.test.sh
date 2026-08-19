@@ -29,8 +29,12 @@ export NODE_NO_WARNINGS=1
 # .opencode/plugins/fm-primary-watch-arm.js - and both default that flag to
 # `-lc`, a LOGIN shell, so an arm left on that default pays for /etc/profile and
 # /etc/profile.d before the fixture's fm-watch-arm.sh runs its first line.
-# Measured on this repo's own dev host: `bash -lc true` is ~140ms idle and
-# ~1150ms (max 1740ms) under CPU contention, against ~1ms for `bash -c true`.
+# Measured on this repo's own dev host: `bash -lc true` is ~131ms idle (min
+# 129ms / max 140ms over 20 samples). Under CPU contention it was re-measured
+# at 5x oversubscription (160 busy loops on 32 cores, 1-minute load average
+# ~151, 30 samples): min 1096ms, median ~1620ms, max 4246ms. Those loaded
+# figures supersede an earlier ~1150ms (max 1740ms) reading taken at an
+# unrecorded load level. `bash -c true` is ~1ms idle and 4-20ms loaded.
 # The earlier 250ms budget therefore expired BEFORE the successor arm had
 # appended its `arm=<pid>` row, the extension SIGTERMed a process that had not
 # run yet, and the row it should have recorded was lost - which is a lost
@@ -1721,8 +1725,9 @@ const markerLogged = () => existsSync(process.env.FM_ARM_LOG)
 // A bounded wait on an inherently unbounded cost, which this one case cannot
 // avoid: it exists to exercise the real production default rather than the
 // opt-out, so its login branch must pay whatever /etc/profile costs here. The
-// 10s bound sits well above the ~1740ms worst case measured for a loaded
-// `bash -lc` start, but no bound can be a hard guarantee on every machine.
+// 10s bound is ~2.4x the 4246ms worst case re-measured for a loaded `bash -lc`
+// start at 5x CPU oversubscription (median ~1620ms), but no bound can be a
+// hard guarantee on every machine.
 for (let i = 0; i < 500 && !markerLogged(); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
@@ -1764,8 +1769,9 @@ const markerLogged = () => existsSync(process.env.FM_ARM_LOG)
 // A bounded wait on an inherently unbounded cost, which this one case cannot
 // avoid: it exists to exercise the real production default rather than the
 // opt-out, so its login branch must pay whatever /etc/profile costs here. The
-// 10s bound sits well above the ~1740ms worst case measured for a loaded
-// `bash -lc` start, but no bound can be a hard guarantee on every machine.
+// 10s bound is ~2.4x the 4246ms worst case re-measured for a loaded `bash -lc`
+// start at 5x CPU oversubscription (median ~1620ms), but no bound can be a
+// hard guarantee on every machine.
 for (let i = 0; i < 500 && !markerLogged(); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
