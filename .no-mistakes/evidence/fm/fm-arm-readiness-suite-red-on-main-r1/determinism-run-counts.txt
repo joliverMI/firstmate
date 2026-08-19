@@ -1,0 +1,63 @@
+Arm-readiness suite determinism - independent re-run (test phase, 2026-08-19)
+Host: 32 cores, node v22.23.2, commit 9c67804 (branch fm/fm-arm-readiness-suite-red-on-main-r1)
+Command per run: bash tests/fm-pi-watch-extension.test.sh  (32 assertions per run)
+
+== Phase 1: IDLE (1-min load average 0.9 at phase start) ==
+run 1: PASS
+run 2: PASS
+run 3: PASS
+run 4: PASS
+run 5: PASS
+run 6: PASS
+run 7: PASS
+run 8: PASS
+run 9: PASS
+run 10: PASS
+run 11: PASS
+run 12: PASS
+run 13: PASS
+run 14: PASS
+run 15: PASS
+run 16: PASS
+run 17: PASS
+run 18: PASS
+run 19: PASS
+run 20: PASS
+TAG=idle PASS=20 FAIL=0 TOTAL=20
+
+== Phase 2: LOADED (160 busy loops on 32 cores = 5x oversubscription; 1-min load average 141 -> 162) ==
+run 1: PASS
+run 2: PASS
+run 3: PASS
+run 4: PASS
+run 5: PASS
+run 6: PASS
+run 7: PASS
+run 8: PASS
+run 9: PASS
+run 10: PASS
+run 11: PASS
+run 12: PASS
+run 13: PASS
+run 14: PASS
+run 15: PASS
+run 16: PASS
+run 17: PASS
+run 18: PASS
+run 19: PASS
+run 20: PASS
+TAG=loaded PASS=20 FAIL=0 TOTAL=20
+
+== Control: PRE-CHANGE suite copy (git show 45bd292:tests/fm-pi-watch-extension.test.sh), same host, same 5x load ==
+run 1: FAIL
+not ok - Pi redundant tool call must remain an ownership-based no-op with repair-only guidance: expected exit 0, got 1
+run 2: FAIL
+not ok - Pi redundant tool call must remain an ownership-based no-op with repair-only guidance: expected exit 0, got 1
+run 3: FAIL
+not ok - Pi redundant tool call must remain an ownership-based no-op with repair-only guidance: expected exit 0, got 1
+run 4: FAIL
+not ok - Pi redundant tool call must remain an ownership-based no-op with repair-only guidance: expected exit 0, got 1
+TAG=baseline PASS=0 FAIL=4 TOTAL=4
+
+TOTAL post-change: 40/40 passed, 0 failed (20 idle + 20 loaded).
+Pre-change control under the same load: 0/4 passed, 4 failed.

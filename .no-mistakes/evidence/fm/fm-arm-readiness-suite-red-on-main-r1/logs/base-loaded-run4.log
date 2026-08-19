@@ -1,0 +1,1 @@
+not ok - Pi extension must surface an external healthy watcher as an owned-wake failure: expected exit 0, got 1

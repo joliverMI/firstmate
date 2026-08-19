@@ -1,0 +1,8 @@
+ok - operational input: every current generic envelope retains its exact structured kind
+ok - operational input: the established from-firstmate carrier remains structurally typed and byte-compatible
+ok - operational input: untyped landed FIRSTMATE_OP transcripts are explicit legacy-operational input
+ok - operational input: historical prose compatibility is isolated from current parsing
+ok - operational input: quoted, ASCII-only, arbitrary-U+2063, altered-legacy, and label-only near misses stay genuine
+ok - operational input: the OpenCode adapter constructs through the canonical owner
+ok - operational input: an encoder that exits before reading fails one call, not the host session
+ok - operational input: current construction rejects legacy kinds and empty bodies

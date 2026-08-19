@@ -1,0 +1,4 @@
+== idle: 20 x bash -lc true ==
+min=129 median=131 max=140
+== idle: 20 x bash -c true ==
+min=1 median=1 max=1

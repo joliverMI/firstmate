@@ -1,0 +1,12 @@
+phase=base-loaded runs=10 start_loadavg=53.28 77.98 85.88
+phase=base-loaded run=01 rc=1 assertions_ok=2 secs=10.0 loadavg1=70.23
+phase=base-loaded run=02 rc=1 assertions_ok=2 secs=9.7 loadavg1=77.74
+phase=base-loaded run=03 rc=1 assertions_ok=2 secs=8.7 loadavg1=91.01
+phase=base-loaded run=04 rc=1 assertions_ok=0 secs=5.9 loadavg1=96.69
+phase=base-loaded run=05 rc=1 assertions_ok=2 secs=8.0 loadavg1=106.97
+phase=base-loaded run=06 rc=1 assertions_ok=0 secs=8.3 loadavg1=111.38
+phase=base-loaded run=07 rc=1 assertions_ok=2 secs=9.5 loadavg1=119.47
+phase=base-loaded run=08 rc=1 assertions_ok=2 secs=9.6 loadavg1=126.40
+phase=base-loaded run=09 rc=1 assertions_ok=2 secs=8.4 loadavg1=129.25
+phase=base-loaded run=10 rc=1 assertions_ok=2 secs=11.5 loadavg1=134.51
+PHASE base-loaded RESULT: passed=0 failed=10 of 10  end_loadavg=134.51 98.08 92.29

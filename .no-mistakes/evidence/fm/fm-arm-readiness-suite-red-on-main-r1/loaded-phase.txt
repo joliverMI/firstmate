@@ -1,0 +1,22 @@
+phase=loaded runs=20 start_loadavg=46.02 11.01 4.38
+phase=loaded run=01 rc=0 assertions_ok=32 secs=54.7 loadavg1=113.15
+phase=loaded run=02 rc=0 assertions_ok=32 secs=51.6 loadavg1=139.16
+phase=loaded run=03 rc=0 assertions_ok=32 secs=55.2 loadavg1=153.56
+phase=loaded run=04 rc=0 assertions_ok=32 secs=51.5 loadavg1=157.51
+phase=loaded run=05 rc=0 assertions_ok=32 secs=54.7 loadavg1=160.81
+phase=loaded run=06 rc=0 assertions_ok=32 secs=54.2 loadavg1=161.28
+phase=loaded run=07 rc=0 assertions_ok=32 secs=53.3 loadavg1=162.80
+phase=loaded run=08 rc=0 assertions_ok=32 secs=54.1 loadavg1=163.01
+phase=loaded run=09 rc=0 assertions_ok=32 secs=53.4 loadavg1=163.10
+phase=loaded run=10 rc=0 assertions_ok=32 secs=54.1 loadavg1=163.16
+phase=loaded run=11 rc=0 assertions_ok=32 secs=52.3 loadavg1=162.95
+phase=loaded run=12 rc=0 assertions_ok=32 secs=55.1 loadavg1=162.63
+phase=loaded run=13 rc=0 assertions_ok=32 secs=51.0 loadavg1=162.52
+phase=loaded run=14 rc=0 assertions_ok=32 secs=54.5 loadavg1=162.95
+phase=loaded run=15 rc=0 assertions_ok=32 secs=51.5 loadavg1=162.57
+phase=loaded run=16 rc=0 assertions_ok=32 secs=54.4 loadavg1=162.69
+phase=loaded run=17 rc=0 assertions_ok=32 secs=54.6 loadavg1=162.84
+phase=loaded run=18 rc=0 assertions_ok=32 secs=50.8 loadavg1=163.18
+phase=loaded run=19 rc=0 assertions_ok=32 secs=53.9 loadavg1=162.67
+phase=loaded run=20 rc=0 assertions_ok=32 secs=52.5 loadavg1=162.68
+PHASE loaded RESULT: passed=20 failed=0 of 20  end_loadavg=162.68 157.27 108.30

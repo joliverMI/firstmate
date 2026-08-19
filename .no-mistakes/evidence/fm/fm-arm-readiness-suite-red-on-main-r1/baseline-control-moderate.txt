@@ -1,0 +1,14 @@
+phase=base-moderate runs=12 start_loadavg=63.29 83.40 87.56
+phase=base-moderate run=01 rc=1 assertions_ok=26 secs=89.0 loadavg1=54.31
+phase=base-moderate run=02 rc=0 assertions_ok=30 secs=94.5 loadavg1=51.21
+phase=base-moderate run=03 rc=1 assertions_ok=9 secs=37.2 loadavg1=50.62
+phase=base-moderate run=04 rc=0 assertions_ok=30 secs=91.6 loadavg1=52.04
+phase=base-moderate run=05 rc=1 assertions_ok=26 secs=89.8 loadavg1=51.47
+phase=base-moderate run=06 rc=1 assertions_ok=26 secs=90.7 loadavg1=50.92
+phase=base-moderate run=07 rc=1 assertions_ok=9 secs=36.8 loadavg1=50.77
+phase=base-moderate run=08 rc=0 assertions_ok=30 secs=91.7 loadavg1=50.33
+phase=base-moderate run=09 rc=1 assertions_ok=9 secs=36.7 loadavg1=50.23
+phase=base-moderate run=10 rc=1 assertions_ok=9 secs=37.0 loadavg1=50.25
+phase=base-moderate run=11 rc=1 assertions_ok=9 secs=38.9 loadavg1=50.55
+phase=base-moderate run=12 rc=1 assertions_ok=26 secs=88.7 loadavg1=51.46
+PHASE base-moderate RESULT: passed=3 failed=9 of 12  end_loadavg=51.46 53.51 67.05

@@ -1,0 +1,10 @@
+ok - Pi extension reports external healthy watcher output
+ok - Pi custom tool exposes repair-only metadata and returns automatic-continuation guidance
+ok - Pi redundant tool call returns ownership guidance and spawns no second child
+ok - Pi scheduled retry remains extension-owned after another tool call
+ok - Pi actionable close starts one successor before wake delivery settles
+ok - Pi hung successor falls back to one typed actionable wake
+ok - Pi unretired successor falls back without an overlapping retry
+ok - Pi late unretired closes resume classified supervision
+ok - Pi clean empty close triggers a bounded continuity retry
+not ok - Pi established clean closes must honor the continuity retry limit: expected exit 0, got 1

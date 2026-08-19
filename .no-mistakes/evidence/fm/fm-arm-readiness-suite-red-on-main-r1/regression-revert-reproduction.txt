@@ -1,0 +1,32 @@
+Regression-table claims re-reproduced by reverting each fix (test phase, 2026-08-19, idle host)
+
+== 1. Cause A: revert ensureArm to the pre-change unconditional in-flight reuse ==
+   (.opencode/plugins/fm-primary-watch-arm.js: 'if (launchInFlight && launchInFlightLock === currentLock)' -> 'if (launchInFlight)')
+   $ bash tests/fm-pi-watch-extension.test.sh   -> exit 1
+--- output ---
+file:///home/joliv/.no-mistakes/worktrees/fc9915001958/01M0DK5YFW9RYBPHARK8YE2V4J/[eval1]:27
+      const timer = setTimeout(() => reject(new Error(`${label} never settled`)), 20000);
+                                            ^
+
+Error: the reacquired-lock arm attempt never settled
+    at Timeout._onTimeout (file:///home/joliv/.no-mistakes/worktrees/fc9915001958/01M0DK5YFW9RYBPHARK8YE2V4J/[eval1]:27:45)
+    at listOnTimeout (node:internal/timers:585:17)
+    at process.processTimers (node:internal/timers:521:7)
+
+Node.js v22.23.2
+not ok - OpenCode watch plugin must arm only when this session owns the fleet lock: expected exit 0, got 1
+
+   The coalescing case run on its own against that SAME reverted code still passes,
+   confirming the doc's nuance that it does not itself catch cause A:
+   ok - OpenCode watcher plugin coalesces callers that share a lock premise   (exit 0)
+
+   After restoring the fix: suite exit 0 (and 40/40 across the idle+loaded phases).
+
+== 2. EPIPE guard: remove child.stdin.on("error") from .opencode/plugins/lib/fm-operational-input.js ==
+   $ bash tests/fm-operational-input.test.sh   -> exit 1
+not ok - OpenCode adapter host died (exit 1) when the encoder exited before reading the body: node:events:497
+Error: write EPIPE
+  errno: -32,
+  code: 'EPIPE',
+
+   After restoring the guard: exit 0, 'ok - operational input: an encoder that exits before reading fails one call, not the host session'.

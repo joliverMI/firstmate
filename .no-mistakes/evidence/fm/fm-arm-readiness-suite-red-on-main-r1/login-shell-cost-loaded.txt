@@ -1,0 +1,5 @@
+== loaded (160 busy loops, 32 cores): 20 x bash -lc true ==
+min=974 median=1436 max=3533
+== loaded: 20 x bash -c true ==
+min=4 median=8 max=20
+loadavg=103.11 62.93 68.30

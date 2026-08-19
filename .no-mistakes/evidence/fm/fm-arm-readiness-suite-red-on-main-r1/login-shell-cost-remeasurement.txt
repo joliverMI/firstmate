@@ -1,0 +1,20 @@
+Login-shell cost figures cited by this change - independent re-measurement (test phase, 2026-08-19)
+Host: 32 cores. Timing: date +%s%N around a single 'bash <flag> true'.
+
+IDLE (1-min load average ~0.4):
+  bash -lc true   n=20  min=128ms  median=130ms  max=139ms
+  bash -c true    n=20  min=1ms  median=1ms  max=1ms
+
+LOADED - 160 busy loops on 32 cores (5x oversubscription), 1-min load average ~155:
+  bash -lc true   n=30  min=1289ms  median=1740ms  max=4527ms
+  bash -c true    n=20  min=1ms  median=5ms  max=20ms
+
+Figures this change cites (docs/arm-readiness-determinism-proof.md:32, tests/fm-pi-watch-extension.test.sh:32-36):
+  idle   bash -lc ~131ms median (min 129 / max 140, 20 samples)   -> re-measured here: median 130ms (min 128 / max 139)
+  loaded bash -lc min 1096 / median ~1620 / max 4246ms (30 samples) -> re-measured here: min 1289 / median 1740 / max 4527ms
+
+Conclusions the change draws from those figures, checked against THIS measurement:
+  - loaded worst case sits ABOVE main's raised 2000ms readiness budget: 4527ms > 2000ms   HOLDS
+  - a 5s budget leaves only ~10-18% headroom over the loaded worst case (5000/4527 = 1.10x) HOLDS (the doc's 'ample headroom' exclusion is correctly withdrawn)
+  - the residual 10s login-shell bound is ~2.2-2.4x the loaded worst case (10000/4527 = 2.2x) HOLDS, and the doc already labels it a headroom argument rather than a guarantee
+  - the superseded ~1150ms/max 1740ms reading understates this host: observed max is 2.6x that figure  HOLDS
