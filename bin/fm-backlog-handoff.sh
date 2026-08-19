@@ -79,7 +79,7 @@
 # reason: a 404 proves only that some host answered, never that the answering
 # host was the board. What
 # is bounded there is the noise, not the record - each such pair is reported
-# once, not on every arrival.
+# once per command that sweeps it, and again on the next one.
 # The handed-off item itself is never rewritten:
 # which card a deliverable serves is firstmate-local bookkeeping, and
 # recording it in the item's body would mean this script performing a
@@ -494,11 +494,20 @@ handoff_card_record_remove_pairs() { # <secondmate-id> <pair>...
 # again rather than staying silent forever. A repeated warning about a link
 # that really is still pending is honest noise - unlike a durable mark that
 # can outlive, or contradict, the record it was written about.
-declare -A CARD_PAIR_REPORTED=()
+#
+# Held as a newline-delimited string rather than an associative array: stock
+# macOS Bash is 3.2, which has no `declare -A` at all (and would silently
+# arithmetic-evaluate a string subscript to index 0, collapsing every mark
+# into one). Both halves of a mark are already validated to carry no tab or
+# newline, so the delimiters cannot occur inside an entry, and the set holds
+# at most a few pairs for the life of one command.
+CARD_PAIR_REPORTED=$'\n'
 card_pair_report_once() { # <reason> <secondmate-id> <pair>
   local mark=$1$'\t'$2$'\t'$3
-  [ -z "${CARD_PAIR_REPORTED[$mark]:-}" ] || return 1
-  CARD_PAIR_REPORTED[$mark]=1
+  case "$CARD_PAIR_REPORTED" in
+    *$'\n'"$mark"$'\n'*) return 1 ;;
+  esac
+  CARD_PAIR_REPORTED=$CARD_PAIR_REPORTED$mark$'\n'
   return 0
 }
 
@@ -720,8 +729,9 @@ link_delivered_card_pairs() { # <secondmate-id> <unguarded-card|''> <pair>...
     # A card the host says it does not have is kept and retried like any other
     # unanswerable link - the record is the only evidence the link is still
     # owed, and a 404 does not prove the answering host was the board. Only
-    # the noise is bounded: report each such pair once, not on every arrival,
-    # so an unresolvable id cannot bury the fleet log it is recorded in.
+    # the noise is bounded, and only within one command: a pair still owed its
+    # link is reported once per command that sweeps it, and again on the next
+    # one, rather than once for all time.
     if [ "$probe" -eq 2 ]; then
       if card_pair_report_once no-such-card "$sm_id" "$pair"; then
         echo "warning: the dashboard host has no card $card, so the pending link for $key cannot be completed; it stays recorded and will be retried on the next arrival" >&2

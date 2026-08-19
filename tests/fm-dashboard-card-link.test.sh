@@ -871,6 +871,95 @@ EOF
   pass "only the newest card recorded for an item is linked; the superseded one is reported but never written"
 }
 
+# The other half of that rule, and the only escape from it. Being superseded is
+# the one durable mark this mechanism keeps, and nothing the board can answer
+# ever retires it - so if naming that card again did not clear it, a --card typo
+# in the *correction* would strand the right card permanently, linkable by
+# nothing and warning on every sweep, with hand-editing state the only way out.
+# docs/dashboard.md states the reversibility as a guarantee; this pins it.
+test_renaming_a_superseded_card_makes_it_linkable_again() {
+  local home sub id first second out record
+  home="$TMP_ROOT/handoff-revive-main"
+  sub="$TMP_ROOT/handoff-revive-sub"
+  id=handoff-revive-sm
+  setup_handoff_homes "$home" "$sub" "$id"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] handoff-item-v1 - named right, then wrong, then right again (repo: alpha)
+- [ ] handoff-item-v2 - a later handoff that sweeps with the board up (repo: alpha)
+
+## Done
+EOF
+  first=$(add_card "Revive target coverage")
+  second=$(add_card "Mistyped correction coverage")
+  [ -n "$first" ] && [ -n "$second" ] || fail "add_card returned no id"
+  record="$home/state/handoff-cards/$id"
+
+  out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-v1 --card "$first" 2>&1)
+  expect_code 0 "$?" "handoff must not fail just because the dashboard is unreachable" "$out"
+
+  out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-v1 --card "$second" 2>&1)
+  expect_code 0 "$?" "re-naming the card should still succeed" "$out"
+  assert_contains "$out" "was superseded by a later --card" \
+    "setup: the first card was never disowned, so there is nothing to reverse"
+
+  out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-v1 --card "$first" 2>&1)
+  expect_code 0 "$?" "naming the original card again should still succeed" "$out"
+  assert_grep "$(printf 'handoff-item-v1\t%s' "$first")" "$record" "the revived pair was not recorded"
+
+  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-v2 2>&1)
+  expect_code 0 "$?" "the next ordinary handoff should succeed" "$out"
+  [ "$(card_field "$first" backlog_ref)" = "$id:handoff-item-v1" ] \
+    || fail "a card whose supersession the operator reversed from the CLI was still never linked"
+  [ "$(card_field "$first" agent)" = "$id" ] || fail "the revived card was not given the secondmate as its agent"
+  [ "$(card_status "$first")" = working ] || fail "the revived card did not advance to working"
+  [ -z "$(card_field "$second" backlog_ref)" ] \
+    || fail "the mistyped correction was linked even though it is now the disowned one"
+  [ "$(card_status "$second")" = not_started ] \
+    || fail "the mistyped correction was advanced as if it were being served"
+  pass "naming a superseded card again clears the mark, so a typo in the correction is recoverable from the CLI"
+}
+
+# The report set has to tell its entries apart, not merely remember that it saw
+# something. One command owing reports about two distinct pairs must emit both:
+# a set that collapsed its keys - which is exactly what a string-subscripted
+# bash 3.2 array does, silently indexing every mark to 0 - would swallow the
+# second and leave a genuinely unlinkable card with nothing said about it.
+test_one_command_reports_every_distinct_unlinkable_pair_not_just_the_first() {
+  local home sub id first second out findings
+  home="$TMP_ROOT/handoff-twopair-main"
+  sub="$TMP_ROOT/handoff-twopair-sub"
+  id=handoff-twopair-sm
+  setup_handoff_homes "$home" "$sub" "$id"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] handoff-item-w1 - first unlinkable card (repo: alpha)
+- [ ] handoff-item-w2 - second unlinkable card (repo: alpha)
+- [ ] handoff-item-w3 - a later handoff that sweeps both (repo: alpha)
+
+## Done
+EOF
+  first=does-not-exist-twopair-aaaa
+  second=does-not-exist-twopair-bbbb
+
+  out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-w1 --card "$first" 2>&1)
+  expect_code 0 "$?" "staging the first pair should succeed" "$out"
+  out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-w2 --card "$second" 2>&1)
+  expect_code 0 "$?" "staging the second pair should succeed" "$out"
+
+  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-w3 2>&1)
+  expect_code 0 "$?" "the sweeping handoff should succeed" "$out"
+  assert_contains "$out" "has no card $first" "the first unlinkable pair went unreported"
+  assert_contains "$out" "has no card $second" \
+    "the second unlinkable pair was swallowed, so the report set cannot tell its entries apart"
+  findings=$("$DASH" audit-status --json \
+    | jq --arg a "$first" --arg b "$second" \
+      '[.log[] | select(.text | contains($a) or contains($b))] | length')
+  [ "$findings" = 2 ] \
+    || fail "one sweep of two distinct unlinkable pairs should leave two fleet findings, got $findings"
+  pass "one command reports every distinct unlinkable pair it sweeps, not just the first"
+}
+
 # Regression: the ownership guard was gated on a successful card read, so a
 # read failure skipped the identity check entirely and the link wrote ref and
 # agent blind - destroying the precise <home>:<task-id> claim a secondmate's
@@ -1486,6 +1575,8 @@ if command -v tasks-axi >/dev/null 2>&1; then
   test_handoff_never_confirms_a_link_whose_card_state_it_could_not_read
   test_handoff_never_writes_a_guarded_card_it_could_not_read
   test_handoff_supersedes_rather_than_also_linking_a_corrected_card
+  test_renaming_a_superseded_card_makes_it_linkable_again
+  test_one_command_reports_every_distinct_unlinkable_pair_not_just_the_first
   test_handoff_record_bookkeeping_failure_never_fails_the_handoff
   test_handoff_refuses_card_with_more_than_one_item
   test_handoff_refuses_a_card_id_that_would_corrupt_the_pending_record
