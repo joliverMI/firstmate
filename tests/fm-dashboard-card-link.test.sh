@@ -664,6 +664,40 @@ EOF
   pass "--resume-pending completes a local secondmate's stranded card link, not just a remote outbox's"
 }
 
+# Regression: docs/dashboard.md and this mechanism's own warnings send the
+# operator to state/handoff-cards/<secondmate-id> to unpick a half-written link
+# by hand, so a record saved by an editor that does not terminate its last line
+# is an anticipated input, not a hypothetical one. Both loops over that file
+# used to stop before an unterminated final line: the sweep never linked the
+# pair it named, and the retiring rewrite silently deleted it, losing the only
+# evidence the link was still owed. Two pairs, the last one unterminated, so
+# the rewrite that retires the first has to carry the second through.
+test_handoff_record_without_a_trailing_newline_loses_no_pair() {
+  local home sub id card record out
+  home="$TMP_ROOT/handoff-unterminated-main"
+  sub="$TMP_ROOT/handoff-unterminated-sub"
+  id=handoff-unterminated-sm
+  setup_handoff_homes "$home" "$sub" "$id"
+  card=$(add_card "Unterminated record coverage")
+  [ -n "$card" ] || fail "add_card returned no id"
+  record="$home/state/handoff-cards/$id"
+  mkdir -p "$(dirname "$record")"
+  printf 'hand-item-h1\t%s\nhand-item-h2\tdefinitely-no-such-card' "$card" > "$record"
+
+  out=$(FM_HOME="$home" "$HANDOFF" --resume-pending 2>&1)
+  expect_code 0 "$?" "--resume-pending should succeed on a hand-edited record" "$out"
+  assert_contains "$out" "has no card definitely-no-such-card" \
+    "the unterminated final pair was never swept at all"
+  [ "$(card_field "$card" backlog_ref)" = "$id:hand-item-h1" ] \
+    || fail "the terminated pair's card was not linked"
+  [ "$(card_status "$card")" = working ] || fail "the linked card did not advance to working"
+  assert_grep "$(printf 'hand-item-h2\tdefinitely-no-such-card')" "$record" \
+    "retiring the confirmed pair silently deleted the unterminated final line"
+  assert_no_grep "$(printf 'hand-item-h1\t%s' "$card")" "$record" \
+    "the confirmed pair was not retired from the record"
+  pass "a hand-edited record whose last line has no trailing newline loses no pending pair"
+}
+
 # Regression: the link writes ref and agent as two separate board calls, so a
 # link of the handoff's own that fails between them leaves the card carrying
 # OUR ref and nothing else. Asking only "does this card carry anything at all"
@@ -873,6 +907,54 @@ EOF
   assert_grep "$(printf 'handoff-item-f1\t%s' "$first")" "$record" \
     "the superseded pair should stay recorded as the reminder to check that card by hand"
   pass "only the newest card recorded for an item is linked; the superseded one is reported but never written"
+}
+
+# The superseded ledger is the one durable mark here and is appended to, so a
+# crash or a hand edit can leave its last entry without a trailing newline. An
+# append onto that file used to run straight onto the partial line, fusing two
+# standing decisions into one string that matches neither - and a mark that no
+# longer matches is a card the operator has already disowned being written to
+# on the next sweep, which is the exact drift the mark exists to prevent.
+test_superseded_mark_survives_an_append_onto_an_unterminated_ledger() {
+  local home sub id kept first second out ledger
+  home="$TMP_ROOT/handoff-ledger-tail-main"
+  sub="$TMP_ROOT/handoff-ledger-tail-sub"
+  id=handoff-ledger-tail-sm
+  setup_handoff_homes "$home" "$sub" "$id"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] handoff-item-n1 - the item whose card gets corrected (repo: alpha)
+- [ ] handoff-item-n2 - the item already marked in the ledger (repo: alpha)
+
+## Done
+EOF
+  first=$(add_card "Ledger-tail mistyped coverage")
+  second=$(add_card "Ledger-tail corrected coverage")
+  kept=$(add_card "Ledger-tail pre-marked coverage")
+  [ -n "$first" ] && [ -n "$second" ] && [ -n "$kept" ] || fail "add_card returned no id"
+  ledger="$home/state/handoff-card-superseded/$id"
+
+  out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-n1 --card "$first" 2>&1)
+  expect_code 0 "$?" "handoff must not fail just because the dashboard is unreachable" "$out"
+  out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-n2 --card "$kept" 2>&1)
+  expect_code 0 "$?" "handoff must not fail just because the dashboard is unreachable" "$out"
+  mkdir -p "$(dirname "$ledger")"
+  printf 'handoff-item-n2\t%s' "$kept" > "$ledger"
+
+  out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-n1 --card "$second" 2>&1)
+  expect_code 0 "$?" "re-running an already-landed handoff should still succeed" "$out"
+
+  out=$(FM_HOME="$home" "$HANDOFF" --resume-pending 2>&1)
+  expect_code 0 "$?" "--resume-pending should succeed with the board back up" "$out"
+  [ "$(card_field "$second" backlog_ref)" = "$id:handoff-item-n1" ] \
+    || fail "the corrected card was not linked"
+  [ -z "$(card_field "$first" backlog_ref)" ] \
+    || fail "the mark appended onto an unterminated ledger did not take, so a disowned card was linked"
+  [ -z "$(card_field "$kept" backlog_ref)" ] \
+    || fail "an appended mark ran onto the ledger's unterminated last entry and destroyed it"
+  [ "$(card_status "$kept")" = not_started ] \
+    || fail "a card disowned by the ledger's last entry was advanced as if it were being served"
+  pass "an appended superseded mark neither destroys nor is destroyed by an unterminated last ledger entry"
 }
 
 # The other half of that rule, and the only escape from it. Being superseded is
@@ -1575,12 +1657,14 @@ if command -v tasks-axi >/dev/null 2>&1; then
   test_handoff_without_card_flag_never_touches_the_dashboard
   test_handoff_with_unreachable_dashboard_still_succeeds_and_warns
   test_handoff_card_record_survives_a_failed_link_and_completes_on_the_next_handoff
+  test_handoff_record_without_a_trailing_newline_loses_no_pair
   test_resume_pending_completes_a_stranded_local_card_link
   test_handoff_finishes_its_own_half_written_card_link
   test_handoff_keeps_and_retries_a_pair_the_host_says_names_no_such_card
   test_handoff_never_confirms_a_link_whose_card_state_it_could_not_read
   test_handoff_never_writes_a_guarded_card_it_could_not_read
   test_handoff_supersedes_rather_than_also_linking_a_corrected_card
+  test_superseded_mark_survives_an_append_onto_an_unterminated_ledger
   test_renaming_a_superseded_card_makes_it_linkable_again
   test_one_command_reports_every_distinct_unlinkable_pair_not_just_the_first
   test_handoff_record_bookkeeping_failure_never_fails_the_handoff

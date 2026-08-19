@@ -97,7 +97,12 @@
 # must not read as somebody else's claim. A card id that
 # does not resolve, or an
 # unreachable dashboard, never fails the handoff; it is reported loudly on
-# stderr and, when the dashboard answers at all, recorded through
+# stderr and nowhere else - bin/fm-bootstrap.sh's --resume-pending sweep runs
+# this same path unattended on every session start, so a permanently
+# unretirable pair must not grow a durable entry in the fleet discrepancy log
+# on a cadence no operator controls. Only a link that failed while it was
+# being written - the board refusing or never answering one of the
+# ref/agent/status calls - is also recorded through
 # `fm-dashboard.sh audit-log --fleet`. No --card is the default and stages
 # nothing on the board. Its one point of contact is completing a link an
 # earlier --card call already staged and could not finish: every confirmed
@@ -437,7 +442,7 @@ handoff_card_lines_remove() { # <file> <line>...
   [ "$#" -gt 0 ] || return 0
   [ -f "$file" ] && [ ! -L "$file" ] || return 0
   tmp=$(umask 077; mktemp "$(dirname "$file")/.card.XXXXXX") || return 1
-  while IFS= read -r line; do
+  while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
     keep=1
     for drop in "$@"; do
@@ -551,7 +556,14 @@ handoff_card_superseded_add() { # <secondmate-id> <pair>
   if handoff_card_superseded_has "$id" "$pair"; then return 0; fi
   file=$(handoff_card_superseded_file "$id") || return 1
   mkdir -p "$(dirname "$file")" || return 1
-  ( umask 077; printf '%s\n' "$pair" >> "$file" ) || return 1
+  (
+    umask 077
+    if [ -s "$file" ] && [ -n "$(tail -c 1 -- "$file")" ]; then
+      printf '\n%s\n' "$pair" >> "$file"
+    else
+      printf '%s\n' "$pair" >> "$file"
+    fi
+  ) || return 1
   return 0
 }
 
@@ -809,7 +821,7 @@ link_delivered_card_pairs() { # <secondmate-id> <unguarded-card|''> <pair>...
 consume_handoff_card_record() { # <secondmate-id> <unguarded-card|''> [<undelivered-outbox|''>]
   local id=$1 unguarded=$2 staged=${3:-} pair
   local -a pairs=()
-  while IFS= read -r pair; do
+  while IFS= read -r pair || [ -n "$pair" ]; do
     [ -n "$pair" ] || continue
     if [ -n "$staged" ] && backlog_key_section "$staged" "${pair%%$'\t'*}" >/dev/null 2>&1; then
       continue

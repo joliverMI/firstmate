@@ -256,9 +256,9 @@ test_zero_timeout_override_is_refused_like_any_other_unusable_one() {
 # was the board, so such a pair is kept and retried exactly like one the board
 # could not be reached for. Both are reported the same way too - once per
 # command that sweeps the pair, and again on a later separate invocation while
-# the link is still owed. What the two answers still decide is WHICH report the
-# pair gets, and the fleet audit-log entry that goes with the answered one, so
-# the handoff has to be able to tell them apart from the outside - by exit code
+# the link is still owed. Neither reaches the fleet audit log either. What the
+# two answers still decide is WHICH stderr warning the pair gets, so the
+# handoff has to be able to tell them apart from the outside - by exit code
 # rather than by parsing stderr.
 test_missing_id_and_unreachable_board_have_distinct_exit_codes() {
   local rc=0
