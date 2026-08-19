@@ -278,10 +278,18 @@ assert_not_contains() {
   esac
 }
 
-# expect_code <expected> <actual> <label>
+# expect_code <expected> <actual> <label> [<output>]: an optional 4th
+# argument is the command's own captured stdout/stderr, shown on failure the
+# same way assert_contains/assert_not_contains already show theirs - an exit
+# code alone ("expected 0, got 1") says nothing about why, and the next
+# person to hit a failure here deserves the same evidence a human debugging
+# it by hand would reach for first.
 expect_code() {
-  local expected=$1 actual=$2 label=$3
-  [ "$actual" = "$expected" ] || fail "$label: expected exit $expected, got $actual"
+  local expected=$1 actual=$2 label=$3 output=${4:-}
+  [ "$actual" = "$expected" ] || {
+    [ -z "$output" ] || printf -- '--- output ---\n%s\n' "$output" >&2
+    fail "$label: expected exit $expected, got $actual"
+  }
 }
 
 # assert_grep <pattern> <file> <msg>: fixed-string grep must match in <file>.

@@ -254,7 +254,7 @@ EOF
   [ -n "$card" ] || fail "add_card returned no id"
 
   out=$(run_spawn "$home" "$proj" "$fakebin" "$id" --card "$card")
-  expect_code 0 "$?" "spawn with --card should succeed"
+  expect_code 0 "$?" "spawn with --card should succeed" "$out"
   assert_contains "$out" "spawned $id" "spawn did not report success"
   assert_contains "$out" "dashboard: linked card $card" "spawn did not report the dashboard link firing"
   assert_grep "dashboard_card=$card" "$home/state/$id.meta" "meta did not record dashboard_card="
@@ -276,7 +276,7 @@ $rec
 EOF
 
   out=$(run_spawn "$home" "$proj" "$fakebin" "$id")
-  expect_code 0 "$?" "spawn without --card should succeed"
+  expect_code 0 "$?" "spawn without --card should succeed" "$out"
   assert_contains "$out" "spawned $id" "spawn did not report success"
   assert_not_contains "$out" "dashboard:" "a card-less spawn printed a dashboard line"
   assert_no_grep "dashboard_card=" "$home/state/$id.meta" "meta recorded dashboard_card= with no --card given"
@@ -293,7 +293,7 @@ EOF
   card=some-card-id
 
   out=$(FM_DASHBOARD_PORT=1 run_spawn "$home" "$proj" "$fakebin" "$id" --card "$card")
-  expect_code 0 "$?" "spawn must not fail just because the dashboard is unreachable"
+  expect_code 0 "$?" "spawn must not fail just because the dashboard is unreachable" "$out"
   assert_contains "$out" "spawned $id" "spawn did not report success despite the unreachable dashboard"
   assert_contains "$out" "warning: dashboard card link failed" "spawn did not warn about the failed link"
   assert_grep "dashboard_card=$card" "$home/state/$id.meta" \
@@ -311,7 +311,7 @@ EOF
   card=does-not-exist-zzzz
 
   out=$(run_spawn "$home" "$proj" "$fakebin" "$id" --card "$card")
-  expect_code 0 "$?" "spawn must not fail just because --card names an unknown card"
+  expect_code 0 "$?" "spawn must not fail just because --card names an unknown card" "$out"
   assert_contains "$out" "spawned $id" "spawn did not report success for an unknown card id"
   assert_contains "$out" "warning: dashboard card link failed" "spawn did not warn about the unknown card"
 
@@ -383,7 +383,7 @@ test_teardown_advances_linked_card_to_testing_on_landed_work() {
   land_teardown_case "$case_dir" "$id"
 
   out=$(run_teardown_case "$case_dir" "$id")
-  expect_code 0 "$?" "landed local-only teardown should succeed"
+  expect_code 0 "$?" "landed local-only teardown should succeed" "$out"
   assert_contains "$out" "teardown $id complete" "teardown did not report completion"
   assert_contains "$out" "dashboard: advanced card $card to testing" "teardown did not report the dashboard advance firing"
   [ "$(card_status "$card")" = testing ] || fail "linked card did not advance to testing on landed teardown"
@@ -397,7 +397,7 @@ test_teardown_without_dashboard_card_meta_is_a_noop() {
   land_teardown_case "$case_dir" "$id"
 
   out=$(run_teardown_case "$case_dir" "$id")
-  expect_code 0 "$?" "landed teardown with no linked card should still succeed"
+  expect_code 0 "$?" "landed teardown with no linked card should still succeed" "$out"
   assert_not_contains "$out" "dashboard:" "a card-less teardown printed a dashboard line"
   pass "teardown with no dashboard_card= recorded is a complete dashboard no-op"
 }
@@ -413,7 +413,7 @@ test_teardown_force_discard_never_advances_the_card() {
   git -C "$case_dir/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "unlanded work"
 
   out=$(run_teardown_case "$case_dir" "$id" --force)
-  expect_code 0 "$?" "forced teardown of unlanded work should still succeed"
+  expect_code 0 "$?" "forced teardown of unlanded work should still succeed" "$out"
   assert_not_contains "$out" "dashboard:" "a --force teardown reported advancing the card"
   [ "$(card_status "$card")" = working ] || fail "a --force (discard) teardown must never advance the linked card"
   pass "teardown --force never advances the linked card, since a forced discard is not a landing"
@@ -430,7 +430,7 @@ test_teardown_never_downgrades_an_already_complete_card() {
   land_teardown_case "$case_dir" "$id"
 
   out=$(run_teardown_case "$case_dir" "$id")
-  expect_code 0 "$?" "landed teardown should succeed"
+  expect_code 0 "$?" "landed teardown should succeed" "$out"
   assert_not_contains "$out" "dashboard:" "teardown reported advancing an already-complete card"
   [ "$(card_status "$card")" = complete ] || fail "an already-complete card must never be downgraded back to testing"
   pass "teardown never downgrades a card the Admiral already marked complete"
@@ -445,7 +445,7 @@ test_teardown_with_unreachable_dashboard_still_succeeds_and_warns() {
   land_teardown_case "$case_dir" "$id"
 
   out=$(FM_DASHBOARD_PORT=1 run_teardown_case "$case_dir" "$id")
-  expect_code 0 "$?" "teardown must not fail just because the dashboard is unreachable"
+  expect_code 0 "$?" "teardown must not fail just because the dashboard is unreachable" "$out"
   assert_contains "$out" "teardown $id complete" "teardown did not report completion despite the unreachable dashboard"
   assert_contains "$out" "warning: dashboard card advance failed" "teardown did not warn about the failed advance"
   pass "teardown --card advance never fails the teardown when the dashboard is unreachable, but warns loudly"
@@ -483,7 +483,7 @@ EOF
   [ -n "$card" ] || fail "add_card returned no id"
 
   out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-a1 --card "$card" 2>&1)
-  expect_code 0 "$?" "handoff with --card should succeed"
+  expect_code 0 "$?" "handoff with --card should succeed" "$out"
   assert_contains "$out" "handed off 1 item(s)" "handoff did not report success"
   assert_contains "$out" "dashboard: linked card $card" "handoff did not report the dashboard link firing"
 
@@ -508,7 +508,7 @@ test_handoff_without_card_flag_never_touches_the_dashboard() {
 EOF
 
   out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-a2 2>&1)
-  expect_code 0 "$?" "handoff without --card should succeed"
+  expect_code 0 "$?" "handoff without --card should succeed" "$out"
   assert_contains "$out" "handed off 1 item(s)" "handoff did not report success"
   assert_not_contains "$out" "dashboard:" "a card-less handoff printed a dashboard line"
   pass "handoff without --card is a complete dashboard no-op (the normal case)"
@@ -529,7 +529,7 @@ EOF
   card=some-card-id
 
   out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-a3 --card "$card" 2>&1)
-  expect_code 0 "$?" "handoff must not fail just because the dashboard is unreachable"
+  expect_code 0 "$?" "handoff must not fail just because the dashboard is unreachable" "$out"
   assert_contains "$out" "handed off 1 item(s)" "handoff did not report success despite the unreachable dashboard"
   assert_contains "$out" "warning: dashboard card link failed" "handoff did not warn about the failed link"
   assert_grep 'handoff-item-a3' "$sub/data/backlog.md" "the item did not land despite the link failing"
@@ -561,7 +561,7 @@ EOF
   record="$home/state/handoff-cards/$id"
 
   out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-b1 --card "$card" 2>&1)
-  expect_code 0 "$?" "handoff must not fail just because the dashboard is unreachable"
+  expect_code 0 "$?" "handoff must not fail just because the dashboard is unreachable" "$out"
   assert_contains "$out" "warning: dashboard card link failed" "handoff did not warn about the failed link"
   assert_grep "$(printf 'handoff-item-b1\t%s' "$card")" "$record" \
     "a failed link must leave the pending card record in place, not delete it"
@@ -569,7 +569,7 @@ EOF
     || fail "a card whose link merely failed must not read as linked"
 
   out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-b2 2>&1)
-  expect_code 0 "$?" "the next ordinary handoff should succeed"
+  expect_code 0 "$?" "the next ordinary handoff should succeed" "$out"
   assert_contains "$out" "dashboard: linked card $card" \
     "the next handoff to this secondmate did not complete the earlier stranded link"
   [ "$(card_field "$card" backlog_ref)" = "$id:handoff-item-b1" ] \
@@ -608,7 +608,7 @@ EOF
   # Stage the pair against an unreachable board, so the pending record is
   # written and survives exactly as a real interrupted link leaves it.
   out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-c1 --card "$card" 2>&1)
-  expect_code 0 "$?" "handoff must not fail just because the dashboard is unreachable"
+  expect_code 0 "$?" "handoff must not fail just because the dashboard is unreachable" "$out"
   assert_grep "$(printf 'handoff-item-c1\t%s' "$card")" "$record" \
     "the pending card record was not staged"
 
@@ -619,7 +619,7 @@ EOF
   [ "$(card_status "$card")" = not_started ] || fail "setup: the card should still be not_started"
 
   out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-c2 2>&1)
-  expect_code 0 "$?" "the next ordinary handoff should succeed"
+  expect_code 0 "$?" "the next ordinary handoff should succeed" "$out"
   assert_not_contains "$out" "left unchanged" \
     "the sweep mistook this mechanism's own half-written link for somebody else's claim"
   [ "$(card_field "$card" backlog_ref)" = "$id:handoff-item-c1" ] \
@@ -656,7 +656,7 @@ EOF
   record="$home/state/handoff-cards/$id"
 
   out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-d1 --card "$card" 2>&1)
-  expect_code 0 "$?" "handoff must not fail just because --card names an unknown card"
+  expect_code 0 "$?" "handoff must not fail just because --card names an unknown card" "$out"
   assert_contains "$out" "handed off 1 item(s)" "the handoff itself did not succeed"
   assert_contains "$out" "has no card $card" "the handoff did not report the unlinkable card"
   assert_grep 'handoff-item-d1' "$sub/data/backlog.md" "the item did not land"
@@ -668,10 +668,10 @@ EOF
     || fail "expected exactly one fleet audit-log finding for the unlinkable card, got $findings"
 
   out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-d2 2>&1)
-  expect_code 0 "$?" "the next ordinary handoff should succeed"
+  expect_code 0 "$?" "the next ordinary handoff should succeed" "$out"
   assert_not_contains "$out" "$card" "an already-reported unlinkable link re-warned on the next handoff"
   out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-d3 2>&1)
-  expect_code 0 "$?" "a third handoff should succeed"
+  expect_code 0 "$?" "a third handoff should succeed" "$out"
   assert_not_contains "$out" "$card" "an already-reported unlinkable link re-warned again"
   findings=$("$DASH" audit-status --json | jq --arg c "$card" '[.log[] | select(.text | contains($c))] | length')
   [ "$findings" = 1 ] \
@@ -709,7 +709,7 @@ EOF
 
   out=$(FM_DASHBOARD_URL="http://127.0.0.1:$CARD_READ_FAIL_PORT" FM_HOME="$home" \
     "$HANDOFF" "$id" handoff-item-e1 --card "$card" 2>&1)
-  expect_code 0 "$?" "the handoff must not fail because the card could not be read"
+  expect_code 0 "$?" "the handoff must not fail because the card could not be read" "$out"
   assert_contains "$out" "handed off 1 item(s)" "the handoff itself did not succeed"
   assert_not_contains "$out" "dashboard: linked card" \
     "the link reported success while the card's own state was never readable"
@@ -723,7 +723,7 @@ EOF
   stop_card_read_failing_proxy
 
   out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-e2 2>&1)
-  expect_code 0 "$?" "the next ordinary handoff should succeed"
+  expect_code 0 "$?" "the next ordinary handoff should succeed" "$out"
   [ "$(card_status "$card")" = working ] \
     || fail "the stranded card never advanced once the board was whole again"
   [ ! -e "$record" ] || fail "the record should retire once the link is genuinely complete"
@@ -755,11 +755,11 @@ EOF
   record="$home/state/handoff-cards/$id"
 
   out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-f1 --card "$first" 2>&1)
-  expect_code 0 "$?" "handoff must not fail just because the dashboard is unreachable"
+  expect_code 0 "$?" "handoff must not fail just because the dashboard is unreachable" "$out"
   assert_grep "$(printf 'handoff-item-f1\t%s' "$first")" "$record" "the first pairing was not recorded"
 
   out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-f1 --card "$second" 2>&1)
-  expect_code 0 "$?" "re-running an already-landed handoff should still succeed"
+  expect_code 0 "$?" "re-running an already-landed handoff should still succeed" "$out"
   assert_contains "$out" "still has an unresolved dashboard card pairing to $first" \
     "re-naming the card said nothing about the pairing already pending for that item"
   assert_grep "$(printf 'handoff-item-f1\t%s' "$first")" "$record" \
@@ -770,7 +770,7 @@ EOF
     "the sweep said nothing about skipping the superseded card"
 
   out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-f2 2>&1)
-  expect_code 0 "$?" "the next ordinary handoff should succeed"
+  expect_code 0 "$?" "the next ordinary handoff should succeed" "$out"
   [ "$(card_field "$second" backlog_ref)" = "$id:handoff-item-f1" ] \
     || fail "the corrected card was not linked"
   [ "$(card_status "$second")" = working ] || fail "the corrected card did not advance to working"
@@ -811,7 +811,7 @@ EOF
   record="$home/state/handoff-cards/$id"
 
   out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-h1 --card "$card" 2>&1)
-  expect_code 0 "$?" "handoff must not fail just because the dashboard is unreachable"
+  expect_code 0 "$?" "handoff must not fail just because the dashboard is unreachable" "$out"
   assert_grep "$(printf 'handoff-item-h1\t%s' "$card")" "$record" "the pending pair was not recorded"
 
   # Exactly what the secondmate's own fm-spawn.sh --card writes once it picks
@@ -823,7 +823,7 @@ EOF
   start_card_read_failing_proxy blindguard
   out=$(FM_DASHBOARD_URL="http://127.0.0.1:$CARD_READ_FAIL_PORT" FM_HOME="$home" \
     "$HANDOFF" "$id" handoff-item-h2 2>&1)
-  expect_code 0 "$?" "the card-less handoff must not fail because a card could not be read"
+  expect_code 0 "$?" "the card-less handoff must not fail because a card could not be read" "$out"
   stop_card_read_failing_proxy
 
   assert_contains "$out" "could not read dashboard card $card" \
@@ -836,7 +836,7 @@ EOF
     "a pair whose card could not be read was retired instead of left for the next arrival"
 
   out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-h2 2>&1)
-  expect_code 0 "$?" "the retry should succeed once reads work again"
+  expect_code 0 "$?" "the retry should succeed once reads work again" "$out"
   assert_contains "$out" "already links to sm-home:task-9" \
     "the retry did not report leaving the more precise claim alone"
   [ ! -e "$record" ] || fail "the pair should retire once the board confirmed a more precise claim"
@@ -864,13 +864,13 @@ EOF
   [ -n "$card" ] || fail "add_card returned no id"
 
   out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-g1 --card "$card" 2>&1)
-  expect_code 0 "$?" "staging the pending pair should succeed"
+  expect_code 0 "$?" "staging the pending pair should succeed" "$out"
 
   chmod 500 "$home/state/handoff-cards" || fail "could not make the record directory unwritable"
   out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-g2 2>&1) && rc=0 || rc=$?
   chmod 700 "$home/state/handoff-cards"
 
-  expect_code 0 "$rc" "a purely local bookkeeping failure turned a completed handoff into a reported failure"
+  expect_code 0 "$rc" "a purely local bookkeeping failure turned a completed handoff into a reported failure" "$out"
   assert_contains "$out" "handed off 1 item(s)" "the handoff itself did not complete"
   assert_grep 'handoff-item-g2' "$sub/data/backlog.md" "the item did not land"
   pass "a card-record write failure warns without failing a handoff that already landed"
@@ -891,7 +891,7 @@ test_handoff_refuses_card_with_more_than_one_item() {
 EOF
 
   out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-m1 handoff-item-m2 --card some-card 2>&1) && rc=0 || rc=$?
-  expect_code 1 "$rc" "a multi-item --card handoff should be refused"
+  expect_code 1 "$rc" "a multi-item --card handoff should be refused" "$out"
   assert_contains "$out" "--card applies only to a single-item handoff" "the refusal did not name the single-item rule"
   assert_grep 'handoff-item-m1' "$home/data/backlog.md" "the refused handoff moved handoff-item-m1 anyway"
   assert_grep 'handoff-item-m2' "$home/data/backlog.md" "the refused handoff moved handoff-item-m2 anyway"
@@ -927,7 +927,7 @@ EOF
   "$DASH" status "$card" working >/dev/null || fail "setup: could not move the card to working"
 
   out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-a4 --card "$card" 2>&1)
-  expect_code 0 "$?" "re-running an already-landed handoff should still succeed"
+  expect_code 0 "$?" "re-running an already-landed handoff should still succeed" "$out"
   assert_contains "$out" "nothing to move" "the re-run did not report the idempotent no-op"
   assert_contains "$out" "already links to sm-home:task-99" "the re-run did not report leaving the existing link alone"
   assert_not_contains "$out" "dashboard: linked card" "the re-run claimed it linked a card that was already linked"
@@ -968,7 +968,7 @@ EOF
   card=$(add_card "Non-empty destination coverage")
 
   out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-a5 --card "$card" 2>&1)
-  expect_code 0 "$?" "handoff into a non-empty destination queue should succeed"
+  expect_code 0 "$?" "handoff into a non-empty destination queue should succeed" "$out"
   assert_not_contains "$out" "warning:" "handoff warned on an operation that succeeded"
   assert_grep 'sub-item-already' "$sub/data/backlog.md" "the handoff disturbed the item already queued there"
   assert_grep "intent: keep this body line" "$sub/data/backlog.md" "the handed-off item lost its body"
@@ -1006,7 +1006,7 @@ test_handoff_card_leaves_the_item_body_byte_identical() {
   card=$(add_card "Untouched body coverage")
 
   out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-a6 --card "$card" 2>&1)
-  expect_code 0 "$?" "an already-present handoff should still succeed"
+  expect_code 0 "$?" "an already-present handoff should still succeed" "$out"
   assert_contains "$out" "nothing to move" "the re-run did not report the idempotent no-op"
   assert_not_contains "$out" "warning:" "--card warned on an item it had no business rewriting in the first place"
   after=$(cat "$sub/data/backlog.md")
@@ -1101,7 +1101,7 @@ test_remote_handoff_links_card_only_after_confirmed_delivery() {
   write_remote_parent_backlog '- [ ] remote-item-r1 - remote card work (repo: alpha)'
 
   out=$(run_remote_handoff "$REMOTE_SM" remote-item-r1 --card "$card")
-  expect_code 0 "$?" "remote handoff with --card should succeed"
+  expect_code 0 "$?" "remote handoff with --card should succeed" "$out"
   assert_contains "$out" "handed off 1 item(s) to remote secondmate $REMOTE_SM" "remote handoff did not report success"
   assert_contains "$out" "dashboard: linked card $card" "remote handoff did not report the dashboard link firing"
   assert_absent "$REMOTE_PARENT/data/handoff/$REMOTE_SM.outbox.md" "confirmed remote delivery left a pending outbox"
@@ -1133,7 +1133,7 @@ test_resume_pending_links_the_card_recorded_in_the_staged_outbox() {
   # --resume-pending takes no keys and no --card: the record staging wrote is
   # the only surviving statement of which card this delivery serves.
   out=$(run_remote_handoff --resume-pending)
-  expect_code 0 "$?" "resuming the pending outbox should succeed"
+  expect_code 0 "$?" "resuming the pending outbox should succeed" "$out"
   assert_absent "$outbox" "confirmed resume did not clean the local outbox"
   assert_grep 'remote-item-r2' "$REMOTE_SM_HOME/data/backlog.md" "resume did not deliver the item"
 
@@ -1171,7 +1171,7 @@ test_remote_handoff_into_a_non_empty_outbox_links_both_cards() {
   assert_grep 'remote-item-r8' "$REMOTE_PARENT/data/handoff/$REMOTE_SM.outbox.md" "the second item was not staged"
 
   out=$(run_remote_handoff --resume-pending)
-  expect_code 0 "$?" "resuming the two-item outbox should succeed"
+  expect_code 0 "$?" "resuming the two-item outbox should succeed" "$out"
   assert_grep 'remote-item-r7' "$REMOTE_SM_HOME/data/backlog.md" "the first item was not delivered"
   assert_grep 'remote-item-r8' "$REMOTE_SM_HOME/data/backlog.md" "the second item was not delivered"
 
@@ -1197,7 +1197,7 @@ test_remote_handoff_links_every_card_its_delivery_lands() {
 
   write_remote_parent_backlog '- [ ] remote-item-r4 - handed off once the remote is back (repo: alpha)'
   out=$(run_remote_handoff "$REMOTE_SM" remote-item-r4 --card "$fresh")
-  expect_code 0 "$?" "the later handoff should succeed"
+  expect_code 0 "$?" "the later handoff should succeed" "$out"
   assert_absent "$REMOTE_PARENT/data/handoff/$REMOTE_SM.outbox.md" "confirmed delivery left a pending outbox"
   assert_grep 'remote-item-r3' "$REMOTE_SM_HOME/data/backlog.md" "the co-staged item was not delivered"
   assert_grep 'remote-item-r4' "$REMOTE_SM_HOME/data/backlog.md" "the newly staged item was not delivered"
@@ -1221,7 +1221,7 @@ test_card_less_remote_handoff_completes_a_link_its_delivery_lands() {
 
   write_remote_parent_backlog '- [ ] remote-item-r6 - ordinary card-less handoff (repo: alpha)'
   out=$(run_remote_handoff "$REMOTE_SM" remote-item-r6)
-  expect_code 0 "$?" "the card-less handoff should succeed"
+  expect_code 0 "$?" "the card-less handoff should succeed" "$out"
   assert_grep 'remote-item-r5' "$REMOTE_SM_HOME/data/backlog.md" "the co-staged item was not delivered"
   assert_grep 'remote-item-r6' "$REMOTE_SM_HOME/data/backlog.md" "the card-less item was not delivered"
 

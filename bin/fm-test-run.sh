@@ -222,6 +222,9 @@ family_for_basename() {
     fm-backend-orca.test.sh)
       printf '%s\n' orca
       ;;
+    fm-dashboard.test.sh|fm-dashboard-card-link.test.sh|fm-fleet-audit.test.sh)
+      printf '%s\n' dashboard
+      ;;
     *)
       printf '%s\n' unclassified
       ;;
@@ -254,6 +257,7 @@ cmux
 zellij
 orca
 unclassified
+dashboard
 EOF
 }
 
@@ -901,10 +905,17 @@ families_for_changed_path() {
       printf '%s\n' session-bootstrap
       ;;
     bin/fm-secondmate*|bin/fm-remote*|bin/fm-on.sh|bin/fm-home-seed.sh|\
-    bin/fm-backlog-handoff.sh|bin/fm-backlog-receive.sh|bin/fm-procevent-remote-reply.sh|\
+    bin/fm-backlog-receive.sh|bin/fm-procevent-remote-reply.sh|\
     bin/fm-config-inherit-lib.sh|bin/fm-config-push.sh|bin/fm-shared*|\
     bin/fm-stow-cascade.sh)
       printf '%s\n' secondmate
+      ;;
+    bin/fm-backlog-handoff.sh)
+      # --card links a handed-off item to its board card, and this explicit
+      # arm would otherwise shadow the bin/* reference scan that finds
+      # tests/fm-dashboard-card-link.test.sh.
+      printf '%s\n' secondmate
+      printf '%s\n' dashboard
       ;;
     bin/fm-session-start.sh|bin/fm-bootstrap.sh|bin/fm-fleet-sync.sh|\
     bin/fm-sessionstart-nudge.sh|bin/fm-startup-network.sh|bin/fm-tangle*|bin/fm-update.sh|\
@@ -927,9 +938,15 @@ families_for_changed_path() {
       printf '%s\n' pure-contract-unit
       printf '%s\n' secondmate
       ;;
-    bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-teardown.sh|bin/fm-review-diff.sh|\
+    bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-review-diff.sh|\
     bin/fm-x-*|bin/fm-check*)
       printf '%s\n' pr-forge
+      ;;
+    bin/fm-teardown.sh)
+      # Teardown owns the card's advance to testing (docs/dashboard.md "The
+      # mechanical card link"), so it selects the board suites too.
+      printf '%s\n' pr-forge
+      printf '%s\n' dashboard
       ;;
     bin/fm-nm-run-lib.sh)
       # Shared no-mistakes run-attribution primitives, sourced by both
@@ -946,10 +963,16 @@ families_for_changed_path() {
       printf '%s\n' pure-contract-unit
       printf '%s\n' live-harness-optin
       ;;
-    bin/fm-spawn.sh|bin/fm-send.sh|bin/fm-harness.sh|\
+    bin/fm-send.sh|bin/fm-harness.sh|\
     bin/fm-peek.sh|bin/fm-composer*)
       printf '%s\n' backend-dispatch
       printf '%s\n' pure-contract-unit
+      ;;
+    bin/fm-spawn.sh)
+      # Spawn owns --card's first half of the mechanical card link.
+      printf '%s\n' backend-dispatch
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' dashboard
       ;;
     bin/fm-bearings-snapshot.sh|bin/fm-fleet-snapshot.sh|bin/fm-fleet-view.sh)
       printf '%s\n' snapshot-bearings
@@ -1003,6 +1026,12 @@ families_for_changed_path() {
         families_for_test_reference "fixtures/$fixture_ref" \
           || printf '%s\n' "__unmapped__:$path"
       fi
+      ;;
+    bin/fleet-dashboard/*)
+      # The board's own server and page. Its files are not fm-*.sh scripts, so
+      # no test names one of them and the bin/* reference scan below cannot
+      # reach them; the board's suites drive the real server end to end.
+      printf '%s\n' dashboard
       ;;
     bin/*)
       # A deleted script has no consuming suite left to select, the same rule
