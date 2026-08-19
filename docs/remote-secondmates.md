@@ -198,8 +198,9 @@ bin/fm-backlog-handoff.sh <id> <item-key>...
 For a remote route, `tasks-axi mv` first moves the dependency-closed set atomically from the primary backlog into `data/handoff/<id>.outbox.md`.
 The outbox is then copied to the remote handoff scratch directory and `fm-backlog-receive.sh` atomically ingests every destination-absent key under the remote backlog's own lock.
 Confirmed receipt removes the outbox.
-An existing outbox is the complete retry record, and `--resume-pending` safely re-delivers it.
-Bootstrap retries pending outboxes and emits `SECONDMATE_HANDOFF:` only when one remains.
+An existing outbox is the complete retry record for the item move itself, and `--resume-pending` safely re-delivers it.
+A `--card <card-id>` dashboard link keeps its own pending record and is resumed by the same flag on either route; [`dashboard.md`](dashboard.md) "The mechanical card link" owns that mechanism.
+Bootstrap runs that resume whenever either a pending outbox or a pending card record exists, and emits `SECONDMATE_HANDOFF:` only when an outbox remains.
 There is no two-phase journal and no additional tasks-axi release requirement.
 
 ## Sync, update, and retirement
