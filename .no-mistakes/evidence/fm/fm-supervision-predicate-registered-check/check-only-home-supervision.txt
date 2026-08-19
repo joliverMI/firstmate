@@ -1,0 +1,83 @@
+Fleet-auditor supervision gap: a firstmate home whose ONLY duty is a
+trust-registered custom check (bin/fm-check-register.sh) and which has no
+state/*.meta task record. Identical steps run against the base commit and
+the fix commit. Every home is a throwaway tree under /tmp; bin/fm-watch-arm.sh
+is stubbed so no real watcher process is started and no sibling home is touched.
+
+════════════════════════════════════════════════════════════════════════
+ BEFORE THE FIX  (base 882004e)
+════════════════════════════════════════════════════════════════════════
+
+$ ls state/
+  audit.check.sh
+$ ls state/*.meta   # no task in flight
+  ls: cannot access '/tmp/nm-demo/base-home/state/*.meta': No such file or directory
+
+$ FM_HOME=<home> bin/fm-check-register.sh audit
+  registered: state/audit.check.sh
+$ ls state/
+  audit.check.sh
+  audit.check-trust
+
+--- predicate: fm_supervision_status (bin/fm-supervision-lib.sh) ---
+  FM_SUP_IN_FLIGHT=0
+  FM_SUP_SOURCES=0
+  FM_SUP_CHECKS=<unset: predicate does not count checks>
+  FM_SUP_NEEDED=false
+
+--- bin/fm-guard.sh (mid-turn supervision banner) ---
+  (no output - the guard saw nothing to supervise)   [exit 0]
+
+--- bin/fm-turnend-guard.sh (Stop hook at turn end) ---
+  (silent - hook allowed the turn to end unsupervised)
+  [exit 0]  => allowed to end
+
+--- bin/fm-claude-stop-autoarm.sh (Claude Stop hook: does it arm a watcher?) ---
+  [exit 0]
+  state/arm-ran absent => NO watcher was armed; the home ran unsupervised
+
+════════════════════════════════════════════════════════════════════════
+ AFTER THE FIX   (fix  a1fe461)
+════════════════════════════════════════════════════════════════════════
+
+$ ls state/
+  audit.check.sh
+$ ls state/*.meta   # no task in flight
+  ls: cannot access '/tmp/nm-demo/fix-home/state/*.meta': No such file or directory
+
+$ FM_HOME=<home> bin/fm-check-register.sh audit
+  registered: state/audit.check.sh
+$ ls state/
+  audit.check.sh
+  audit.check-trust
+
+--- predicate: fm_supervision_status (bin/fm-supervision-lib.sh) ---
+  FM_SUP_IN_FLIGHT=0
+  FM_SUP_SOURCES=0
+  FM_SUP_CHECKS=1
+  FM_SUP_NEEDED=true
+
+--- bin/fm-guard.sh (mid-turn supervision banner) ---
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ●  WATCHER DOWN - SUPERVISION IS OFF
+  ●  1 custom check(s) registered, but no watcher has a fresh beacon (last beat: never, grace 999s).
+  ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+  ●  This is a supervision warning only; the guarded operation WILL still run.
+  ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  [exit 0]
+
+--- bin/fm-turnend-guard.sh (Stop hook at turn end) ---
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ●  TURN WOULD END BLIND - SUPERVISION IS OFF
+  ●  1 custom check(s) registered, but no live watcher holds this home lock (last beat: never).
+  ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  [exit 2]  => BLOCKED: supervision demanded
+
+--- bin/fm-claude-stop-autoarm.sh (Claude Stop hook: does it arm a watcher?) ---
+  firstmate watcher wake - one supervision event needs a handling turn now.
+  stale: fixture-win actionable
+  Run bin/fm-wake-drain.sh first, handle the wake, then run its exact WAKE_ACK_REQUIRED --ack-through command. Until that post-handling acknowledgement, interruption leaves the wake durable for idempotent re-handling. This Stop hook owns watcher continuity: when the handling turn ends, the next needed cycle arms automatically - do NOT run bin/fm-watch-arm.sh after an ordinary wake.
+  [exit 2]
+  state/arm-ran => a watcher WAS armed for this home

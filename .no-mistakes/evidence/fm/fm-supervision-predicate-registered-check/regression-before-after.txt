@@ -1,18 +1,20 @@
-Regression property of the three supervision-predicate tests
-(pre-fix bin/fm-supervision-lib.sh from base 03bb1d8 swapped in, then restored)
+Regression proof: the two new tests fail against the PRE-FIX supervision
+predicate (bin/fm-supervision-lib.sh from base 882004e swapped into the fix
+tree) and pass against the fix. The harness aborts on first failure.
 
-WITH THE PRE-FIX PREDICATE
-  tests/fm-turnend-guard.test.sh      not ok - a home with only a trust-registered check and no task record did not report supervision as needed
-  tests/fm-turnend-guard.test.sh      not ok - hook must block when a check-only home has no watcher: expected exit 2, got 0
-  tests/fm-claude-stop-autoarm.test.sh  not ok - a trust-registered custom check must keep the auto-arm active with zero tasks in flight: expected exit 2, got 0
+$ # PRE-FIX predicate
+$ bash tests/fm-turnend-guard.test.sh
+  ok - fm_supervision_unhealthy: source-only home needs supervision
+  not ok - a home with only a trust-registered check and no task record did not report supervision as needed
+$ bash tests/fm-claude-stop-autoarm.test.sh
+  ok - auto-arm: X-mode poll need arms the cycle even with no tasks in flight
+  not ok - a trust-registered custom check must keep the auto-arm active with zero tasks in flight: expected exit 2, got 0
 
-WITH THE FIX (a158068)
-  tests/fm-turnend-guard.test.sh      ok - fm_supervision_needed: a trust-registered check with no task record needs supervision
-  tests/fm-turnend-guard.test.sh      ok - fm-turnend-guard: non-Claude path blocks a registered-check-only home
-  tests/fm-claude-stop-autoarm.test.sh  ok - auto-arm: a registered custom check arms the cycle even with no tasks in flight
-
-Full suite results with the fix in place:
-  tests/fm-turnend-guard.test.sh        exit 0
-  tests/fm-claude-stop-autoarm.test.sh  exit 0
-  tests/fm-guard-stale-banner.test.sh   exit 0
-  tests/fm-supervision-events.test.sh   exit 0
+$ # FIX predicate (a1fe461)
+$ bash tests/fm-turnend-guard.test.sh
+  ok - fm_supervision_needed: a trust-registered check with no task record needs supervision
+  ok - fm-turnend-guard: non-Claude path blocks a registered-check-only home
+  ... 66 assertions ok, exit 0
+$ bash tests/fm-claude-stop-autoarm.test.sh
+  ok - auto-arm: a registered custom check arms the cycle even with no tasks in flight
+  ... 23 assertions ok, exit 0
