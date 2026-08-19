@@ -20,12 +20,15 @@ export NODE_NO_WARNINGS=1
 # Bash snapshot compatibility"). Keep apostrophes out of these heredoc bodies.
 
 # Arm-readiness budget for the cases below that drive an UNREADY successor arm
-# (FM_PI_ARM_READY_TIMEOUT_MS / FM_OPENCODE_ARM_READY_TIMEOUT_MS = 2000).
+# (FM_PI_ARM_READY_TIMEOUT_MS / FM_OPENCODE_ARM_READY_TIMEOUT_MS = 2000), and
+# why this suite opts out of the arm child's login shell.
 #
-# Both watchers start their arm child as a LOGIN shell - `spawn("bash", ["-lc",
-# ...])` in .pi/extensions/fm-primary-pi-watch.ts and
-# .opencode/plugins/fm-primary-watch-arm.js - so every arm pays for /etc/profile
-# and /etc/profile.d before the fixture's fm-watch-arm.sh runs its first line.
+# Both watchers pick the arm child's shell flag once at module load - `spawn(
+# "bash", [armShellFlag, ...])` in .pi/extensions/fm-primary-pi-watch.ts and
+# `spawn("bash", [ARM_SHELL_FLAG, ...])` in
+# .opencode/plugins/fm-primary-watch-arm.js - and both default that flag to
+# `-lc`, a LOGIN shell, so an arm left on that default pays for /etc/profile and
+# /etc/profile.d before the fixture's fm-watch-arm.sh runs its first line.
 # Measured on this repo's own dev host: `bash -lc true` is ~140ms idle and
 # ~1150ms (max 1740ms) under CPU contention, against ~1ms for `bash -c true`.
 # The earlier 250ms budget therefore expired BEFORE the successor arm had
@@ -37,17 +40,19 @@ export NODE_NO_WARNINGS=1
 # well above a loaded login-shell start; the cases are otherwise unchanged, and
 # an arm that IS ready still settles immediately rather than waiting it out.
 
-# The login shell above is real cost, but it is also the ONLY unbounded part of
-# that budget: /etc/profile and /etc/profile.d run whatever a given machine's
+# That login-shell cost is real, but it is also the ONLY unbounded part of the
+# budget: /etc/profile and /etc/profile.d run whatever a given machine's
 # operator put there, with no upper bound this suite can measure or budget
 # against, unlike the fixed FM_PI_ARM_READY_TIMEOUT_MS / FM_OPENCODE_ARM_READY_
-# TIMEOUT_MS padding above. FM_WATCH_ARM_NO_LOGIN_SHELL makes the arm child spawn
-# under plain `bash -c` instead, skipping profile sourcing entirely; production
-# keeps the login shell as the unconditional default (fm-watch-arm.sh and its
-# descendants may only reach node through PATH additions a profile makes), so
-# this opt-out is exported here for every case except the one that exists
-# specifically to exercise the production default,
-# test_watch_arm_login_shell_default_reaches_the_arm_child below.
+# TIMEOUT_MS padding above. FM_WATCH_ARM_NO_LOGIN_SHELL=1 selects `-c` for that
+# flag instead, skipping profile sourcing entirely; production keeps the login
+# shell as the unconditional default (fm-watch-arm.sh and its descendants may
+# only reach node through PATH additions a profile makes). The export below
+# therefore holds for every case in this file, so their timed windows measure
+# readiness-detection logic rather than profile sourcing - the one exception is
+# test_watch_arm_login_shell_default_reaches_the_arm_child below, which owns no
+# readiness window and overrides the variable per invocation to exercise BOTH
+# branches, including the production default.
 export FM_WATCH_ARM_NO_LOGIN_SHELL=1
 
 install_pi_watch_extension_fixture() {
@@ -1480,7 +1485,7 @@ EOF
 )
   status=$?
   : > "$release"
-  expect_code 0 "$status" "OpenCode watch plugin must arm only when this session owns the fleet lock"
+  expect_code 0 "$status" "OpenCode watch plugin must arm only when this session owns the fleet lock" "$out"
   [ -z "$out" ] || fail "OpenCode session-lock test printed output: $out"
   pass "OpenCode watcher plugin requires session lock ownership"
 }
@@ -1590,7 +1595,7 @@ EOF
 )
   status=$?
   : > "$release"
-  expect_code 0 "$status" "OpenCode watch plugin must share one ownership evaluation between callers on an unchanged lock"
+  expect_code 0 "$status" "OpenCode watch plugin must share one ownership evaluation between callers on an unchanged lock" "$out"
   [ -z "$out" ] || fail "OpenCode coalescing test printed output: $out"
   pass "OpenCode watcher plugin coalesces callers that share a lock premise"
 }
@@ -1656,7 +1661,7 @@ if (!existsSync(process.env.FM_ARM_LOG)) {
 EOF
 )
     status=$?
-    expect_code 0 "$status" "OpenCode arm child must start under the $mode shell"
+    expect_code 0 "$status" "OpenCode arm child must start under the $mode shell" "$out"
     [ -z "$out" ] || fail "OpenCode $mode-shell arm test printed output: $out"
     grep -qx "$expected" "$log" || fail "OpenCode arm child under the $mode shell expected $expected, got: $(cat "$log")"
 
@@ -1692,7 +1697,7 @@ if (!existsSync(process.env.FM_ARM_LOG)) {
 EOF
 )
     status=$?
-    expect_code 0 "$status" "Pi arm child must start under the $mode shell"
+    expect_code 0 "$status" "Pi arm child must start under the $mode shell" "$out"
     [ -z "$out" ] || fail "Pi $mode-shell arm test printed output: $out"
     grep -qx "$expected" "$log" || fail "Pi arm child under the $mode shell expected $expected, got: $(cat "$log")"
   done
