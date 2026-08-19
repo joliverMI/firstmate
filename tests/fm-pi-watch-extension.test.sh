@@ -477,6 +477,18 @@ SH
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+// The arm fixture appends exactly one `arm=<pid>` row per attempt. Counting
+// only newline-terminated rows keeps a fixture descheduled between creating
+// the log and writing into it from reading as an attempt that already
+// happened.
+function armRows() {
+  if (!existsSync(process.env.FM_ARM_LOG)) return [];
+  return readFileSync(process.env.FM_ARM_LOG, "utf8")
+    .split("\n")
+    .slice(0, -1)
+    .filter((line) => line.startsWith("arm="));
+}
+
 let tool = null;
 let prompt = "";
 let rowsAtPrompt = 0;
@@ -488,29 +500,39 @@ const pi = {
   },
   sendUserMessage: async (message) => {
     prompt += message;
-    rowsAtPrompt = existsSync(process.env.FM_ARM_LOG)
-      ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
-      : 0;
+    rowsAtPrompt = armRows().length;
   },
 };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-hung-successor", {}, undefined, undefined, {});
-// Three unready attempts now cost 3 x FM_PI_ARM_READY_TIMEOUT_MS, so this
-// bound has to clear that before it can conclude the wake never arrived.
+// The one successor plus two retries the extension actually attempts each
+// write their arm-log row the moment they spawn, well before their own
+// readiness timeout has any chance to expire, so the row count is a real
+// observable condition - wait on it directly rather than on elapsed time.
+let rows = [];
+for (let i = 0; i < 3000; i += 1) {
+  rows = armRows();
+  if (rows.length >= 4) break;
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (rows.length !== 4) throw new Error(`expected one successor plus two retries, got ${rows.length}: ${rows.join(" | ")}`);
+// This assertion is a bounded negative: whether the extension ever gives up
+// and delivers its typed failure has no positive signal to observe, so a
+// bound is the only available instrument for it. The row-count wait above
+// has already confirmed every attempt really happened, so this bound now
+// covers only the bounded readiness/retire/retry sequence the extension runs
+// itself (3 x FM_PI_ARM_READY_TIMEOUT_MS plus backoff) rather than an
+// unrelated cost racing it.
 for (let i = 0; i < 3000 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
-const rows = existsSync(process.env.FM_ARM_LOG)
-  ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
-  : [];
-if (rows.length !== 4) throw new Error(`expected one successor plus two retries, got ${rows.length}: ${rows.join(" | ")}`);
 if (rowsAtPrompt !== 4) throw new Error(`wake arrived before restoration exhausted (${rowsAtPrompt} arm rows)`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
 if (!prompt.includes("could not restore watcher continuity after 2 retries")) throw new Error(`missing typed restoration failure: ${prompt}`);
 await new Promise((resolve) => setTimeout(resolve, 100));
-const stableRows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
+const stableRows = armRows();
 if (stableRows.length !== 4) throw new Error(`single-flight recovery launched ${stableRows.length} arms`);
 EOF
 )
@@ -551,6 +573,18 @@ SH
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+// The arm fixture appends exactly one `arm=<pid>` row per attempt. Counting
+// only newline-terminated rows keeps a fixture descheduled between creating
+// the log and writing into it from reading as an attempt that already
+// happened.
+function armRows() {
+  if (!existsSync(process.env.FM_ARM_LOG)) return [];
+  return readFileSync(process.env.FM_ARM_LOG, "utf8")
+    .split("\n")
+    .slice(0, -1)
+    .filter((line) => line.startsWith("arm="));
+}
+
 let tool = null;
 let prompt = "";
 let rowsAtPrompt = 0;
@@ -562,22 +596,32 @@ const pi = {
   },
   sendUserMessage: async (message) => {
     prompt += message;
-    rowsAtPrompt = existsSync(process.env.FM_ARM_LOG)
-      ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
-      : 0;
+    rowsAtPrompt = armRows().length;
   },
 };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-unretired-successor", {}, undefined, undefined, {});
+// The original arm and its one unretired successor each write their arm-log
+// row the moment they spawn, so waiting for both rows is a real observable
+// condition rather than a guess at elapsed time.
+let rows = [];
+for (let i = 0; i < 500; i += 1) {
+  rows = armRows();
+  if (rows.length >= 2) break;
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (rows.length !== 2) throw new Error(`unretired arm overlapped a retry: ${rows.join(" | ")}`);
+// This assertion is a bounded negative: whether the extension gives up on the
+// unretired successor and delivers its typed failure has no positive signal
+// to observe, so a bound is the only available instrument for it. The
+// row-count wait above has already confirmed the successor really spawned, so
+// this bound now covers only the bounded readiness-then-retire sequence the
+// extension runs itself rather than an unrelated cost racing it.
 for (let i = 0; i < 500 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
-const rows = existsSync(process.env.FM_ARM_LOG)
-  ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
-  : [];
-if (rows.length !== 2) throw new Error(`unretired arm overlapped a retry: ${rows.join(" | ")}`);
 if (rowsAtPrompt !== 2) throw new Error(`wake arrived after an overlapping retry (${rowsAtPrompt} arm rows)`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
 if (!prompt.includes("unready successor arm did not exit within 20ms")) throw new Error(`missing unretired-arm failure: ${prompt}`);
@@ -1368,16 +1412,51 @@ EOF
   pass "OpenCode watcher plugin sources the effective config"
 }
 
+# Shared `ps`/`git` shims for the two coordinator-race cases below.
+#
+# ps: mkdir is the atomic claim - exactly one invocation wins it, announces
+# itself and blocks, and every later one falls straight through to the real ps.
+# That pins a caller mid-sessionOwnsLock so those cases force the real
+# interleaving rather than waiting for it to happen to occur.
+#
+# git: isPrimaryRoot runs exactly ARM_GATE_EVALUATION_PROBES `git rev-parse`
+# probes per beginArm, and runs before anything can block, so the probe log
+# counts evaluations. That per-evaluation probe count is stated once here and
+# passed to both node bodies as FM_EVALUATION_PROBES, so a change to
+# isPrimaryRoot is corrected in one place rather than silently breaking one
+# copy of the arithmetic while the other copy still documents it.
+ARM_GATE_EVALUATION_PROBES=2
+
+install_arm_gate_shims() {
+  local prefix=$1 label=$2 real_ps real_git
+  real_ps=$(command -v ps) || fail "$label needs a real ps on PATH"
+  real_git=$(command -v git) || fail "$label needs a real git on PATH"
+  ARM_GATE_ENTERED="$prefix-ps-entered"
+  ARM_GATE_RELEASE="$prefix-ps-release"
+  ARM_GATE_GIT_LOG="$prefix-git.log"
+  ARM_GATE_FAKEBIN=$(fm_fakebin "$prefix")
+  cat > "$ARM_GATE_FAKEBIN/ps" <<SH
+#!/usr/bin/env bash
+if mkdir "$prefix-ps-gate" 2>/dev/null; then
+  : > "$ARM_GATE_ENTERED"
+  while [ ! -e "$ARM_GATE_RELEASE" ]; do sleep 0.02; done
+fi
+exec "$real_ps" "\$@"
+SH
+  cat > "$ARM_GATE_FAKEBIN/git" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$ARM_GATE_GIT_LOG"
+exec "$real_git" "\$@"
+SH
+  chmod +x "$ARM_GATE_FAKEBIN/ps" "$ARM_GATE_FAKEBIN/git"
+}
+
 test_opencode_primary_watch_plugin_requires_session_lock() {
-  local plugin repo home log fakebin real_ps real_git gitlog gate entered release out status
+  local plugin repo home log fakebin gitlog entered release out status
   plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
   repo="$TMP_ROOT/opencode-lock-root"
   home="$TMP_ROOT/opencode-lock-home"
   log="$TMP_ROOT/opencode-lock.log"
-  gitlog="$TMP_ROOT/opencode-lock-git.log"
-  gate="$TMP_ROOT/opencode-lock-ps-gate"
-  entered="$TMP_ROOT/opencode-lock-ps-entered"
-  release="$TMP_ROOT/opencode-lock-ps-release"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
   git init -q "$repo"
   : > "$repo/AGENTS.md"
@@ -1388,31 +1467,12 @@ printf 'arm\n' >> "${FM_ARM_LOG:?}"
 printf 'watcher: healthy pid=1 (beacon 0s)\n'
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  real_ps=$(command -v ps) || fail "OpenCode session-lock test needs a real ps on PATH"
-  real_git=$(command -v git) || fail "OpenCode session-lock test needs a real git on PATH"
-  fakebin=$(fm_fakebin "$TMP_ROOT/opencode-lock")
-  # mkdir is the atomic claim: exactly one invocation wins it and blocks, every
-  # later one falls straight through to the real ps. This pins a caller mid-
-  # sessionOwnsLock so the reacquired-lock case below forces the real
-  # interleaving rather than waiting for it to happen to occur.
-  cat > "$fakebin/ps" <<SH
-#!/usr/bin/env bash
-if mkdir "$gate" 2>/dev/null; then
-  : > "$entered"
-  while [ ! -e "$release" ]; do sleep 0.02; done
-fi
-exec "$real_ps" "\$@"
-SH
-  chmod +x "$fakebin/ps"
-  # isPrimaryRoot runs exactly two `git rev-parse` probes per beginArm and runs
-  # before anything can block, so counting them counts evaluations.
-  cat > "$fakebin/git" <<SH
-#!/usr/bin/env bash
-printf '%s\n' "\$*" >> "$gitlog"
-exec "$real_git" "\$@"
-SH
-  chmod +x "$fakebin/git"
-  out=$(PATH="$fakebin:$PATH" PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_GIT_LOG="$gitlog" FM_PS_ENTERED="$entered" FM_PS_RELEASE="$release" FM_WATCH_REARM_RETRY_BASE_MS=60000 FM_WATCH_REARM_RETRY_MAX_MS=60000 node 2>&1 <<'EOF'
+  install_arm_gate_shims "$TMP_ROOT/opencode-lock" "OpenCode session-lock test"
+  fakebin=$ARM_GATE_FAKEBIN
+  gitlog=$ARM_GATE_GIT_LOG
+  entered=$ARM_GATE_ENTERED
+  release=$ARM_GATE_RELEASE
+  out=$(PATH="$fakebin:$PATH" PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_GIT_LOG="$gitlog" FM_EVALUATION_PROBES="$ARM_GATE_EVALUATION_PROBES" FM_PS_ENTERED="$entered" FM_PS_RELEASE="$release" FM_WATCH_REARM_RETRY_BASE_MS=60000 FM_WATCH_REARM_RETRY_MAX_MS=60000 node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -1447,9 +1507,10 @@ function settling(promise, label) {
 
 function evaluations() {
   if (!existsSync(process.env.FM_GIT_LOG)) return 0;
-  return readFileSync(process.env.FM_GIT_LOG, "utf8")
+  const probes = readFileSync(process.env.FM_GIT_LOG, "utf8")
     .split(/\n/)
-    .filter((line) => line.includes("rev-parse")).length / 2;
+    .filter((line) => line.includes("rev-parse")).length;
+  return probes / Number(process.env.FM_EVALUATION_PROBES);
 }
 
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
@@ -1468,10 +1529,11 @@ const owned = await settling(coordinator.ensureArmed("session-owned", client), "
 if (owned === "read-only") {
   throw new Error("the reacquired-lock caller inherited the in-flight foreign-lock verdict");
 }
-await waitFor(() => existsSync(process.env.FM_ARM_LOG), "the arm to run once the lock matched");
-if (!readFileSync(process.env.FM_ARM_LOG, "utf8").includes("arm")) {
-  throw new Error("the reacquired-lock caller reported success without running the arm");
-}
+await waitFor(
+  () => existsSync(process.env.FM_ARM_LOG)
+    && readFileSync(process.env.FM_ARM_LOG, "utf8").includes("arm\n"),
+  "the arm to run once the lock matched",
+);
 
 writeFileSync(process.env.FM_PS_RELEASE, "");
 const foreignStatus = await settling(foreign, "the foreign-lock arm attempt");
@@ -1498,15 +1560,11 @@ EOF
 # choice observable: it enters while the first is provably still in flight, so
 # the probe count after both settle says whether it shared or duplicated.
 test_opencode_watch_arm_coalesces_callers_on_an_unchanged_lock() {
-  local plugin repo home log fakebin real_ps real_git gitlog gate entered release out status
+  local plugin repo home log fakebin gitlog entered release out status
   plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
   repo="$TMP_ROOT/opencode-coalesce-root"
   home="$TMP_ROOT/opencode-coalesce-home"
   log="$TMP_ROOT/opencode-coalesce.log"
-  gitlog="$TMP_ROOT/opencode-coalesce-git.log"
-  gate="$TMP_ROOT/opencode-coalesce-ps-gate"
-  entered="$TMP_ROOT/opencode-coalesce-ps-entered"
-  release="$TMP_ROOT/opencode-coalesce-ps-release"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
   git init -q "$repo"
   : > "$repo/AGENTS.md"
@@ -1517,25 +1575,12 @@ printf 'arm\n' >> "${FM_ARM_LOG:?}"
 printf 'watcher: healthy pid=1 (beacon 0s)\n'
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  real_ps=$(command -v ps) || fail "OpenCode coalescing test needs a real ps on PATH"
-  real_git=$(command -v git) || fail "OpenCode coalescing test needs a real git on PATH"
-  fakebin=$(fm_fakebin "$TMP_ROOT/opencode-coalesce")
-  cat > "$fakebin/ps" <<SH
-#!/usr/bin/env bash
-if mkdir "$gate" 2>/dev/null; then
-  : > "$entered"
-  while [ ! -e "$release" ]; do sleep 0.02; done
-fi
-exec "$real_ps" "\$@"
-SH
-  chmod +x "$fakebin/ps"
-  cat > "$fakebin/git" <<SH
-#!/usr/bin/env bash
-printf '%s\n' "\$*" >> "$gitlog"
-exec "$real_git" "\$@"
-SH
-  chmod +x "$fakebin/git"
-  out=$(PATH="$fakebin:$PATH" PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_GIT_LOG="$gitlog" FM_PS_ENTERED="$entered" FM_PS_RELEASE="$release" node 2>&1 <<'EOF'
+  install_arm_gate_shims "$TMP_ROOT/opencode-coalesce" "OpenCode coalescing test"
+  fakebin=$ARM_GATE_FAKEBIN
+  gitlog=$ARM_GATE_GIT_LOG
+  entered=$ARM_GATE_ENTERED
+  release=$ARM_GATE_RELEASE
+  out=$(PATH="$fakebin:$PATH" PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_GIT_LOG="$gitlog" FM_EVALUATION_PROBES="$ARM_GATE_EVALUATION_PROBES" FM_PS_ENTERED="$entered" FM_PS_RELEASE="$release" node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -1568,9 +1613,10 @@ function settling(promise, label) {
 
 function evaluations() {
   if (!existsSync(process.env.FM_GIT_LOG)) return 0;
-  return readFileSync(process.env.FM_GIT_LOG, "utf8")
+  const probes = readFileSync(process.env.FM_GIT_LOG, "utf8")
     .split(/\n/)
-    .filter((line) => line.includes("rev-parse")).length / 2;
+    .filter((line) => line.includes("rev-parse")).length;
+  return probes / Number(process.env.FM_EVALUATION_PROBES);
 }
 
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
@@ -1639,7 +1685,7 @@ SH
 
     rm -f "$log"
     out=$("${envprefix[@]}" HOME="$oshome" PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_WATCH_REARM_RETRY_BASE_MS=60000 FM_WATCH_REARM_RETRY_MAX_MS=60000 node 2>&1 <<'EOF'
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
@@ -1651,11 +1697,13 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 500 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
+const markerLogged = () => existsSync(process.env.FM_ARM_LOG)
+  && /^marker=\S+\n/m.test(readFileSync(process.env.FM_ARM_LOG, "utf8"));
+for (let i = 0; i < 500 && !markerLogged(); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
-if (!existsSync(process.env.FM_ARM_LOG)) {
-  console.error("OpenCode watch arm did not run");
+if (!markerLogged()) {
+  console.error("OpenCode watch arm did not record a complete marker row");
   process.exit(1);
 }
 EOF
@@ -1667,7 +1715,7 @@ EOF
 
     rm -f "$log"
     out=$("${envprefix[@]}" HOME="$oshome" PLUGIN="$ext" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_WATCH_REARM_RETRY_BASE_MS=60000 FM_WATCH_REARM_RETRY_MAX_MS=60000 node --input-type=module 2>&1 <<'EOF'
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 let handler = null;
@@ -1687,11 +1735,13 @@ if (!handler) {
   process.exit(1);
 }
 await handler("", { ui: { notify() {} } });
-for (let i = 0; i < 500 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
+const markerLogged = () => existsSync(process.env.FM_ARM_LOG)
+  && /^marker=\S+\n/m.test(readFileSync(process.env.FM_ARM_LOG, "utf8"));
+for (let i = 0; i < 500 && !markerLogged(); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
-if (!existsSync(process.env.FM_ARM_LOG)) {
-  console.error("Pi watch arm did not run");
+if (!markerLogged()) {
+  console.error("Pi watch arm did not record a complete marker row");
   process.exit(1);
 }
 EOF
@@ -1954,15 +2004,25 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+// The arm fixture appends exactly one `arm=<pid>` row per attempt. Counting
+// only newline-terminated rows keeps a fixture descheduled between creating
+// the log and writing into it from reading as an attempt that already
+// happened.
+function armRows() {
+  if (!existsSync(process.env.FM_ARM_LOG)) return [];
+  return readFileSync(process.env.FM_ARM_LOG, "utf8")
+    .split("\n")
+    .slice(0, -1)
+    .filter((line) => line.startsWith("arm="));
+}
+
 let prompt = "";
 let rowsAtPrompt = 0;
 const client = {
   session: {
     promptAsync: async (request) => {
       prompt += request.body.parts[0].text;
-      rowsAtPrompt = existsSync(process.env.FM_ARM_LOG)
-        ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
-        : 0;
+      rowsAtPrompt = armRows().length;
     },
   },
 };
@@ -1973,20 +2033,32 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-// Three unready attempts now cost 3 x FM_OPENCODE_ARM_READY_TIMEOUT_MS, so this
-// bound has to clear that before it can conclude the wake never arrived.
+// The one successor plus two retries the extension actually attempts each
+// write their arm-log row the moment they spawn, well before their own
+// readiness timeout has any chance to expire, so the row count is a real
+// observable condition - wait on it directly rather than on elapsed time.
+let rows = [];
+for (let i = 0; i < 3000; i += 1) {
+  rows = armRows();
+  if (rows.length >= 4) break;
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (rows.length !== 4) throw new Error(`expected one successor plus two retries, got ${rows.length}: ${rows.join(" | ")}`);
+// This assertion is a bounded negative: whether the extension ever gives up
+// and delivers its typed failure has no positive signal to observe, so a
+// bound is the only available instrument for it. The row-count wait above
+// has already confirmed every attempt really happened, so this bound now
+// covers only the bounded readiness/retire/retry sequence the extension runs
+// itself (3 x FM_OPENCODE_ARM_READY_TIMEOUT_MS plus backoff) rather than an
+// unrelated cost racing it.
 for (let i = 0; i < 3000 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
-const rows = existsSync(process.env.FM_ARM_LOG)
-  ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
-  : [];
-if (rows.length !== 4) throw new Error(`expected one successor plus two retries, got ${rows.length}: ${rows.join(" | ")}`);
 if (rowsAtPrompt !== 4) throw new Error(`wake arrived before restoration exhausted (${rowsAtPrompt} arm rows)`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
 if (!prompt.includes("could not restore watcher continuity after 2 retries")) throw new Error(`missing typed restoration failure: ${prompt}`);
 await new Promise((resolve) => setTimeout(resolve, 100));
-const stableRows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
+const stableRows = armRows();
 if (stableRows.length !== 4) throw new Error(`single-flight recovery launched ${stableRows.length} arms`);
 EOF
 )
@@ -2030,15 +2102,25 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+// The arm fixture appends exactly one `arm=<pid>` row per attempt. Counting
+// only newline-terminated rows keeps a fixture descheduled between creating
+// the log and writing into it from reading as an attempt that already
+// happened.
+function armRows() {
+  if (!existsSync(process.env.FM_ARM_LOG)) return [];
+  return readFileSync(process.env.FM_ARM_LOG, "utf8")
+    .split("\n")
+    .slice(0, -1)
+    .filter((line) => line.startsWith("arm="));
+}
+
 let prompt = "";
 let rowsAtPrompt = 0;
 const client = {
   session: {
     promptAsync: async (request) => {
       prompt += request.body.parts[0].text;
-      rowsAtPrompt = existsSync(process.env.FM_ARM_LOG)
-        ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
-        : 0;
+      rowsAtPrompt = armRows().length;
     },
   },
 };
@@ -2049,13 +2131,25 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
+// The original arm and its one unretired successor each write their arm-log
+// row the moment they spawn, so waiting for both rows is a real observable
+// condition rather than a guess at elapsed time.
+let rows = [];
+for (let i = 0; i < 500; i += 1) {
+  rows = armRows();
+  if (rows.length >= 2) break;
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (rows.length !== 2) throw new Error(`unretired arm overlapped a retry: ${rows.join(" | ")}`);
+// This assertion is a bounded negative: whether the extension gives up on the
+// unretired successor and delivers its typed failure has no positive signal
+// to observe, so a bound is the only available instrument for it. The
+// row-count wait above has already confirmed the successor really spawned, so
+// this bound now covers only the bounded readiness-then-retire sequence the
+// extension runs itself rather than an unrelated cost racing it.
 for (let i = 0; i < 500 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
-const rows = existsSync(process.env.FM_ARM_LOG)
-  ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
-  : [];
-if (rows.length !== 2) throw new Error(`unretired arm overlapped a retry: ${rows.join(" | ")}`);
 if (rowsAtPrompt !== 2) throw new Error(`wake arrived after an overlapping retry (${rowsAtPrompt} arm rows)`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
 if (!prompt.includes("unready successor arm did not exit within 20ms")) throw new Error(`missing unretired-arm failure: ${prompt}`);
