@@ -88,17 +88,24 @@ Two regression tests were added inside the arm-readiness suite itself; the exist
 
 - Date: 2026-08-19
 - Command: `tests/fm-pi-watch-extension.test.sh`, run consecutively
-- Code under proof: this branch's commit, built directly on `main` at `45bd292`
+- Code under proof: `a15d993`, this branch's head when the run was taken, on top of `main` at `45bd292`
 - Host: 32 cores
-- Assertions per run: 32
+- Assertions per run: 32, every one of them passing on every run in both phases
 
 | Phase | Conditions | Result |
 |---|---|---|
 | Idle | 1-minute load average 0.66 at phase start | **20/20 passed, 0 failed** |
-| Loaded | 160 busy-loop processes on 32 cores (5x oversubscription), load average climbing to 163 | **20/20 passed, 0 failed** |
-| Total | | **40/40** |
+| Loaded | 160 busy-loop processes on 32 cores (5x oversubscription), 1-minute load average peaking at 163 | **20/20 passed, 0 failed** |
+| Total | | **40/40 passed, 0 failed** |
 
 No run was short of clean, and no assertion failed in either phase.
+
+**Why a run stamped at `a15d993` still describes this branch's head.**
+`a15d993` already carries every change this branch makes to production code and to test logic, including `5f56cc7`'s rewrite of the four fallback cases onto observable arm-row counts.
+Exactly two files have changed since it: this record, and `tests/fm-pi-watch-extension.test.sh` - and that test diff is 18 lines, all of them comment lines (`9c67804`, replacing the inherited `bash -lc` contention figures with the re-measured ones cited under cause A).
+No production file changed at all.
+So the figures above are deliberately not re-stamped to a later commit: no executable byte under proof differs between `a15d993` and this branch's head, and a fresh run could only exercise the same tree.
+Had any test-logic or production change landed after `a15d993`, this section would have required a fresh run rather than a re-dated transcription of these counts.
 
 ### Independent checks run against the same tree and host
 
