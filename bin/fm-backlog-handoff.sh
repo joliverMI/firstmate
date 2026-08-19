@@ -99,7 +99,7 @@
 # earlier --card call already staged and could not finish: every confirmed
 # arrival sweeps and links every card it can, not just the one this command
 # line named.
-# Usage: fm-backlog-handoff.sh <secondmate-id> <item-key> [--card <card-id>]
+# Usage: fm-backlog-handoff.sh <secondmate-id> <item-key>... [--card <card-id>]
 #        fm-backlog-handoff.sh --resume-pending
 set -eu
 set -o pipefail
