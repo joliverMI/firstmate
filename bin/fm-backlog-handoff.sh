@@ -49,7 +49,8 @@
 # Remote routes use an outbox handoff: one atomic local tasks-axi mv removes the
 # selected set from the dispatchable backlog into data/handoff/<id>.outbox.md,
 # then an idempotent confined transfer and fm-backlog-receive.sh deliver it.
-# A present outbox is the whole recovery record. No two-phase journal exists.
+# A present outbox is the whole recovery record for the item move itself (a
+# --card link keeps its own, below). No two-phase journal exists.
 #
 # --card <card-id> names the Admiral's Fleet Dashboard card (bin/fm-dashboard.sh)
 # this single handed-off item serves, the same best-effort link
@@ -63,17 +64,20 @@
 # item has no local state/<id>.meta to hold dashboard_card= the way a spawned
 # task does, so the pairing is held in this home's own state directory instead
 # (state/handoff-cards/<secondmate-id>, one "<item-key>\t<card-id>" line per
-# item), written once staging has actually landed. That record is retired per
-# pair, and only once the board has genuinely ANSWERED for that pair - the
-# link confirmed, or a more precise claim found already in place - never on
-# the strength of having merely attempted it. A pair whose link fails (an
-# unreachable board, a refused write, or a host that says it has no such card)
-# stays recorded, exactly where it was, for the next arrival at this
-# secondmate - a later handoff's delivery, or --resume-pending - to retry;
-# deleting it on a failed attempt would silently orphan the card for good,
-# which is the audit finding this whole mechanism exists to fix. A card the
-# host says it does not have is kept for the same reason: a 404 proves only
-# that some host answered, never that the answering host was the board. What
+# item), recorded whenever --card names an item this run routes - including a
+# re-run that moved nothing because the item was already present, since a
+# re-run states which card the item serves just as well as the first run did.
+# That record is retired per pair, and only once the board has genuinely
+# ANSWERED for that pair - the link confirmed, or a more precise claim found
+# already in place - never on the strength of having merely attempted it.
+# A pair whose link fails (an unreachable board, a refused write, or a host
+# that says it has no such card) stays recorded, exactly where it was, for
+# the next arrival at this secondmate - a later handoff's delivery, or
+# --resume-pending - to retry; deleting it on a failed attempt would silently
+# orphan the card for good, which is the audit finding this whole mechanism
+# exists to fix. A card the host says it does not have is kept for the same
+# reason: a 404 proves only that some host answered, never that the answering
+# host was the board. What
 # is bounded there is the noise, not the record - each such pair is reported
 # once, not on every arrival.
 # The handed-off item itself is never rewritten:
