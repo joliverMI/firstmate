@@ -65,7 +65,15 @@
 # <card-id>` body line on the item itself, via `tasks-axi update
 # --body-file` (delegating the write to the same single owner of the backlog
 # format used everywhere else in this script), so the identity travels with
-# the item through any later move. A card id that does not resolve, or an
+# the item through any later move. That is the item's SINGLE card identity:
+# the write replaces any `dashboard_card:` line already present rather than
+# appending beside it, so a corrected card id never leaves one item pointing
+# at two cards (which the outbox-resume path would then link both of).
+# Because handoffs are idempotent, the path where nothing actually moved
+# claims the card only when it carries neither a ref nor an agent: by then the
+# secondmate may already have spawned against it with a more precise identity,
+# and a re-run is not new evidence about who owns the card. A card id that
+# does not resolve, or an
 # unreachable dashboard, never fails the handoff; it is reported loudly on
 # stderr and, when the dashboard answers at all, recorded through
 # `fm-dashboard.sh audit-log --fleet`. No --card is the default and stays a
@@ -335,22 +343,29 @@ backlog_key_body_lines() { # <file> <key>
 # metadata to hold that. Read-modify-write: reads the existing plain body with
 # backlog_key_body_lines above, then delegates the actual write to `tasks-axi
 # update --body-file`, the single owner of the backlog format, so this never
-# hand-writes markdown indentation itself. Idempotent - a re-run that already
-# carries the same card id is a no-op. Failure here is reported by the caller
-# exactly like a failed dashboard call; it never fails the handoff itself.
+# hand-writes markdown indentation itself. This line is the item's single
+# durable card identity, exactly like the one `dashboard_card=` in
+# state/<id>.meta, so the write REPLACES any `dashboard_card:` line already on
+# the item rather than appending beside it: an item that could carry two card
+# lines would double-link on the outbox-resume path, which reads them all back.
+# Idempotent - a re-run that already records exactly this card id is a no-op.
+# Failure here is reported by the caller exactly like a failed dashboard call;
+# it never fails the handoff itself.
 annotate_dashboard_card() { # <file> <key> <card-id>
-  local file=$1 key=$2 card=$3 tmp existing
+  local file=$1 key=$2 card=$3 tmp existing kept desired
   existing=$(backlog_key_body_lines "$file" "$key")
-  case "$existing" in
-    *"dashboard_card: $card"*) return 0 ;;
-  esac
-  tmp=$(mktemp "${TMPDIR:-/tmp}/fm-handoff-body.XXXXXX") || return 1
+  kept=
   if [ -n "$existing" ]; then
-    printf '%s\n' "$existing" > "$tmp"
-  else
-    : > "$tmp"
+    kept=$(printf '%s\n' "$existing" | grep -v '^dashboard_card:[[:space:]]' || true)
   fi
-  printf 'dashboard_card: %s\n' "$card" >> "$tmp"
+  if [ -n "$kept" ]; then
+    desired=$(printf '%s\ndashboard_card: %s' "$kept" "$card")
+  else
+    desired="dashboard_card: $card"
+  fi
+  [ "$desired" != "$existing" ] || return 0
+  tmp=$(mktemp "${TMPDIR:-/tmp}/fm-handoff-body.XXXXXX") || return 1
+  printf '%s\n' "$desired" > "$tmp"
   if ! tasks-axi update "$key" --file "$file" --body-file "$tmp" >/dev/null 2>&1; then
     rm -f "$tmp"
     return 1
@@ -437,12 +452,42 @@ dashboard_link_card() { # <secondmate-id> <item-key> <card-id>
   return 0
 }
 
+# True when the board answers AND the card already carries a ref or an agent,
+# i.e. something already claimed this card. A board that cannot be read at all
+# (unreachable, unknown card id) is deliberately NOT reported as linked, so the
+# caller still attempts the write and fails the same loud, recorded,
+# never-fatal way an unreachable board always has. Sets
+# CARD_EXISTING_REF/CARD_EXISTING_AGENT for the caller's message.
+CARD_EXISTING_REF=
+CARD_EXISTING_AGENT=
+card_already_linked() { # <card-id>
+  local card=$1 out
+  CARD_EXISTING_REF=
+  CARD_EXISTING_AGENT=
+  out=$("$SCRIPT_DIR/fm-dashboard.sh" show "$card" --json 2>/dev/null) || return 1
+  [ -n "$out" ] || return 1
+  CARD_EXISTING_REF=$(printf '%s' "$out" | jq -r '.backlog_ref // empty' 2>/dev/null) || return 1
+  CARD_EXISTING_AGENT=$(printf '%s' "$out" | jq -r '.agent // empty' 2>/dev/null) || return 1
+  [ -n "$CARD_EXISTING_REF" ] || [ -n "$CARD_EXISTING_AGENT" ]
+}
+
 # Annotate then link: the single-item path both the immediate local move and
 # the immediate remote delivery use once the item has genuinely landed.
-handoff_dashboard_link() { # <backlog-file> <secondmate-id> <item-key> <card-id>
-  local file=$1 sm_id=$2 key=$3 card=$4
+# <preserve-existing-link> is 1 on the idempotent already-present path, where
+# nothing actually moved: a re-run there must never overwrite a link that has
+# since become more precise than this handoff's own coarse identity (the
+# secondmate's fm-spawn.sh --card sets ref=<home>:<task-id>, agent=<task-id>),
+# so the board is only claimed when the card carries neither a ref nor an
+# agent. The durable `dashboard_card:` annotation is still (re)written either
+# way - it records which card the item serves, not who currently owns the card.
+handoff_dashboard_link() { # <backlog-file> <secondmate-id> <item-key> <card-id> [preserve-existing-link]
+  local file=$1 sm_id=$2 key=$3 card=$4 preserve=${5:-0}
   if ! annotate_dashboard_card "$file" "$key" "$card"; then
     echo "warning: dashboard card link failed for $key -> card $card (annotate): could not record dashboard_card= on the handed-off item" >&2
+  fi
+  if [ "$preserve" -eq 1 ] && card_already_linked "$card"; then
+    echo "dashboard: card $card already links to ${CARD_EXISTING_REF:-(no ref)} (agent=${CARD_EXISTING_AGENT:-none}); left unchanged"
+    return 0
   fi
   dashboard_link_card "$sm_id" "$key" "$card"
 }
@@ -626,7 +671,16 @@ remote_handoff() { # <secondmate-id> <keys...>
   echo "handed off ${#requested[@]} item(s) to remote secondmate $id: ${requested[*]}"
   [ "${#already[@]}" -eq 0 ] || echo "  already staged (recovered): ${already[*]}"
   warn_stale_public_commitments "$id" "${requested[@]}"
-  [ "$CARD_SET" -eq 0 ] || dashboard_link_card "$id" "${requested[0]}" "$CARD_ARG"
+  # Nothing newly staged means this run only re-delivered an already-staged
+  # outbox, the remote twin of the local already-present path: never overwrite
+  # a link something more precise has since claimed.
+  if [ "$CARD_SET" -eq 1 ]; then
+    if [ "${#to_move[@]}" -eq 0 ] && card_already_linked "$CARD_ARG"; then
+      echo "dashboard: card $CARD_ARG already links to ${CARD_EXISTING_REF:-(no ref)} (agent=${CARD_EXISTING_AGENT:-none}); left unchanged"
+    else
+      dashboard_link_card "$id" "${requested[0]}" "$CARD_ARG"
+    fi
+  fi
 }
 
 with_remote_route_locks() { # <secondmate-id> <function> <args...>
@@ -754,7 +808,7 @@ fi
 
 if [ "${#TO_MOVE[@]}" -eq 0 ]; then
   echo "nothing to move: ${ALREADY[*]:-no keys} already present in $SUB_BACKLOG"
-  [ "$CARD_SET" -eq 0 ] || handoff_dashboard_link "$SUB_BACKLOG" "$ID" "${ALREADY[0]}" "$CARD_ARG"
+  [ "$CARD_SET" -eq 0 ] || handoff_dashboard_link "$SUB_BACKLOG" "$ID" "${ALREADY[0]}" "$CARD_ARG" 1
   exit 0
 fi
 

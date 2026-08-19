@@ -37,9 +37,24 @@ mkdir -p "$DASHBOARD_HOME/state" "$DASHBOARD_HOME/data"
 SERVER_PID=""
 
 fm_card_link_test_cleanup() {
+  local worker_pid i
   if [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
     kill "$SERVER_PID" 2>/dev/null
     wait "$SERVER_PID" 2>/dev/null
+  fi
+  # The remote-route coverage below stages jobs through a detached remote job
+  # worker; wait for it to actually exit so it cannot still be writing into
+  # $TMP_ROOT while fm_test_cleanup removes it.
+  if [ -f "$TMP_ROOT/remote-jobs/worker.pid" ]; then
+    worker_pid=$(cat "$TMP_ROOT/remote-jobs/worker.pid" 2>/dev/null || true)
+    if [ -n "$worker_pid" ]; then
+      kill "$worker_pid" 2>/dev/null || true
+      i=0
+      while [ "$i" -lt 500 ] && kill -0 "$worker_pid" 2>/dev/null; do
+        sleep 0.01
+        i=$((i + 1))
+      done
+    fi
   fi
   fm_test_cleanup
 }
@@ -417,6 +432,226 @@ EOF
   pass "handoff --card never fails the handoff when the dashboard is unreachable, but warns loudly"
 }
 
+test_handoff_refuses_card_with_more_than_one_item() {
+  local home sub id out rc
+  home="$TMP_ROOT/handoff-multi-main"
+  sub="$TMP_ROOT/handoff-multi-sub"
+  id=handoff-multi-sm
+  setup_handoff_homes "$home" "$sub" "$id"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] handoff-item-m1 - first (repo: alpha)
+- [ ] handoff-item-m2 - second (repo: alpha)
+
+## Done
+EOF
+
+  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-m1 handoff-item-m2 --card some-card 2>&1) && rc=0 || rc=$?
+  expect_code 1 "$rc" "a multi-item --card handoff should be refused"
+  assert_contains "$out" "--card applies only to a single-item handoff" "the refusal did not name the single-item rule"
+  assert_grep 'handoff-item-m1' "$home/data/backlog.md" "the refused handoff moved handoff-item-m1 anyway"
+  assert_grep 'handoff-item-m2' "$home/data/backlog.md" "the refused handoff moved handoff-item-m2 anyway"
+  pass "handoff refuses --card with more than one item and moves nothing"
+}
+
+# Regression: a handoff is documented as idempotent, so the same command is
+# expected to be re-run. By then the secondmate may already have spawned
+# against the card, replacing the coarse handoff identity with a precise
+# per-task one - re-running must not reset the board to the stale identity.
+test_handoff_already_present_never_overwrites_an_existing_card_link() {
+  local home sub id card out
+  home="$TMP_ROOT/handoff-relink-main"
+  sub="$TMP_ROOT/handoff-relink-sub"
+  id=handoff-relink-sm
+  setup_handoff_homes "$home" "$sub" "$id"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+
+## Done
+EOF
+  cat > "$sub/data/backlog.md" <<'EOF'
+## Queued
+- [ ] handoff-item-a4 - already landed here (repo: alpha)
+
+## Done
+EOF
+  card=$(add_card "Already-linked coverage")
+  # Exactly what the secondmate's own fm-spawn.sh --card writes once it picks
+  # the item up: a precise <home>:<task-id> ref and the task id as agent.
+  "$DASH" ref "$card" "sm-home:task-99" >/dev/null || fail "setup: could not set the card ref"
+  "$DASH" agent "$card" task-99 >/dev/null || fail "setup: could not set the card agent"
+  "$DASH" status "$card" working >/dev/null || fail "setup: could not move the card to working"
+
+  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-a4 --card "$card" 2>&1)
+  expect_code 0 "$?" "re-running an already-landed handoff should still succeed"
+  assert_contains "$out" "nothing to move" "the re-run did not report the idempotent no-op"
+  assert_contains "$out" "already links to sm-home:task-99" "the re-run did not report leaving the existing link alone"
+  assert_not_contains "$out" "dashboard: linked card" "the re-run claimed it linked a card that was already linked"
+
+  [ "$(card_field "$card" backlog_ref)" = "sm-home:task-99" ] \
+    || fail "a handoff re-run overwrote a newer, more precise card ref"
+  [ "$(card_field "$card" agent)" = task-99 ] \
+    || fail "a handoff re-run overwrote a newer, more precise card agent"
+  assert_grep "dashboard_card: $card" "$sub/data/backlog.md" \
+    "the re-run should still record the item's durable card identity"
+  pass "a handoff re-run never overwrites a card link something more precise already claimed"
+}
+
+# Regression: the `dashboard_card:` body line is the item's SINGLE durable card
+# identity, so a corrected card id must replace the old one. Two lines on one
+# item would make the outbox-resume path link both cards to the same item.
+test_handoff_card_annotation_replaces_a_stale_card_id() {
+  local home sub id card out count
+  home="$TMP_ROOT/handoff-recard-main"
+  sub="$TMP_ROOT/handoff-recard-sub"
+  id=handoff-recard-sm
+  setup_handoff_homes "$home" "$sub" "$id"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] handoff-item-a5 - carries a stale card id (repo: alpha)
+  intent: keep this body line
+  dashboard_card: stale-card-id
+
+## Done
+EOF
+  card=$(add_card "Re-carded coverage")
+
+  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-a5 --card "$card" 2>&1)
+  expect_code 0 "$?" "handoff onto a corrected card should succeed"
+  assert_contains "$out" "dashboard: linked card $card" "the corrected card was not linked"
+  assert_grep "dashboard_card: $card" "$sub/data/backlog.md" "the corrected card id was not recorded"
+  assert_no_grep "dashboard_card: stale-card-id" "$sub/data/backlog.md" \
+    "the stale card id survived beside the corrected one"
+  assert_grep "intent: keep this body line" "$sub/data/backlog.md" \
+    "rewriting the card line dropped the rest of the item body"
+  count=$(grep -c 'dashboard_card:' "$sub/data/backlog.md")
+  [ "$count" -eq 1 ] || fail "item carries $count dashboard_card lines; exactly one is the durable identity"
+  pass "a corrected --card replaces the item's stale dashboard_card line rather than appending beside it"
+}
+
+# --- remote-route handoff coverage ------------------------------------------
+# A remote handoff stages the item into data/handoff/<id>.outbox.md, annotates
+# the card id onto the staged item there, and links the card only once delivery
+# is confirmed. A crash in between leaves the annotated outbox as the sole
+# record of which card to link, which is what --resume-pending reads back.
+# Both paths run through the same fake-ssh + real remote entrypoint shape
+# tests/fm-remote-backlog-handoff.test.sh uses.
+
+REMOTE_SM='remote-card-sm'
+REMOTE_PARENT="$TMP_ROOT/remote-parent"
+REMOTE_ROOT="$TMP_ROOT/remote-root"
+REMOTE_SM_HOME="$TMP_ROOT/remote-home"
+REMOTE_FAKEBIN=
+
+setup_remote_route() {
+  mkdir -p "$REMOTE_PARENT/data" "$REMOTE_PARENT/state" "$REMOTE_ROOT/bin" \
+    "$REMOTE_SM_HOME/data" "$REMOTE_SM_HOME/state" "$REMOTE_SM_HOME/config" "$REMOTE_SM_HOME/bin"
+  REMOTE_FAKEBIN=$(fm_fakebin "$TMP_ROOT/remote-fake")
+  printf 'fixture\n' > "$REMOTE_ROOT/AGENTS.md"
+  cp "$ROOT/bin/fm-remote-entrypoint.sh" "$ROOT/bin/fm-remote-job-lib.sh" \
+    "$ROOT/bin/fm-remote-job-worker.sh" "$ROOT/bin/fm-remote-file.sh" \
+    "$ROOT/bin/fm-backlog-receive.sh" "$ROOT/bin/fm-tasks-axi-lib.sh" \
+    "$ROOT/bin/fm-wake-lib.sh" "$REMOTE_ROOT/bin/"
+  ln -s "$(command -v tasks-axi)" "$REMOTE_ROOT/bin/tasks-axi"
+  ln -s "$(command -v node)" "$REMOTE_ROOT/bin/node"
+  chmod +x "$REMOTE_ROOT/bin"/*.sh
+  git -C "$REMOTE_ROOT" init -q -b main
+  git -C "$REMOTE_ROOT" add AGENTS.md bin
+  git -C "$REMOTE_ROOT" commit -qm 'tracked remote fixture'
+  printf 'fixture\n' > "$REMOTE_SM_HOME/AGENTS.md"
+  printf '%s\n' "$REMOTE_SM" > "$REMOTE_SM_HOME/.fm-secondmate-home"
+  printf -- '- %s - remote delivery (host: remote-mac; root: %s; home: %s; scope: remote work; projects: alpha; added 2026-08-02)\n' \
+    "$REMOTE_SM" "$REMOTE_ROOT" "$REMOTE_SM_HOME" > "$REMOTE_PARENT/data/secondmates.md"
+  cat > "$REMOTE_FAKEBIN/fake-ssh" <<'SH'
+#!/usr/bin/env bash
+set -u
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) shift 2 ;;
+    --) shift; break ;;
+    *) exit 90 ;;
+  esac
+done
+host=$1
+entry=$2
+shift 2
+[ "$host" = remote-mac ] || exit 91
+[ "$entry" = fm-remote-entrypoint.sh ] || exit 92
+[ "${FM_FAKE_SSH_MODE:-normal}" != unreachable ] || exit 255
+exec "$FM_FAKE_REMOTE_ENTRYPOINT" "$@"
+SH
+  chmod +x "$REMOTE_FAKEBIN/fake-ssh"
+}
+
+write_remote_parent_backlog() {  # <queued-line>
+  cat > "$REMOTE_PARENT/data/backlog.md" <<EOF
+## In flight
+
+## Queued
+$1
+
+## Done
+EOF
+}
+
+run_remote_handoff() {  # <handoff args...>
+  FM_HOME="$REMOTE_PARENT" \
+  FM_ROOT_OVERRIDE="$ROOT" \
+  FM_SSH_BIN="$REMOTE_FAKEBIN/fake-ssh" \
+  FM_FAKE_REMOTE_ENTRYPOINT="$REMOTE_ROOT/bin/fm-remote-entrypoint.sh" \
+  FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux \
+  FM_REMOTE_JOB_STATE_ROOT="$TMP_ROOT/remote-jobs" \
+    "$HANDOFF" "$@" 2>&1
+}
+
+test_remote_handoff_links_card_only_after_confirmed_delivery() {
+  local card out
+  card=$(add_card "Remote handoff coverage")
+  write_remote_parent_backlog '- [ ] remote-item-r1 - remote card work (repo: alpha)'
+
+  out=$(run_remote_handoff "$REMOTE_SM" remote-item-r1 --card "$card")
+  expect_code 0 "$?" "remote handoff with --card should succeed"
+  assert_contains "$out" "handed off 1 item(s) to remote secondmate $REMOTE_SM" "remote handoff did not report success"
+  assert_contains "$out" "dashboard: linked card $card" "remote handoff did not report the dashboard link firing"
+  assert_absent "$REMOTE_PARENT/data/handoff/$REMOTE_SM.outbox.md" "confirmed remote delivery left a pending outbox"
+  assert_grep 'remote-item-r1' "$REMOTE_SM_HOME/data/backlog.md" "remote delivery lost the item"
+  assert_grep "dashboard_card: $card" "$REMOTE_SM_HOME/data/backlog.md" \
+    "the card id did not travel with the item through the outbox transfer"
+
+  [ "$(card_field "$card" backlog_ref)" = "$REMOTE_SM:remote-item-r1" ] \
+    || fail "remote card ref was not set to $REMOTE_SM:remote-item-r1"
+  [ "$(card_field "$card" agent)" = "$REMOTE_SM" ] || fail "remote card agent was not set to the secondmate id"
+  [ "$(card_status "$card")" = working ] || fail "not_started card did not advance to working after confirmed remote delivery"
+  pass "a remote handoff links the card once delivery is confirmed, carrying the card id through the outbox"
+}
+
+test_resume_pending_links_the_card_recorded_in_the_staged_outbox() {
+  local card out rc outbox
+  card=$(add_card "Remote resume coverage")
+  outbox="$REMOTE_PARENT/data/handoff/$REMOTE_SM.outbox.md"
+  write_remote_parent_backlog '- [ ] remote-item-r2 - survives an unreachable secondmate (repo: alpha)'
+
+  out=$(FM_FAKE_SSH_MODE=unreachable run_remote_handoff "$REMOTE_SM" remote-item-r2 --card "$card") && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || fail "handoff to an unreachable remote claimed success"
+  assert_present "$outbox" "the unreachable handoff lost its durable outbox"
+  assert_grep "dashboard_card: $card" "$outbox" "the staged outbox did not record which card to link on recovery"
+  [ -z "$(card_field "$card" backlog_ref)" ] || fail "the card was linked before delivery was ever confirmed"
+  [ "$(card_status "$card")" = not_started ] || fail "the card advanced before delivery was ever confirmed"
+
+  # --resume-pending takes no keys and no --card: the annotated outbox is the
+  # only surviving record of which card this delivery serves.
+  out=$(run_remote_handoff --resume-pending)
+  expect_code 0 "$?" "resuming the pending outbox should succeed"
+  assert_absent "$outbox" "confirmed resume did not clean the local outbox"
+  assert_grep 'remote-item-r2' "$REMOTE_SM_HOME/data/backlog.md" "resume did not deliver the item"
+
+  [ "$(card_field "$card" backlog_ref)" = "$REMOTE_SM:remote-item-r2" ] \
+    || fail "resume did not link the card recorded in the staged outbox"
+  [ "$(card_field "$card" agent)" = "$REMOTE_SM" ] || fail "resume did not set the card agent"
+  [ "$(card_status "$card")" = working ] || fail "resume did not advance the not_started card to working"
+  pass "a crash-recovered outbox links its card from the annotated item alone, with no --card on the command line"
+}
+
 test_spawn_links_card_and_advances_not_started_to_working
 test_spawn_without_card_flag_never_touches_the_dashboard
 test_spawn_with_unreachable_dashboard_still_succeeds_and_warns
@@ -429,5 +664,15 @@ test_teardown_never_downgrades_an_already_complete_card
 test_handoff_links_card_and_advances_not_started_to_working
 test_handoff_without_card_flag_never_touches_the_dashboard
 test_handoff_with_unreachable_dashboard_still_succeeds_and_warns
+test_handoff_refuses_card_with_more_than_one_item
+test_handoff_already_present_never_overwrites_an_existing_card_link
+test_handoff_card_annotation_replaces_a_stale_card_id
+if command -v node >/dev/null 2>&1; then
+  setup_remote_route
+  test_remote_handoff_links_card_only_after_confirmed_delivery
+  test_resume_pending_links_the_card_recorded_in_the_staged_outbox
+else
+  pass "skipped remote-route card coverage - node not available for the remote fixture"
+fi
 
 echo "# all fm-dashboard-card-link tests passed"

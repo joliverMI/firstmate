@@ -87,6 +87,17 @@ die() { printf 'fm-dashboard.sh: %s\n' "$1" >&2; exit 1; }
 
 need_tool() { command -v "$1" >/dev/null 2>&1 || die "requires '$1' on PATH"; }
 
+# Every dashboard call is bounded. The board is routinely a tailnet host, so an
+# unreachable one drops SYNs rather than refusing them, and an unbounded curl
+# would then block for the OS connect timeout (minutes). Callers include
+# best-effort card links that run while a cross-process handoff lock is held and
+# that bin/fm-bootstrap.sh drives synchronously, so a powered-off board must
+# fail fast instead of stalling the fleet. A timeout is just another unreachable
+# board: curl exits non-zero and the caller warns. FM_DASHBOARD_CONNECT_TIMEOUT
+# and FM_DASHBOARD_MAX_TIME override the defaults (seconds).
+DASH_CONNECT_TIMEOUT="${FM_DASHBOARD_CONNECT_TIMEOUT:-5}"
+DASH_MAX_TIME="${FM_DASHBOARD_MAX_TIME:-20}"
+
 # dash_call METHOD PATH [JSON_BODY] - prints response body on stdout,
 # prints an error message on stderr and returns non-zero on failure. Never
 # exits the process directly: a caller (cmd_server_status in particular)
@@ -97,13 +108,15 @@ dash_call() {
   need_tool jq
   base=$(dash_url)
   if [ -n "$body" ]; then
-    resp=$(curl -sS -w '\n%{http_code}' -X "$method" "$base$path" \
+    resp=$(curl -sS --connect-timeout "$DASH_CONNECT_TIMEOUT" --max-time "$DASH_MAX_TIME" \
+      -w '\n%{http_code}' -X "$method" "$base$path" \
       -H 'Content-Type: application/json' -d "$body" 2>&1) || {
       printf 'fm-dashboard.sh: could not reach dashboard at %s (is it running? see: fm-dashboard.sh start / server-status): %s\n' "$base" "$resp" >&2
       return 1
     }
   else
-    resp=$(curl -sS -w '\n%{http_code}' -X "$method" "$base$path" 2>&1) || {
+    resp=$(curl -sS --connect-timeout "$DASH_CONNECT_TIMEOUT" --max-time "$DASH_MAX_TIME" \
+      -w '\n%{http_code}' -X "$method" "$base$path" 2>&1) || {
       printf 'fm-dashboard.sh: could not reach dashboard at %s (is it running? see: fm-dashboard.sh start / server-status): %s\n' "$base" "$resp" >&2
       return 1
     }

@@ -73,6 +73,7 @@ All three are deliberately narrow, and each narrowing is a specific decision, no
 - **Scout and secondmate teardowns never touch the card.** A scout's worktree is scratch by design and its report, not a card, is the deliverable; a secondmate is recorded in the secondmate registry, never as a backlog item.
 - **A handoff's `--card` requires exactly one item.** A card names one deliverable, so handing off several items at once with one `--card` is refused outright rather than guessing which item the card serves.
 - **An already-`complete` card is never downgraded back to `testing`.** The Admiral's own approval is terminal until he reopens it from the card.
+- **A handoff re-run never overwrites a link that already exists.** Handoffs are idempotent by design, so the same command is expected to be run twice; but by the second run the secondmate may already have spawned against that card, replacing the coarse `<secondmate-id>:<item-key>` identity with the precise `<home>:<task-id>` one. On the path where nothing actually moved, the card is therefore claimed only when it carries neither a `backlog_ref` nor an `agent`; anything already there is left alone, since re-running a handoff is not new evidence about who owns the card. The item's own durable `dashboard_card:` line is still (re)written either way - it records which card the item serves, not who currently holds it, and an item can only ever carry one such line, so a corrected card id replaces the old one instead of leaving the item pointing at two cards.
 
 A silent failure here would be the same shape as the bug this fixes, so neither direction is allowed to fail quietly. A card id that does not resolve, or a dashboard that will not answer, prints a loud `warning:` on the calling script's stderr and, whenever the dashboard answers at all, is also recorded through `bin/fm-dashboard.sh audit-log --fleet` - the same discrepancy log the fleet auditor already reads - so a link that could not fire is visible there even when nobody was watching the terminal at the time.
 
@@ -120,6 +121,8 @@ The sweep itself (`bin/fm-fleet-audit-sweep.sh`) claims a single-slot lock store
 
 A secondmate host is not where the board's server runs; it calls the primary's instance over the network.
 Point it at the primary with either `$FM_DASHBOARD_URL` (a full base URL) or `$FM_DASHBOARD_HOST` / `$FM_DASHBOARD_PORT`, or persist the choice in `config/dashboard-url` (first line, gitignored, one URL) so every `bin/fm-dashboard.sh` call on that host resolves correctly without repeating the environment variable.
+Because that primary is typically a tailnet host that can simply be powered off - dropping packets rather than refusing them - every `bin/fm-dashboard.sh` call is bounded (`--connect-timeout` 5s, `--max-time` 20s; override with `$FM_DASHBOARD_CONNECT_TIMEOUT` / `$FM_DASHBOARD_MAX_TIME`).
+A board that never answers is therefore just a fast unreachable board, which matters because the best-effort card links below run inside held handoff locks and on `bin/fm-bootstrap.sh`'s synchronous path, where an unbounded wait would stall the whole fleet rather than one card.
 
 ## Connectivity failure is loud, not a quiet empty board
 
