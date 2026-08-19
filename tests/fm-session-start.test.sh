@@ -290,23 +290,27 @@ SH
   chmod +x "$fakebin/ps"
 }
 
-# make_fake_tmux <fakebin> <live-target>: display-message succeeds only for
-# the given "session:window" target - the exact primitive
-# fm_backend_target_exists uses for a tmux endpoint liveness read.
+# make_fake_tmux <fakebin> <live-target>: list-panes succeeds only for the
+# given "session:window" target - the exact primitive fm_backend_target_exists
+# uses for a tmux endpoint liveness read. Real tmux resolves each target
+# component by PREFIX unless it carries the exact-match "=" pin, and the probe
+# pins both components; this fixture already answers by exact comparison, so it
+# models that by dropping the pins before comparing.
 make_fake_tmux() {
   local fakebin=$1 live=$2
   cat > "$fakebin/tmux" <<SH
 #!/usr/bin/env bash
 set -u
 case "\${1:-}" in
-  display-message)
+  list-panes)
     target=""
     prev=""
     for a in "\$@"; do
       [ "\$prev" = "-t" ] && target="\$a"
       prev="\$a"
     done
-    [ "\$target" = "$live" ] && { printf '%%1\n'; exit 0; }
+    target=\${target//=/}
+    [ "\$target" = "$live" ] && { printf '1: [1x1] %%1\n'; exit 0; }
     exit 1
     ;;
 esac
@@ -383,6 +387,35 @@ case "${1:-}" in
     else
       printf '%s\n' main
     fi
+    exit 0
+    ;;
+  list-panes)
+    # Mirrors list-windows's inventory truth (present/absent), never
+    # display-message's active-window fallback above: that fallback IS the
+    # real bug fm_backend_target_exists must no longer trust, so a correct
+    # fix reports "missing" here exactly when list-windows omits the mate.
+    # The probe pins both target components with tmux's exact-match "=" prefix;
+    # this fixture resolves names exactly already, so it drops the pins.
+    target=
+    prev=
+    for arg in "$@"; do
+      [ "$prev" = -t ] && target=$arg
+      prev=$arg
+    done
+    target=${target//=/}
+    window=${target#*:}
+    if [ "$mode" = unreadable ] && [ ! -e "$spawned" ] && [ ! -e "$killed" ]; then
+      exit 1
+    fi
+    if [ -e "$spawned" ]; then
+      present=$mate_window
+    elif [ ! -e "$killed" ] && { [ "$mode" = ambiguous ] || [ "$mode" = shell ]; }; then
+      present=$mate_window
+    else
+      present=main
+    fi
+    [ "$window" = "$present" ] || exit 1
+    printf '1: [1x1] [history 0/0, 0 bytes] %%1\n'
     exit 0
     ;;
   has-session) exit 0 ;;
@@ -1319,6 +1352,39 @@ EOF
   assert_contains "$out" "endpoint: dead (backend=tmux window=fm-sess:dead-window)" "dead tmux endpoint not reported dead"
 
   pass "tmux endpoint liveness is reported per task: alive for a live window, dead for a gone one"
+}
+
+test_endpoint_liveness_remote_is_not_probed_locally() {
+  local rec root home fakebin out
+  rec=$(new_world liveness-remote)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  make_fake_tmux "$fakebin" "fm-sess:live-window"
+
+  # fm-spawn.sh records exactly this shape for a remote secondmate: a
+  # "remote:<id>" window handle plus remote_host, and NO backend= key (so
+  # fm_backend_of_meta defaults it to tmux). The endpoint lives on another
+  # host's tmux server, so the local one cannot answer for it in either
+  # direction and the digest must not pretend otherwise.
+  printf 'window=remote:mate-1\nkind=secondmate\nremote_host=build-box\n' \
+    > "$home/state/mate-1.meta"
+  printf 'window=fm-sess:live-window\nkind=ship\n' > "$home/state/task-live.meta"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "endpoint: unknown (remote build-box; not checked from here, window=remote:mate-1)" \
+    "a remote secondmate endpoint was not reported as unchecked"
+  assert_not_contains "$out" "endpoint: dead (backend=tmux window=remote:mate-1)" \
+    "a healthy remote secondmate was judged dead by the local tmux server"
+  assert_not_contains "$out" "endpoint: alive (backend=tmux window=remote:mate-1)" \
+    "a remote secondmate was judged alive by the local tmux server"
+  # The local probe must still answer normally for genuinely local records.
+  assert_contains "$out" "endpoint: alive (backend=tmux window=fm-sess:live-window)" \
+    "skipping remote records disturbed the local endpoint answer"
+
+  pass "session start: a remote secondmate endpoint is reported unchecked, never judged by the local tmux server"
 }
 
 test_endpoint_liveness_herdr() {
@@ -2419,6 +2485,7 @@ test_status_tail_bounding
 test_status_tail_line_cap
 test_orphan_status_logs_are_printed
 test_endpoint_liveness_tmux
+test_endpoint_liveness_remote_is_not_probed_locally
 test_endpoint_liveness_herdr
 test_composition_invokes_real_scripts
 test_backlog_compact_tasks_axi_omits_bodies_and_keeps_metadata

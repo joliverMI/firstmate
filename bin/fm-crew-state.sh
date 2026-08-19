@@ -144,12 +144,19 @@ LOG_VERB=$(status_line_verb "$LOG_LINE")
 # state (e.g. done) instead of being masked as unknown. Backend-aware
 # (fm_backend_of_meta defaults absent backend= to tmux, the P1 contract): a
 # herdr task is read through fm_backend_capture instead of a bare tmux probe.
+# The tmux branch defers to fm_backend_target_exists (bin/fm-backend.sh) rather
+# than a bare `display-message` probe of its own: that primitive's exit status
+# alone cannot be trusted as an existence answer when the caller runs inside a
+# tmux client (fm_backend_target_exists's own header has the empirical basis),
+# which describes firstmate's own process here just as much as any other
+# caller.
 TASK_BACKEND=$(fm_backend_of_meta "$META")
 BACKEND_TARGET=$(fm_backend_target_of_meta "$META")
+REMOTE_HOST=$(meta_value remote_host)
 EXPECTED_LABEL="fm-$ID"
 pane_readable() {  # <target>
   case "$TASK_BACKEND" in
-    tmux) tmux display-message -p -t "$1" '#{pane_id}' >/dev/null 2>&1 ;;
+    tmux) fm_backend_target_exists tmux "$1" ;;
     *) fm_backend_capture "$TASK_BACKEND" "$1" 1 "$EXPECTED_LABEL" >/dev/null 2>&1 ;;
   esac
 }
@@ -537,7 +544,15 @@ fi
 # is no run to consult, so a dead/unreadable target means the crew is gone: report
 # unknown rather than trusting a possibly-stale status log as the current state.
 [ -n "$BACKEND_TARGET" ] || emit unknown none "no backend target recorded"
-pane_readable "$BACKEND_TARGET" || emit unknown none "backend target gone: $BACKEND_TARGET"
+# A remote secondmate's endpoint lives on ANOTHER host's server (window=remote:<id>
+# with no backend= key, which fm_backend_of_meta defaults to tmux), so the local
+# probe can never resolve it and would deterministically read a healthy remote
+# mate as gone. Skip straight to the status-log fallback below instead of
+# trusting a probe that structurally cannot answer for this target, matching how
+# the session-start digest already treats these records (bin/fm-session-start.sh).
+if [ -z "$REMOTE_HOST" ]; then
+  pane_readable "$BACKEND_TARGET" || emit unknown none "backend target gone: $BACKEND_TARGET"
+fi
 
 # Secondmates idle on their own watcher (idle pane = healthy), so the busy
 # state is not meaningful for them; read their state from the status log only.

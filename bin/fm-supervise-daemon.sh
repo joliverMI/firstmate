@@ -1159,8 +1159,13 @@ inject_msg() {  # <message> [state]
   # submit. An unconfirmed/unknown pane does NOT count as delivered, so the
   # buffer is preserved (strict) rather than cleared.
   # Dispatches through fm_backend_send_text_submit (bin/fm-backend.sh): for
-  # backend=tmux this calls fm_backend_tmux_send_text_submit, a verbatim
-  # re-export of fm_tmux_submit_core - byte-identical to calling it directly.
+  # backend=tmux this calls fm_backend_tmux_send_text_submit, which resolves
+  # the target through fm_backend_tmux_exact_target BEFORE typing anything and
+  # can refuse outright - printing the `target-unresolved` verdict and never
+  # reaching fm_tmux_submit_core - when the recorded endpoint does not resolve
+  # to one live pane. That refusal arrives here as a non-`empty` verdict and is
+  # handled by the same strict path as an unconfirmed submit below, so the
+  # buffer is preserved rather than cleared.
   retries=${FM_INJECT_CONFIRM_RETRIES:-$INJECT_CONFIRM_RETRIES_DEFAULT}
   sleep_s=${FM_INJECT_CONFIRM_SLEEP:-$INJECT_CONFIRM_SLEEP_DEFAULT}
   verdict=$(fm_backend_send_text_submit "$backend" "$target" "$msg" "$retries" "$sleep_s" "$sleep_s")
@@ -1430,9 +1435,11 @@ fm_super_main() {
 
   # --- validate supervisor target at startup (a missing target is a typo) ---
   # Dispatches through bin/fm-backend.sh instead of a raw `tmux display-message`
-  # probe, so a herdr supervisor pane is checked via the herdr adapter; for
-  # backend=tmux this runs the exact same `tmux display-message -p -t "$TARGET"
-  # '#{pane_id}'` call as before.
+  # probe, so a herdr supervisor pane is checked via the herdr adapter rather
+  # than always assuming tmux. How each backend actually answers existence -
+  # and, for tmux, why a display-style probe cannot - is documented once at
+  # fm_backend_target_exists's own header in bin/fm-backend.sh; do not restate
+  # the mechanism here.
   if ! fm_backend_target_exists "$BACKEND" "$TARGET"; then
     echo "error: supervisor target '$TARGET' does not resolve to a $BACKEND pane; set FM_SUPERVISOR_TARGET" >&2
     log "startup failed: target '$TARGET' not found (backend=$BACKEND)"

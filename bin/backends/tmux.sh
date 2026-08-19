@@ -42,20 +42,133 @@ fm_backend_tmux_capture() {  # <target> <lines>
   tmux capture-pane -p -t "$1" -S -"$2"
 }
 
-# fm_backend_tmux_send_key: one named key. Mirrors fm-send.sh's --key path:
-# `tmux display-message -p -t "$T" '#{pane_id}' >/dev/null`, then
-# `tmux send-keys -t "$T" "$2"`.
+# Input delivery and exact targets.
+#
+# This file contains four primitives that put input into a pane, and exactly
+# two of them are gated by the exact-target resolver:
+#
+#   fm_backend_tmux_send_key        - gated (below)
+#   fm_backend_tmux_send_text_submit - gated (below; the submit core in
+#                                      bin/fm-tmux-lib.sh receives the already
+#                                      resolved target)
+#   fm_backend_tmux_send_text_line  - NOT gated; sends unpinned
+#   fm_backend_tmux_send_literal    - NOT gated; sends unpinned
+#
+# The two ungated ones are called only by bin/fm-spawn.sh, to type setup
+# commands (`treehouse get`, the GOTMPDIR and TRACEPARENT exports) and the
+# harness launch command into a pane it has just created in that same run.
+# They are deliberately left unpinned in this change rather than being widened
+# into it, and they are named here so this list is an enumeration a reader can
+# check rather than a claim of completeness.
+#
+# The gate itself is fm_backend_tmux_exact_target (bin/fm-backend.sh) - the
+# same function fm_backend_target_exists answers with, so the address a send
+# uses is the address the probe verified, not a second string derived from the
+# target independently. That distinction is not cosmetic: while the send
+# re-derived `=$session:=$window` on its own, a dotted window NAME that the
+# probe had matched in the session inventory sent into a SIBLING window's pane,
+# because tmux splits the trailing `.` off as a pane specifier before matching
+# the name (verified on tmux 3.4 under `tmux -f /dev/null`: with live windows
+# `fm-1.2` and `fm-1`, `send-keys -t '=s:=fm-1.2'` landed in fm-1's pane 2).
+# The resolver answers that shape with the window's `@N` id instead.
+#
+# Why a gate at all: the old pre-send probe was
+# `tmux display-message -p -t "$T" '#{pane_id}'`, whose exit status this
+# backend no longer trusts anywhere. With `sess:fm-alpha` destroyed and
+# `sess:fm-alpha-2` alive it exits 0, and the unpinned send that followed
+# DELIVERED into fm-alpha-2's pane - one crew's keystrokes, or a whole steer,
+# landing in a DIFFERENT live crew's composer. Prefix-colliding task ids (1 and
+# 10, 2 and 20) are routine, so that shape needs no dotted id at all.
+#
+# What is still UNPINNED, derived mechanically rather than from memory. The
+# list below is every raw `tmux <subcommand> ... -t <target>` under bin/ that
+# takes a caller-supplied target, minus the resolver's own calls and the two
+# gated sends above; re-derive it with:
+#
+#   grep -rnE '(^|[^#])[[:space:]]*(LC_ALL=C )?tmux [a-z-]+' --include='*.sh' bin/ \
+#     | grep -vE ':[0-9]+:[[:space:]]*#' | grep -E '\-t '
+#
+# Excluded from the list as not caller-supplied: the container-session checks
+# that address this process's OWN session or the literal `firstmate` (this
+# file's container_ensure, bin/fm-spawn.sh's worker-env read), and the
+# creation-time `new-window`/`set-window-option` calls that address a window id
+# this process just created.
+#
+# Destructive (acts on the wrong endpoint, not merely reports one):
+#   fm_backend_tmux_kill (this file)      - `=`-pinned components, but cannot
+#     address a dotted window NAME and can destroy a DIFFERENT live window.
+#   bin/fm-teardown.sh's reap_task_backend_process_group - raw
+#     `display-message -p -t "$T" '#{pane_pid}'`, whose result is SIGTERMed and
+#     SIGKILLed as a process group; the target is the recorded endpoint with no
+#     live check, so a prefix-resolved sibling's process group can be reaped.
+#     Reached when lsof is unavailable.
+#   bin/fm-afk-launch.sh - `kill-session -t "$target"` on the recorded
+#     daemon-session name (and `has-session -t "$target"` beside it).
+#
+# Input-delivering but ungated:
+#   fm_backend_tmux_send_text_line, fm_backend_tmux_send_literal (this file) -
+#     called only by bin/fm-spawn.sh, to type setup commands (`treehouse get`,
+#     the GOTMPDIR and TRACEPARENT exports) and the harness launch command into
+#     a pane it created earlier in the same run.
+#   bin/fm-supervise-daemon.sh's wedged-escalation `display-message -t
+#     "$target" <text>` status-line flash.
+#
+# Reads that can describe the wrong pane:
+#   fm_backend_tmux_capture (this file) - bin/fm-peek.sh and bin/fm-watch.sh
+#     capture with no existence gate, so a destroyed endpoint can print a live
+#     sibling's pane content under the dead task's label.
+#   fm_backend_tmux_current_path, fm_backend_tmux_current_command,
+#     fm_backend_tmux_foreground_comms, fm_backend_tmux_foreground_argv0s
+#     (this file) - raw `display-message` reads.
+#   fm_backend_tmux_agent_state (this file) - resolves its session component by
+#     unpinned prefix match, then checks the window name exactly against that
+#     session's inventory.
+#   fm_backend_tmux_create_task (this file) - the spawn-time duplicate-name
+#     check lists an unpinned session name.
+#   bin/fm-tmux-lib.sh's composer, cursor, busy and pane-identity reads
+#     (capture-pane and display-message on a caller-supplied target).
+#
+# All of them are deferred to fm-tmux-agent-state-session-prefix-match, whose
+# whole point is a single shared resolver used by every one of these rather
+# than further one-at-a-time fixes.
+
+# fm_backend_tmux_send_key: one named key, delivered only to an endpoint that
+# resolves exactly. Anything else is refused before send-keys runs at all: a
+# keystroke that goes nowhere is a nuisance, a keystroke in the wrong pane can
+# be anything.
 fm_backend_tmux_send_key() {  # <target> <key>
-  tmux display-message -p -t "$1" '#{pane_id}' >/dev/null
-  tmux send-keys -t "$1" "$2"
+  local target
+  target=$(fm_backend_tmux_exact_target "$1") || {
+    echo "error: refusing to send key '$2': tmux target '$1' does not resolve to exactly one live endpoint" >&2
+    return 1
+  }
+  tmux send-keys -t "$target" "$2"
 }
 
 # fm_backend_tmux_send_text_submit: type <text> into <target> once, then
 # submit with Enter, retried (Enter only, never retyped) until the composer
-# clears. Re-exports fm_tmux_submit_core (bin/fm-tmux-lib.sh) verbatim; see
-# that file for the composer-verification contract and echoed verdicts.
+# clears. Delegates to fm_tmux_submit_core (bin/fm-tmux-lib.sh); see that file
+# for the composer-verification contract and echoed verdicts.
+#
+# This is the same-shaped refusal as fm_backend_tmux_send_key above, and the
+# more consequential one: text is how every ordinary steer reaches every crew,
+# so an unresolvable target that fell through to a live neighbour would type a
+# whole message into the wrong worker's composer and submit it - and if that
+# neighbour's composer then cleared, the verdict would read `empty` and report
+# delivery CONFIRMED for a task that never received it. The resolved target is
+# handed to the submit core, so the core's own composer and busy reads describe
+# the same pane the text goes to. A refusal sends nothing, returns nonzero, and
+# still echoes a verdict, because callers that read only the verdict
+# (bin/fm-supervise-daemon.sh's injector) must not see `empty`.
 fm_backend_tmux_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
-  fm_tmux_submit_core "$@"
+  local target
+  target=$(fm_backend_tmux_exact_target "$1") || {
+    echo "error: refusing to send text: tmux target '$1' does not resolve to exactly one live endpoint" >&2
+    printf 'target-unresolved'
+    return 1
+  }
+  shift
+  fm_tmux_submit_core "$target" "$@"
 }
 
 # fm_backend_tmux_container_ensure: reuse the current tmux session when

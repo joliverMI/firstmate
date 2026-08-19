@@ -12,6 +12,24 @@ EXT="$ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 # unrelated to plugin output, which the assertions intentionally require empty.
 export NODE_NO_WARNINGS=1
 
+# Arm-readiness budget for the cases below that drive an UNREADY successor arm
+# (FM_PI_ARM_READY_TIMEOUT_MS / FM_OPENCODE_ARM_READY_TIMEOUT_MS = 2000).
+#
+# Both watchers start their arm child as a LOGIN shell - `spawn("bash", ["-lc",
+# ...])` in .pi/extensions/fm-primary-pi-watch.ts and
+# .opencode/plugins/fm-primary-watch-arm.js - so every arm pays for /etc/profile
+# and /etc/profile.d before the fixture's fm-watch-arm.sh runs its first line.
+# Measured on this repo's own dev host: `bash -lc true` is ~140ms idle and
+# ~1150ms (max 1740ms) under CPU contention, against ~1ms for `bash -c true`.
+# The earlier 250ms budget therefore expired BEFORE the successor arm had
+# appended its `arm=<pid>` row, the extension SIGTERMed a process that had not
+# run yet, and the row it should have recorded was lost - which is a lost
+# FIXTURE observation, not a behaviour change: the extension still made every
+# bounded attempt and still delivered the typed restoration failure. That is
+# what made these cases fail intermittently on CI runners. The budget must stay
+# well above a loaded login-shell start; the cases are otherwise unchanged, and
+# an arm that IS ready still settles immediately rather than waiting it out.
+
 install_pi_watch_extension_fixture() {
   local repo=$1
   mkdir -p \
@@ -430,7 +448,7 @@ trap 'exit 0' TERM INT
 while :; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_PI_ARM_READY_TIMEOUT_MS=2000 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -454,7 +472,9 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-hung-successor", {}, undefined, undefined, {});
-for (let i = 0; i < 500 && !prompt; i += 1) {
+// Three unready attempts now cost 3 x FM_PI_ARM_READY_TIMEOUT_MS, so this
+// bound has to clear that before it can conclude the wake never arrived.
+for (let i = 0; i < 3000 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 const rows = existsSync(process.env.FM_ARM_LOG)
@@ -502,7 +522,7 @@ printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
 while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.1; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_RELEASE_FILE="$release" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_RELEASE_FILE="$release" FM_PI_ARM_READY_TIMEOUT_MS=2000 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -580,7 +600,7 @@ trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
     chmod +x "$repo/bin/fm-watch-arm.sh"
-    out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_UNRETIRED_READY_FILE="$ready" FM_UNRETIRED_RETIRE_FILE="$retired" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+    out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_UNRETIRED_READY_FILE="$ready" FM_UNRETIRED_RETIRE_FILE="$retired" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_PI_ARM_READY_TIMEOUT_MS=2000 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -1605,7 +1625,7 @@ trap 'exit 0' TERM INT
 while :; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_OPENCODE_ARM_READY_TIMEOUT_MS=2000 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -1629,7 +1649,9 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 500 && !prompt; i += 1) {
+// Three unready attempts now cost 3 x FM_OPENCODE_ARM_READY_TIMEOUT_MS, so this
+// bound has to clear that before it can conclude the wake never arrived.
+for (let i = 0; i < 3000 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 const rows = existsSync(process.env.FM_ARM_LOG)
@@ -1679,7 +1701,7 @@ printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
 while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.1; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_RELEASE_FILE="$release" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_RELEASE_FILE="$release" FM_OPENCODE_ARM_READY_TIMEOUT_MS=2000 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -1759,7 +1781,7 @@ trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
     chmod +x "$repo/bin/fm-watch-arm.sh"
-    out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_UNRETIRED_READY_FILE="$ready" FM_UNRETIRED_RETIRE_FILE="$retired" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+    out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_UNRETIRED_READY_FILE="$ready" FM_UNRETIRED_RETIRE_FILE="$retired" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_OPENCODE_ARM_READY_TIMEOUT_MS=2000 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
