@@ -11,6 +11,20 @@ EXT="$ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 # from a clean checkout with no tracked .opencode/package.json. The warning is
 # unrelated to plugin output, which the assertions intentionally require empty.
 export NODE_NO_WARNINGS=1
+# The extension under test spawns its arm child through `bash -lc`, a login
+# shell that sources the executing account's .profile/.bashrc (and whatever
+# those load, e.g. nvm.sh) before running anything. That cost is real,
+# unrelated to the extension's own behavior, and can vary from near-zero to
+# several hundred milliseconds depending on what happens to be on the
+# account's shell profile - which silently ate a load-dependent share of
+# every tight readiness/retire window below and made the arm-timing
+# assertions fail unpredictably depending on the executing machine's shell
+# setup rather than the extension's logic. Pointing HOME at an empty
+# directory with no profile files makes `bash -lc`'s own startup cost
+# negligible and machine-independent, so a tight timeout here measures only
+# the extension's readiness-detection logic, the thing under test.
+export HOME="$TMP_ROOT/os-home"
+mkdir -p "$HOME"
 
 install_pi_watch_extension_fixture() {
   local repo=$1

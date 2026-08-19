@@ -18,7 +18,7 @@ let child = null;
 let armStatus = "idle";
 let retryTimer = null;
 let retryFailures = 0;
-let launchInFlight = null;
+let launchQueue = Promise.resolve();
 let restorationInFlight = null;
 let armClose = new WeakMap();
 let armReadiness = new WeakMap();
@@ -410,18 +410,18 @@ function armAttempt(status, armChild, includeArmChild) {
 }
 
 async function ensureArm(paths, sessionID, client, predecessorArmPid = "", includeArmChild = false) {
-  let launchResult = null;
-  if (!launchInFlight) {
-    const launch = beginArm(paths, sessionID, client, predecessorArmPid);
-    launchInFlight = launch;
-    try {
-      launchResult = await launch;
-    } finally {
-      if (launchInFlight === launch) launchInFlight = null;
-    }
-  } else {
-    launchResult = await launchInFlight;
-  }
+  // Every caller's evaluation is queued behind the ones ahead of it rather than
+  // reusing an earlier caller's still-resolving result: beginArm's own child/
+  // retryTimer checks already prevent a duplicate spawn once one is under way,
+  // so queuing costs nothing there, but a caller that arrives after session or
+  // lock state changed (for example the lock is reacquired) must see THAT
+  // current state at its own turn, not the stale verdict an earlier caller was
+  // still computing when this call started. Reusing the earlier promise here
+  // previously let a later, now-eligible caller silently inherit an earlier
+  // ineligible verdict and never arm.
+  const launch = launchQueue.catch(() => {}).then(() => beginArm(paths, sessionID, client, predecessorArmPid));
+  launchQueue = launch;
+  const launchResult = await launch;
   const armChild = launchResult.armChild;
   if (!armChild) {
     return armAttempt(launchResult.status, null, includeArmChild);
