@@ -43,7 +43,8 @@ That unbounded, machine-specific, load-dependent cost sat inside the tight `FM_P
   The arm-log row is now written before the pid-file row that every `waitFor()` gates on, so a waiter cannot proceed into an assertion that counts a log row the child has not written yet.
 
 Three regression tests were added or rewritten inside the arm-readiness suite itself.
-Each was confirmed to fail against the pre-fix code and pass after it.
+The lock and login-shell tests were confirmed to fail against the pre-change code and pass after it.
+The coalescing test is not one of those two: unconditional coalescing already passes it, since that was the pre-change behavior; it instead guards against the rejected serialized-queue variant, and was confirmed to fail against that variant and pass against the shipped premise-validated coalescing.
 
 | Test | Pins |
 |---|---|
