@@ -544,6 +544,64 @@ pass "real tmux: a key addressed to a destroyed prefix-colliding target never la
 
 kill_window_id "$decoy_wid"
 
+# --- fm_backend_tmux_send_text_submit: the same refusal on the TEXT path ------
+# Text is the larger blast radius of the identical defect: it is how every
+# ordinary steer reaches every crew, and the submit core types the whole
+# message and then presses Enter. Against a destroyed `session:fm-textdecoy`
+# with a live sibling `session:fm-textdecoy-2`, the unguarded core typed AND
+# executed the message in the SIBLING's pane - and had that pane's composer
+# then read clear, the verdict would have been `empty`, reporting delivery
+# confirmed for a task that never received it. Both halves are asserted: the
+# call refuses (nonzero, and a verdict that is not `empty`), and the live
+# sibling never receives the text.
+TEXT_DECOY_LIVE="fm-textdecoy-2"
+TEXT_DECOY_DEAD="$SESSION:fm-textdecoy"
+text_decoy_wid=$(fm_backend_tmux_create_task "$SESSION" "$TEXT_DECOY_LIVE" "$HOME") \
+  || fail "could not create the live decoy window for the text-send refusal check"
+if tmux list-windows -t "=$SESSION" -F '#{window_name}' | grep -Fqx "fm-textdecoy"; then
+  fail "decoy fixture is invalid: the supposedly destroyed 'fm-textdecoy' window actually exists"
+fi
+
+TEXT_DECOY_READY=false
+for _ in $(seq 1 100); do
+  tmux send-keys -t "$text_decoy_wid" C-c
+  tmux send-keys -t "$text_decoy_wid" -l "printf 'textdecoy-%s\\n' ready"
+  tmux send-keys -t "$text_decoy_wid" Enter
+  if wait_for_capture_text "$text_decoy_wid" "textdecoy-ready" 10; then
+    TEXT_DECOY_READY=true
+    break
+  fi
+done
+[ "$TEXT_DECOY_READY" = true ] || fail "the text decoy shell never became ready to execute a misdelivered message"
+
+text_verdict=$(fm_backend_tmux_send_text_submit "$TEXT_DECOY_DEAD" "printf 'TEXTLEAK-%s\\n' ARRIVED" 2 0.1 0.1 2>/dev/null)
+text_rc=$?
+[ "$text_rc" -ne 0 ] \
+  || fail "fm_backend_tmux_send_text_submit accepted '$TEXT_DECOY_DEAD', a destroyed target whose name is only a prefix of the live '$TEXT_DECOY_LIVE'"
+[ "$text_verdict" != empty ] \
+  || fail "fm_backend_tmux_send_text_submit reported delivery CONFIRMED (verdict 'empty') for the destroyed '$TEXT_DECOY_DEAD'"
+pass "real tmux: fm_backend_tmux_send_text_submit refuses a target that does not resolve exactly, and never reports it delivered"
+
+# Ordering proof, and the positive half in one step: a message sent through the
+# SAME primitive to the live decoy must execute there. tmux delivers in order,
+# so once this sentinel has run, a misdelivered earlier message would already
+# have run too.
+fm_backend_tmux_send_text_submit "$SESSION:$TEXT_DECOY_LIVE" "printf 'textdecoy-%s\\n' sentinel" 2 0.1 0.1 >/dev/null \
+  || fail "fm_backend_tmux_send_text_submit refused the LIVE '$SESSION:$TEXT_DECOY_LIVE'; the guard must not block a resolvable target"
+wait_for_capture_text "$text_decoy_wid" "textdecoy-sentinel" \
+  || fail "the exact-pinned text send did not reach the live decoy pane"
+pass "real tmux: fm_backend_tmux_send_text_submit still delivers to an exactly resolvable session:window target"
+
+text_decoy_out=$(fm_backend_tmux_capture "$text_decoy_wid" 200) \
+  || fail "fm_backend_tmux_capture failed for the text decoy pane"
+case "$text_decoy_out" in
+  *TEXTLEAK-ARRIVED*)
+    fail "text addressed to the destroyed '$TEXT_DECOY_DEAD' was typed into the live '$TEXT_DECOY_LIVE' pane"$'\n'"$text_decoy_out" ;;
+esac
+pass "real tmux: a message addressed to a destroyed prefix-colliding target never lands in the live sibling's pane"
+
+kill_window_id "$text_decoy_wid"
+
 # --- kill and recovery-grade missing-window classification ------------------
 
 fm_backend_tmux_kill "$TARGET"

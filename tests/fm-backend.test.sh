@@ -666,12 +666,6 @@ run_send_case() {  # <bin-root> <fakebin> <log> <home> -- <send args...>
     "$bin/bin/fm-send.sh" "$@" >/dev/null 2>&1
 }
 
-strip_send_preflight() {  # <log>
-  local preflight
-  preflight=$'tmux\x1flist-panes\x1f-t\x1f=sess:=win'
-  awk -v preflight="$preflight" '$0 != preflight { print }' "$1"
-}
-
 # The byte-identical old-vs-new tmux log comparison this test used to run
 # covered the P1 backend extraction, which promised an unchanged command
 # sequence. The composer consolidation (fm-composer-thin-adapter-refactor-r1)
@@ -694,8 +688,13 @@ test_send_tmux_contract() {
   # answers from a prefix-colliding live window and the unpinned send that
   # followed it delivered the key into that other window's pane (proved
   # against real tmux in tests/fm-backend-tmux-smoke.test.sh).
-  assert_contains "$(cat "$log")" $'\x1f''list-panes'$'\x1f''-t'$'\x1f''=sess:=win' \
-    "fm-send --key did not verify the explicit tmux target with an exact-match probe before sending"
+  # The COUNT is what makes this discriminating. fm-send resolves the explicit
+  # target through the same exact-match probe before it dispatches, so one
+  # occurrence proves only that resolution ran; the backend's own pre-send
+  # guard is the second. Asserting presence alone would still pass with that
+  # guard deleted.
+  [ "$(grep -c $'\x1f''list-panes'$'\x1f''-t'$'\x1f''=sess:=win' "$log")" -eq 2 ] \
+    || fail "fm-send --key must run the exact-match probe twice (target resolution, then the backend's pre-send guard); got $(grep -c $'\x1f''list-panes'$'\x1f''-t'$'\x1f''=sess:=win' "$log")"
   assert_not_contains "$(cat "$log")" $'\x1f''display-message'$'\x1f''-p'$'\x1f''-t'$'\x1f''sess:win'$'\x1f''#{pane_id}' \
     "fm-send --key still pre-flights with the prefix-resolving display-message probe"
   assert_contains "$(cat "$log")" $'\x1f''Escape' "fm-send --key did not send the named key"
@@ -706,8 +705,12 @@ test_send_tmux_contract() {
   run_send_case "$ROOT" "$fb" "$log" "$home" -- "sess:win" hello captain
   rc=$?
   expect_code 0 "$rc" "fm-send plain text should confirm against the empty fake composer"
-  assert_contains "$(cat "$log")" $'\x1f''send-keys'$'\x1f''-t'$'\x1f''sess:win'$'\x1f''-l'$'\x1f''hello captain' \
-    "fm-send did not send the literal text with send-keys -l"
+  assert_contains "$(cat "$log")" $'\x1f''send-keys'$'\x1f''-t'$'\x1f''=sess:=win'$'\x1f''-l'$'\x1f''hello captain' \
+    "fm-send did not send the literal text with send-keys -l to the exact-pinned target"
+  # Same discriminating count as the --key path: resolution, then the text
+  # backend's own pre-send guard.
+  [ "$(grep -c $'\x1f''list-panes'$'\x1f''-t'$'\x1f''=sess:=win' "$log")" -eq 2 ] \
+    || fail "fm-send text must run the exact-match probe twice (target resolution, then the backend's pre-send guard); got $(grep -c $'\x1f''list-panes'$'\x1f''-t'$'\x1f''=sess:=win' "$log")"
   [ "$(grep -c $'\x1f''-l'$'\x1f' "$log")" -eq 1 ] \
     || fail "fm-send must type the text exactly once (Enter-only retries, never a retype)"
   assert_contains "$(cat "$log")" $'\x1f''Enter' "fm-send did not submit with Enter"
@@ -718,8 +721,8 @@ test_send_tmux_contract() {
   run_send_case "$ROOT" "$fb" "$log" "$home" -- "sess:win" /some-skill
   rc=$?
   expect_code 0 "$rc" "fm-send /skill should confirm against the empty fake composer"
-  assert_contains "$(cat "$log")" $'\x1f''send-keys'$'\x1f''-t'$'\x1f''sess:win'$'\x1f''-l'$'\x1f''/some-skill' \
-    "fm-send /skill did not type the literal slash command"
+  assert_contains "$(cat "$log")" $'\x1f''send-keys'$'\x1f''-t'$'\x1f''=sess:=win'$'\x1f''-l'$'\x1f''/some-skill' \
+    "fm-send /skill did not type the literal slash command to the exact-pinned target"
   [ "$(grep -c $'\x1f''-l'$'\x1f' "$log")" -eq 1 ] \
     || fail "fm-send /skill must type the text exactly once"
 

@@ -42,37 +42,94 @@ fm_backend_tmux_capture() {  # <target> <lines>
   tmux capture-pane -p -t "$1" -S -"$2"
 }
 
+# fm_backend_tmux_resolve_send_target: the one gate every INPUT-DELIVERING
+# tmux primitive passes through. It answers the exact-resolution question with
+# fm_backend_target_exists (bin/fm-backend.sh) rather than a second bespoke
+# probe, and prints the target to hand tmux, pinned to an exact match.
+#
+# Both halves are load-bearing. The guard exists because the old pre-send probe
+# was `tmux display-message -p -t "$T" '#{pane_id}'`, whose exit status this
+# backend no longer trusts anywhere: with `sess:fm-alpha` destroyed and
+# `sess:fm-alpha-2` alive it exits 0, and the unpinned send that followed
+# DELIVERED into fm-alpha-2's pane - one crew's keystrokes, or a whole steer,
+# landing in a DIFFERENT live crew's composer. Prefix-colliding task ids (1 and
+# 10, 2 and 20) are routine, so that shape is reachable with no dotted id at
+# all. The pin exists because an exact answer at check time is not an exact
+# address at send time: tmux resolves an exact name before any prefix, but
+# nothing makes the send re-run the check's own resolution, and `=` removes the
+# prefix fallback entirely.
+#
+# Verified on tmux 3.4 under a DEFAULT configuration (`tmux -f /dev/null`) and
+# re-checked under a configuration carrying `base-index 1`/`pane-base-index 1`,
+# reading resolution from `list-panes`/`send-keys` rather than
+# `display-message` (which falls back to the caller's active pane and so cannot
+# answer this question): `=$session:=$window` composes with every send-target
+# shape this backend produces - a window name, a window INDEX, `name.pane`,
+# `<window-index>.pane`, `name.%paneid`, and a `$N` session id in the session
+# component - resolving each to the same pane the raw form does. An earlier
+# revision of this comment claimed the pin could not express `name.pane`; that
+# was wrong. It came from probing a hardcoded pane index 0 on a server whose
+# `pane-base-index 1` means index 0 does not exist, where BOTH the pinned and
+# the raw form fail.
+#
+# One shape is disclosed rather than closed: a window NAME containing a dot.
+# tmux splits the last `.` off as a pane specifier before matching the name, so
+# a live window `fm-9.9` is unreachable through BOTH forms (`list-panes -t
+# sess:fm-9.9` and `-t '=sess:=fm-9.9'` both fail), and when a sibling `fm-9`
+# exists both forms address ITS pane 9 instead. Pinning neither creates nor
+# cures that; it is the dotted-target gap tracked in
+# fm-tmux-agent-state-session-prefix-match, whose shared resolver is what will
+# finally address these targets by resolved pane id.
+#
+# A bare, colon-less target is left as-is: tmux ignores the `=` pin in that
+# form (verified - `list-panes -t "=alpha"` still exits 0 when only `alphabet`
+# is live), so the exactness of a bare target comes from the guard's own
+# inventory check and cannot come from the address.
+fm_backend_tmux_resolve_send_target() {  # <target> -> prints the exact target
+  fm_backend_target_exists tmux "$1" || return 1
+  case "$1" in
+    *:*) printf '=%s:=%s' "${1%%:*}" "${1#*:}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
 # fm_backend_tmux_send_key: one named key, delivered only to an endpoint that
-# resolves EXACTLY. The pre-send guard used to be the same
-# `tmux display-message -p -t "$T" '#{pane_id}'` exit-status probe
-# fm_backend_target_exists no longer trusts, and on a send path its failure is
-# worse than a wrong liveness verdict: verified on real tmux that with
-# `sess:fm-alpha` destroyed and `sess:fm-alpha-2` alive the probe exits 0 AND
-# the following `send-keys -t sess:fm-alpha` DELIVERS the keystrokes into
-# fm-alpha-2's pane - one crew's interrupt or Enter landing in a DIFFERENT live
-# crew's composer. The guard is therefore the one exact-resolution primitive
-# (fm_backend_target_exists, bin/fm-backend.sh) rather than a second bespoke
-# probe, and an unresolvable target REFUSES before send-keys runs at all: a
+# resolves exactly. Anything else is refused before send-keys runs at all: a
 # keystroke that goes nowhere is a nuisance, a keystroke in the wrong pane can
-# be anything. Once the exact target is known to exist the raw target is safe
-# to hand tmux - tmux resolves an exact name before any prefix - and it must
-# stay raw, because the `=` pin that makes the guard exact cannot express the
-# pane-qualified forms send targets legitimately take (verified: `send-keys -t
-# '=sess:=win.0'` fails with "can't find pane: 0" for a live pane 0).
+# be anything.
 fm_backend_tmux_send_key() {  # <target> <key>
-  fm_backend_target_exists tmux "$1" || {
+  local target
+  target=$(fm_backend_tmux_resolve_send_target "$1") || {
     echo "error: refusing to send key '$2': tmux target '$1' does not resolve to exactly one live endpoint" >&2
     return 1
   }
-  tmux send-keys -t "$1" "$2"
+  tmux send-keys -t "$target" "$2"
 }
 
 # fm_backend_tmux_send_text_submit: type <text> into <target> once, then
 # submit with Enter, retried (Enter only, never retyped) until the composer
-# clears. Re-exports fm_tmux_submit_core (bin/fm-tmux-lib.sh) verbatim; see
-# that file for the composer-verification contract and echoed verdicts.
+# clears. Delegates to fm_tmux_submit_core (bin/fm-tmux-lib.sh); see that file
+# for the composer-verification contract and echoed verdicts.
+#
+# This is the same-shaped refusal as fm_backend_tmux_send_key above, and the
+# more consequential one: text is how every ordinary steer reaches every crew,
+# so an unresolvable target that fell through to a live neighbour would type a
+# whole message into the wrong worker's composer and submit it - and if that
+# neighbour's composer then cleared, the verdict would read `empty` and report
+# delivery CONFIRMED for a task that never received it. The exact target is
+# resolved once and handed to the submit core, so the core's own composer and
+# busy reads describe the same pane the text goes to. A refusal sends nothing,
+# returns nonzero, and still echoes a verdict, because callers that read only
+# the verdict (bin/fm-supervise-daemon.sh's injector) must not see `empty`.
 fm_backend_tmux_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
-  fm_tmux_submit_core "$@"
+  local target
+  target=$(fm_backend_tmux_resolve_send_target "$1") || {
+    echo "error: refusing to send text: tmux target '$1' does not resolve to exactly one live endpoint" >&2
+    printf 'target-unresolved'
+    return 1
+  }
+  shift
+  fm_tmux_submit_core "$target" "$@"
 }
 
 # fm_backend_tmux_container_ensure: reuse the current tmux session when
