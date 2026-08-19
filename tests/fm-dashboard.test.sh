@@ -251,10 +251,13 @@ test_zero_timeout_override_is_refused_like_any_other_unusable_one() {
   pass "a zero timeout override is refused and replaced by the default, so the bound cannot be handed back"
 }
 
-# bin/fm-backlog-handoff.sh's pending card record must retire a card the board
-# itself rejects while retrying one it merely could not reach, so the two need
-# to be distinguishable from the outside - by exit code, not by parsing
-# stderr.
+# bin/fm-backlog-handoff.sh's pending card record retires neither: a
+# "no such card" only proves some host answered, never that the host answering
+# was the board, so such a pair is kept and retried exactly like one the board
+# could not be reached for. What the two answers do decide is the REPORTING -
+# an answered-but-unlinkable pair is warned about and logged to the fleet once,
+# an unreachable one on every arrival - so the two still have to be
+# distinguishable from the outside, by exit code rather than by parsing stderr.
 test_missing_id_and_unreachable_board_have_distinct_exit_codes() {
   local rc=0
   "$DASH" show definitely-no-such-card --json >/dev/null 2>&1 || rc=$?

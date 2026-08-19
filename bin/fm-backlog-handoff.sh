@@ -377,7 +377,7 @@ handoff_card_record() { # <secondmate-id>
 # idempotent case: it is rewritten as the newest entry for its key, so the
 # last card a --card actually named is always the one that gets linked.
 handoff_card_record_put() { # <secondmate-id> <item-key> <card-id>
-  local id=$1 key=$2 card=$3 record tmp pending
+  local id=$1 key=$2 card=$3 record tmp pending revived
   record=$(handoff_card_record "$id") || return 1
   mkdir -p "$(dirname "$record")" || return 1
   tmp=$(umask 077; mktemp "$(dirname "$record")/.card.XXXXXX") || return 1
@@ -396,7 +396,9 @@ handoff_card_record_put() { # <secondmate-id> <item-key> <card-id>
   fi
   printf '%s\t%s\n' "$key" "$card" >> "$tmp" || { rm -f "$tmp"; return 1; }
   mv -f -- "$tmp" "$record" || { rm -f "$tmp"; return 1; }
-  handoff_card_ledger_forget superseded "$id" "$(printf '%s\t%s' "$key" "$card")" || true
+  revived=$(printf '%s\t%s' "$key" "$card")
+  handoff_card_ledger_forget superseded "$id" "$revived" || true
+  handoff_card_ledger_forget warnings "$id" "$revived" || true
   return 0
 }
 
@@ -424,7 +426,9 @@ handoff_card_lines_remove() { # <file> <line>...
     for drop in "$@"; do
       [ "$line" != "$drop" ] || { keep=0; break; }
     done
-    [ "$keep" -eq 0 ] || printf '%s\n' "$line" >> "$tmp"
+    if [ "$keep" -eq 1 ]; then
+      printf '%s\n' "$line" >> "$tmp" || { rm -f -- "$tmp"; return 1; }
+    fi
   done < "$file"
   if [ -s "$tmp" ]; then
     mv -f -- "$tmp" "$file" || { rm -f "$tmp"; return 1; }
@@ -460,6 +464,8 @@ handoff_card_record_remove_pairs() { # <secondmate-id> <pair>...
 #                discard every pending link at once. What is bounded instead
 #                is the NOISE - each pair is warned about (and recorded to
 #                the fleet log) exactly once rather than on every arrival.
+#                The superseded report below bounds its own noise through
+#                this same ledger, so one entry can stand for either reason.
 #   superseded - pairs a later --card naming the same item has replaced. They
 #                stay in the record because they may already carry a
 #                half-written link somebody has to unpick, but they must
@@ -467,6 +473,11 @@ handoff_card_record_remove_pairs() { # <secondmate-id> <pair>...
 #                operator has already disowned as served. Naming that same
 #                card again clears the mark, so the decision is reversible
 #                from the CLI alone.
+#
+# Naming a pair again clears it from BOTH ledgers, not just superseded: a
+# revived pair has no reporting history left that is still true, and leaving
+# its warnings entry behind would let a mark written for the card's superseded
+# past silently swallow the one report a genuine failure on it is owed.
 #
 # Both are advisory: losing the warnings ledger costs a duplicate warning,
 # and losing the superseded ledger costs a disowned card being linked once,

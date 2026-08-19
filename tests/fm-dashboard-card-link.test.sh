@@ -829,6 +829,66 @@ EOF
   pass "only the newest card recorded for an item is linked; the superseded one is reported once and never written"
 }
 
+# Regression: the once-per-pair report ledger is shared by two conditions -
+# "superseded by a later --card" and "the host has no such card" - so a pair
+# reported for the first reason and then revived by naming it again carried a
+# mark that was no longer true. The revived pair's own first genuine failure
+# was then swallowed as an already-reported one: no warning, no fleet finding,
+# and a link left pending in complete silence, which is the exact failure the
+# record exists to make impossible. Reviving a pair has to clear its reporting
+# history, not just its superseded mark.
+test_reviving_a_superseded_card_restores_its_owed_failure_report() {
+  local home sub id missing second out record findings
+  home="$TMP_ROOT/handoff-revive-main"
+  sub="$TMP_ROOT/handoff-revive-sub"
+  id=handoff-revive-sm
+  setup_handoff_homes "$home" "$sub" "$id"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] handoff-item-g1 - named a card the board does not have (repo: alpha)
+- [ ] handoff-item-g2 - a later handoff that sweeps with the board up (repo: alpha)
+- [ ] handoff-item-g3 - a third handoff that sweeps again (repo: alpha)
+
+## Done
+EOF
+  missing=does-not-exist-revive-zzzz
+  second=$(add_card "Revived card coverage")
+  [ -n "$second" ] || fail "add_card returned no id"
+  record="$home/state/handoff-cards/$id"
+
+  out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-g1 --card "$missing" 2>&1)
+  expect_code 0 "$?" "handoff must not fail just because the dashboard is unreachable" "$out"
+
+  out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-g1 --card "$second" 2>&1)
+  expect_code 0 "$?" "re-naming the card should still succeed" "$out"
+  assert_contains "$out" "was superseded by a later --card" \
+    "setup: the first card was never reported as superseded, so nothing marked it as reported"
+
+  out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-g1 --card "$missing" 2>&1)
+  expect_code 0 "$?" "naming the earlier card again should still succeed" "$out"
+  assert_grep "$(printf 'handoff-item-g1\t%s' "$missing")" "$record" \
+    "the revived card was not recorded"
+
+  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-g2 2>&1)
+  expect_code 0 "$?" "the next ordinary handoff should succeed" "$out"
+  assert_contains "$out" "has no card $missing" \
+    "a revived card's first unlinkable answer was swallowed by a report belonging to its superseded past"
+  findings=$("$DASH" audit-status --json | jq --arg c "$missing" '[.log[] | select(.text | contains($c))] | length')
+  [ "$findings" = 1 ] \
+    || fail "expected exactly one fleet audit-log finding for the revived unlinkable card, got $findings"
+  assert_grep "$(printf 'handoff-item-g1\t%s' "$missing")" "$record" \
+    "the revived pair was retired instead of staying retriable"
+
+  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-g3 2>&1)
+  expect_code 0 "$?" "a third handoff should succeed" "$out"
+  assert_not_contains "$out" "has no card $missing" \
+    "the revived card was re-reported on every later arrival instead of once"
+  findings=$("$DASH" audit-status --json | jq --arg c "$missing" '[.log[] | select(.text | contains($c))] | length')
+  [ "$findings" = 1 ] \
+    || fail "the revived unlinkable link appended another audit-log finding ($findings total)"
+  pass "reviving a superseded card clears its stale report mark, so its own failure is still reported exactly once"
+}
+
 # Regression: the ownership guard was gated on a successful card read, so a
 # read failure skipped the identity check entirely and the link wrote ref and
 # agent blind - destroying the precise <home>:<task-id> claim a secondmate's
@@ -1343,6 +1403,7 @@ if command -v tasks-axi >/dev/null 2>&1; then
   test_handoff_never_confirms_a_link_whose_card_state_it_could_not_read
   test_handoff_never_writes_a_guarded_card_it_could_not_read
   test_handoff_supersedes_rather_than_also_linking_a_corrected_card
+  test_reviving_a_superseded_card_restores_its_owed_failure_report
   test_handoff_record_bookkeeping_failure_never_fails_the_handoff
   test_handoff_refuses_card_with_more_than_one_item
   test_handoff_already_present_never_overwrites_an_existing_card_link
