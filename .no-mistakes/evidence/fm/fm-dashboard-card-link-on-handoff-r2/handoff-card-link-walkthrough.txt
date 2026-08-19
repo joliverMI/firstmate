@@ -1,0 +1,131 @@
+Handed-off backlog item -> Fleet Dashboard card link: end-to-end walkthrough
+Real bin/fm-dashboard.sh server, real bin/fm-backlog-handoff.sh, real bin/fm-bootstrap.sh.
+Homes: /tmp/nm-demo (throwaway firstmate home + a seeded 'design' secondmate home).
+
+###############################################################
+# STEP 0 - the Admiral has a card; the item is still in the main backlog
+###############################################################
+Fleet Dashboard is serving at http://127.0.0.1:50669
+
+$ bin/fm-dashboard.sh add --title 'Fix the login flow timeout' --captain firstmate --prompt '...'
+card id: fix-the-login-flow-timeout-b7h1
+
+$ bin/fm-dashboard.sh show fix-the-login-flow-timeout-b7h1 --json | jq '{status, agent, backlog_ref}'
+{
+  "status": "not_started",
+  "agent": "",
+  "backlog_ref": null
+}
+
+$ sed -n '1,6p' $FM_HOME/data/backlog.md   # the item still sits in the main backlog
+## Queued
+- [ ] alpha-login-timeout - fix the login flow timeout (repo: alpha)
+  ## Intent
+  Users are being logged out mid-session.
+
+## Done
+
+###############################################################
+### STEP 1 - firstmate hands the item to the 'design' secondmate, naming the card.
+###          The board happens to be unreachable at that moment.
+
+$ FM_DASHBOARD_PORT=1 bin/fm-backlog-handoff.sh design alpha-login-timeout --card fix-the-login-flow-timeout-b7h1
+handed off 1 item(s) to design: alpha-login-timeout
+  into /tmp/nm-demo/secondmate-design-home/data/backlog.md
+warning: dashboard card link failed for alpha-login-timeout -> card fix-the-login-flow-timeout-b7h1 (ref): fm-dashboard.sh: could not reach dashboard at http://127.0.0.1:1 (is it running? see: fm-dashboard.sh start / server-status): curl: (7) Failed to connect to 127.0.0.1 port 1 after 0 ms: Couldn't connect to server
+
+000
+warning: dashboard card link failed for alpha-login-timeout -> card fix-the-login-flow-timeout-b7h1 (agent): fm-dashboard.sh: could not reach dashboard at http://127.0.0.1:1 (is it running? see: fm-dashboard.sh start / server-status): curl: (7) Failed to connect to 127.0.0.1 port 1 after 0 ms: Couldn't connect to server
+
+000
+(exit 0)
+
+$ cat $SECONDMATE_HOME/data/backlog.md   # the item really did land - the move is not blocked by the board
+## Queued
+- [ ] alpha-login-timeout - fix the login flow timeout (repo: alpha)
+  ## Intent
+  Users are being logged out mid-session.
+
+## Done
+## In flight
+
+$ cat -A $FM_HOME/state/handoff-cards/design   # durable pending pair kept for the retry (^I = tab)
+alpha-login-timeout^Ifix-the-login-flow-timeout-b7h1$
+
+$ bin/fm-dashboard.sh show fix-the-login-flow-timeout-b7h1 --json | jq '{status, agent, backlog_ref}'   # card still frozen at not_started
+{
+  "status": "not_started",
+  "agent": "",
+  "backlog_ref": null
+}
+
+###############################################################
+### STEP 2 - the next session start. bin/fm-bootstrap.sh sweeps the stranded link
+###          on its own, with the board reachable again. Nobody remembered anything.
+
+$ bin/fm-bootstrap.sh   # handoff-related lines only
+(no SECONDMATE_HANDOFF line: nothing is pending any more)
+
+$ bin/fm-dashboard.sh show fix-the-login-flow-timeout-b7h1 --json | jq '{status, agent, backlog_ref}'
+{
+  "status": "working",
+  "agent": "design",
+  "backlog_ref": "design:alpha-login-timeout"
+}
+
+$ ls -A $FM_HOME/state/handoff-cards/   # pair retired only because the board ANSWERED
+(empty)
+
+$ bin/fm-dashboard.sh audit-status --json | jq -c '{fleet_discrepancy_log: .log}'   # untouched by the unattended sweep
+{"fleet_discrepancy_log":[]}
+
+###############################################################
+### STEP 3 - a card id the board says it does not have (a typo). Operator-run.
+
+$ bin/fm-backlog-handoff.sh design alpha-typo-item --card no-such-card-typo
+handed off 1 item(s) to design: alpha-typo-item
+  into /tmp/nm-demo/secondmate-design-home/data/backlog.md
+warning: the dashboard host has no card no-such-card-typo, so the pending link for alpha-typo-item cannot be completed; it stays recorded and will be retried on the next arrival
+(exit 0)
+
+$ cat -A $FM_HOME/state/handoff-cards/design   # kept: a 404 proves a host answered, not that it was the board
+alpha-typo-item^Ino-such-card-typo$
+
+$ bin/fm-dashboard.sh audit-status --json | jq '[.log[]]'   # fleet discrepancy log NOT written for no-such-card
+[]
+
+### STEP 4 - the unattended session-start sweep hits the same dead pair, twice over.
+
+$ bin/fm-backlog-handoff.sh --resume-pending   (x2, as two session starts)
+warning: the dashboard host has no card no-such-card-typo, so the pending link for alpha-typo-item cannot be completed; it stays recorded and will be retried on the next arrival
+(exit 0)
+warning: the dashboard host has no card no-such-card-typo, so the pending link for alpha-typo-item cannot be completed; it stays recorded and will be retried on the next arrival
+(exit 0)
+
+$ bin/fm-dashboard.sh audit-status --json   # still nothing on the Admiral's trust surface
+[]
+
+$ cat -A $FM_HOME/state/handoff-cards/design   # still recorded, still retriable
+alpha-typo-item^Ino-such-card-typo$
+
+### STEP 5 - a genuine transport failure (board refuses the write).
+###          Operator-run: allowed on the fleet log, at most once per invocation.
+
+$ bin/fm-backlog-handoff.sh design alpha-writefail-item --card rate-limit-the-login-endpoint-9egy   # two pending pairs, both fail to write
+handed off 1 item(s) to design: alpha-writefail-item
+  into /tmp/nm-demo/secondmate-design-home/data/backlog.md
+warning: the dashboard host has no card no-such-card-typo, so the pending link for alpha-typo-item cannot be completed; it stays recorded and will be retried on the next arrival
+warning: dashboard card link failed for alpha-writefail-item -> card rate-limit-the-login-endpoint-9egy (ref): fm-dashboard.sh: server refused (500): card write deliberately failed by the demo proxy
+warning: dashboard card link failed for alpha-writefail-item -> card rate-limit-the-login-endpoint-9egy (agent): fm-dashboard.sh: server refused (500): card write deliberately failed by the demo proxy
+(exit 0)
+
+$ bin/fm-dashboard.sh audit-status --json | jq   # exactly ONE fleet entry for this invocation
+[{"kind":"error","text":"dashboard link failed for handoff item alpha-writefail-item -> card rate-limit-the-login-endpoint-9egy to seco"}]
+
+### STEP 6 - the same write failure under the unattended sweep: stderr only.
+
+$ bin/fm-backlog-handoff.sh --resume-pending   (board still refusing writes)
+warning lines on stderr: 2
+
+$ bin/fm-dashboard.sh audit-status --json | jq   # STILL exactly one entry: --resume-pending added nothing
+[{"kind":"error","text":"dashboard link failed for handoff item alpha-writefail-item -> card rate-limit-the-login-endpoint-9egy to seco"}]
