@@ -387,6 +387,22 @@ Observed output, before and after the model correction, then with the recorded P
 ●  1 task(s) in flight, but no live watcher process holds this home lock (last beat: 0s ago).
 ```
 
+The trust-registered custom check supervision-need correction (`bin/fm-supervision-lib.sh`'s `fm_supervision_status` now counts a `state/<id>.check-trust` binding paired with its `state/<id>.check.sh` as supervision-needed, so a home whose only duty is a registered custom check gets the same Stop auto-arm and pull-guard treatment as in-flight work, an X-mode relay poll, or a registered process-event source) was verified on 2026-08-19 with the installed ShellCheck 0.11.0 and the same isolated behavior suites used for the two closest predicate corrections above.
+
+```sh
+bin/fm-lint.sh
+bin/fm-doc-audience-check.sh
+bin/fm-test-run.sh tests/fm-claude-stop-autoarm.test.sh tests/fm-guard-stale-banner.test.sh tests/fm-turnend-guard.test.sh tests/fm-supervision-instructions.test.sh
+```
+
+Observed output:
+
+```text
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
+fm-doc-audience-check: ok surfaces=70 local_links=263
+FM_TEST_SUMMARY total=4 failed=0 skipped_gate=0 duration_ms=177167
+```
+
 The broader relevant regression pass was rerun on 2026-08-02 without live-home or daemon mutation.
 
 ```sh
