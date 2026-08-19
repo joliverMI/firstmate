@@ -57,6 +57,11 @@ fm_supervision_status() {
     FM_SUP_SOURCES=$((FM_SUP_SOURCES + 1))
   done
   FM_SUP_CHECKS=0
+  # Presence-based on purpose, like the source and x-watch checks above: this
+  # only decides that something still needs a watcher, so it must stay fail-safe
+  # toward "supervise". The trust record's mode, single-link, and hash binding
+  # are re-proved by bin/fm-check-lib.sh on the check-execution path, which is
+  # where a forged or mutated check would actually run.
   for trust in "$state"/*.check-trust; do
     [ -e "$trust" ] || continue
     id=$(basename "$trust" .check-trust)

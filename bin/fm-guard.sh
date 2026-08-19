@@ -8,9 +8,9 @@
 # Then, if the home still needs supervision (fm_supervision_status in
 # bin/fm-supervision-lib.sh, whose input list docs/turnend-guard.md's "Guard
 # predicates" section owns) and supervision is not healthy, prints a loud,
-# clearly delimited banner so the agent cannot skim past
-# it in the tool output of whatever it was doing - the one channel every harness
-# has. Supervision health is MODEL-AWARE (fm_watcher_supervision_verdict in
+# clearly delimited banner so the agent cannot skim past it in the tool output
+# of whatever it was doing - the one channel every harness has.
+# Supervision health is MODEL-AWARE (fm_watcher_supervision_verdict in
 # bin/fm-wake-lib.sh): under the Claude Stop auto-arm model the watcher runs only
 # between turns, so mid-turn a fresh beacon with no live watcher is healthy and
 # only a stale beacon (beyond FM_GUARD_GRACE) is a genuine lapse; under the Pi
@@ -164,17 +164,17 @@ watcher_healthy=$FM_WATCHER_VERDICT_OK
 watcher_down_reason=$FM_WATCHER_VERDICT_REASON
 if [ "$needed" = false ]; then
   # Leave the unhealthy state (nothing riding on the watcher): clear so a later
-  # work or X-mode need + stale combination is a fresh episode even if the
-  # beacon is still absent with the same key string.
+  # supervision need + stale combination is a fresh episode even if the beacon
+  # is still absent with the same key string.
   [ "$READ_ONLY" -eq 1 ] || fm_guard_clear_stale_banner
   exit 0
 fi
 
 [ -s "$FM_WAKE_QUEUE" ] && queue_pending=true
 
-# No fresh watcher with tasks in flight is the dangerous state: emit a prominent,
-# bordered banner FIRST so it reads as an alarm, not a buried stderr line. Later
-# calls in the same episode get a one-line reminder only.
+# No fresh watcher while this home needs supervision is the dangerous state:
+# emit a prominent, bordered banner FIRST so it reads as an alarm, not a buried
+# stderr line. Later calls in the same episode get a one-line reminder only.
 if [ "$watcher_healthy" = false ]; then
   episode_key=$(fm_guard_stale_episode_key "$watcher_down_reason")
   episode_key=${episode_key%$'\n'}
