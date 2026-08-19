@@ -1358,7 +1358,18 @@ const hooks = await mod.FmPrimaryWatchArm({
 const event = { event: { type: "session.idle", properties: { sessionID: "session-test" } } };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
 await hooks.event(event);
-await new Promise((resolve) => setTimeout(resolve, 120));
+// The event hook does not await its own arm attempt, and that attempt spends
+// its time in `git`/`ps` subprocesses, so a fixed sleep cannot tell when the
+// foreign-lock decision has actually landed. Drain it through the plugin's own
+// coordinator handle instead: ensureArmed joins a launch that is still in
+// flight, so once it resolves no attempt is outstanding and its status IS the
+// denial under test. Flipping the lock before that point let the next event
+// coalesce onto the stale read-only answer and never arm at all.
+const denied = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+if (denied !== "read-only") {
+  console.error(`expected read-only without the session lock, got ${denied}`);
+  process.exit(1);
+}
 if (existsSync(process.env.FM_ARM_LOG)) {
   console.error("watch arm ran without owning the session lock");
   process.exit(1);
@@ -1375,7 +1386,7 @@ if (!existsSync(process.env.FM_ARM_LOG)) {
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode watch plugin must arm only when this session owns the fleet lock"
+  expect_code 0 "$status" "OpenCode watch plugin must arm only when this session owns the fleet lock" "$out"
   [ -z "$out" ] || fail "OpenCode session-lock test printed output: $out"
   pass "OpenCode watcher plugin requires session lock ownership"
 }
