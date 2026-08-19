@@ -181,6 +181,69 @@ test_audit_log_run_and_interval() {
   pass "audit-log, audit-run, and audit-interval work end to end"
 }
 
+# The board is typically a tailnet host that can simply be powered off, which
+# drops packets rather than refusing them, and these calls run inside held
+# handoff locks (bin/fm-backlog-handoff.sh) and on bin/fm-bootstrap.sh's
+# synchronous path - an unbounded wait there stalls the whole fleet rather
+# than one card. Drive that with a real listener that accepts the connection
+# and then answers nothing at all, which is exactly what a refused-connection
+# fixture cannot reproduce.
+test_calls_are_bounded_against_a_board_that_never_answers() {
+  local portfile blackhole_pid port i rc
+  command -v timeout >/dev/null 2>&1 || { pass "skipped bounded-call coverage - timeout(1) not available"; return 0; }
+  portfile="$FM_HOME/blackhole.port"
+  rm -f "$portfile"
+  python3 - "$portfile" >/dev/null 2>&1 <<'PY' &
+import socket, sys, time
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", 0))
+s.listen(16)
+with open(sys.argv[1] + ".tmp", "w") as fh:
+    fh.write(str(s.getsockname()[1]))
+import os
+os.rename(sys.argv[1] + ".tmp", sys.argv[1])
+held = []
+while True:
+    conn, _ = s.accept()
+    held.append(conn)  # accepted, then deliberately never answered
+    time.sleep(0.01)
+PY
+  blackhole_pid=$!
+  i=0
+  until [ -s "$portfile" ]; do
+    i=$((i + 1))
+    [ "$i" -lt 200 ] || { kill "$blackhole_pid" 2>/dev/null; fail "the never-answering fixture never bound a port"; }
+    sleep 0.05
+  done
+  port=$(cat "$portfile")
+
+  rc=0
+  FM_DASHBOARD_URL="http://127.0.0.1:$port" FM_DASHBOARD_MAX_TIME=2 \
+    timeout 20 "$DASH" show any-card --json >/dev/null 2>&1 || rc=$?
+  kill "$blackhole_pid" 2>/dev/null
+  wait "$blackhole_pid" 2>/dev/null
+
+  [ "$rc" -ne 124 ] || fail "a board that accepts the connection and never answers hung the call: it is not bounded"
+  [ "$rc" -ne 0 ] || fail "a board that never answers somehow reported success"
+  pass "every dashboard call is bounded, so a board that never answers fails fast instead of hanging"
+}
+
+# bin/fm-backlog-handoff.sh's pending card record must retire a card the board
+# itself rejects while retrying one it merely could not reach, so the two need
+# to be distinguishable from the outside - by exit code, not by parsing
+# stderr.
+test_missing_id_and_unreachable_board_have_distinct_exit_codes() {
+  local rc=0
+  "$DASH" show definitely-no-such-card --json >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 4 ] || fail "a board-answered 'no such card' should exit 4, got $rc"
+
+  rc=0
+  FM_DASHBOARD_PORT=1 "$DASH" show definitely-no-such-card --json >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 1 ] || fail "an unreachable board should exit 1, not the not-found code, got $rc"
+  pass "a board-answered missing id and an unreachable board are distinguishable by exit code"
+}
+
 test_bad_input_fails_with_nonzero_exit() {
   if "$DASH" status nonexistent-id working >/dev/null 2>&1; then
     fail "status on a nonexistent task should have failed"
@@ -205,4 +268,6 @@ test_link_policy_rejects_github_and_localhost
 test_needs_attention_status_carries_reason_and_sorts_first
 test_audit_log_run_and_interval
 test_bad_input_fails_with_nonzero_exit
+test_calls_are_bounded_against_a_board_that_never_answers
+test_missing_id_and_unreachable_board_have_distinct_exit_codes
 test_star_and_delete

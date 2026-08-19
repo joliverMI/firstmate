@@ -56,6 +56,11 @@
 # $FM_HOME/config/dashboard-url, else http://127.0.0.1:8420. A secondmate on
 # a different host points config/dashboard-url at the primary's tailnet
 # address (see docs/dashboard.md "Reaching the board from a secondmate").
+#
+# Every call is bounded: --connect-timeout 5s and --max-time 20s, overridable
+# with $FM_DASHBOARD_CONNECT_TIMEOUT / $FM_DASHBOARD_MAX_TIME (seconds).
+# Exit codes: 0 success, 4 the board answered and said the id does not exist,
+# 1 anything else (unreachable board, refused write, bad usage).
 set -u
 set -o pipefail
 
@@ -87,23 +92,54 @@ die() { printf 'fm-dashboard.sh: %s\n' "$1" >&2; exit 1; }
 
 need_tool() { command -v "$1" >/dev/null 2>&1 || die "requires '$1' on PATH"; }
 
+# Exit code reserved for "the board answered, and says this id does not
+# exist". Callers that must tell a definitive board rejection from a board
+# they simply could not reach - bin/fm-backlog-handoff.sh's pending card
+# record, which retries the second forever and must never retry the first -
+# key off this instead of parsing the stderr message.
+DASH_EXIT_NOT_FOUND=4
+
+# Bound every call. The board is typically a tailnet host that can simply be
+# powered off, dropping packets rather than refusing them, and these calls run
+# inside held handoff locks (bin/fm-backlog-handoff.sh) and on
+# bin/fm-bootstrap.sh's synchronous path, where an unbounded wait stalls the
+# whole fleet rather than one card. A non-numeric override is ignored loudly
+# rather than passed to curl, which would reject it and turn a bad env var
+# into "the board is unreachable".
+dash_timeout_seconds() { # <env-name> <raw-value> <default>
+  local name=$1 raw=$2 default=$3
+  case "$raw" in
+    '') printf '%s' "$default"; return 0 ;;
+    .|*.*.*|*[!0-9.]*)
+      printf 'fm-dashboard.sh: ignoring invalid %s=%s (want seconds); using %s\n' "$name" "$raw" "$default" >&2
+      printf '%s' "$default"; return 0 ;;
+  esac
+  printf '%s' "$raw"
+}
+
 # dash_call METHOD PATH [JSON_BODY] - prints response body on stdout,
-# prints an error message on stderr and returns non-zero on failure. Never
-# exits the process directly: a caller (cmd_server_status in particular)
-# needs to catch "server unreachable" instead of the whole script dying.
+# prints an error message on stderr and returns non-zero on failure
+# ($DASH_EXIT_NOT_FOUND for a 404, 1 otherwise). Never exits the process
+# directly: a caller (cmd_server_status in particular) needs to catch
+# "server unreachable" instead of the whole script dying.
 dash_call() {
   local method=$1 path=$2 body=${3:-} base resp code out
+  local -a bounds
   need_tool curl
   need_tool jq
   base=$(dash_url)
+  bounds=(
+    --connect-timeout "$(dash_timeout_seconds FM_DASHBOARD_CONNECT_TIMEOUT "${FM_DASHBOARD_CONNECT_TIMEOUT:-}" 5)"
+    --max-time "$(dash_timeout_seconds FM_DASHBOARD_MAX_TIME "${FM_DASHBOARD_MAX_TIME:-}" 20)"
+  )
   if [ -n "$body" ]; then
-    resp=$(curl -sS -w '\n%{http_code}' -X "$method" "$base$path" \
+    resp=$(curl -sS "${bounds[@]}" -w '\n%{http_code}' -X "$method" "$base$path" \
       -H 'Content-Type: application/json' -d "$body" 2>&1) || {
       printf 'fm-dashboard.sh: could not reach dashboard at %s (is it running? see: fm-dashboard.sh start / server-status): %s\n' "$base" "$resp" >&2
       return 1
     }
   else
-    resp=$(curl -sS -w '\n%{http_code}' -X "$method" "$base$path" 2>&1) || {
+    resp=$(curl -sS "${bounds[@]}" -w '\n%{http_code}' -X "$method" "$base$path" 2>&1) || {
       printf 'fm-dashboard.sh: could not reach dashboard at %s (is it running? see: fm-dashboard.sh start / server-status): %s\n' "$base" "$resp" >&2
       return 1
     }
@@ -112,6 +148,7 @@ dash_call() {
   out=$(printf '%s' "$resp" | sed '$d')
   if [ "$code" -ge 400 ] 2>/dev/null; then
     printf 'fm-dashboard.sh: server refused (%s): %s\n' "$code" "$(printf '%s' "$out" | jq -r '.error // .' 2>/dev/null || printf '%s' "$out")" >&2
+    [ "$code" != 404 ] || return "$DASH_EXIT_NOT_FOUND"
     return 1
   fi
   printf '%s' "$out"
@@ -203,7 +240,7 @@ cmd_show() {
     case "$1" in --json) as_json=1; shift ;; *) die "show: unknown argument '$1'" ;; esac
   done
   local out
-  out=$(dash_call GET "/api/tasks/$id") || return 1
+  out=$(dash_call GET "/api/tasks/$id") || return $?
   if [ "$as_json" -eq 1 ]; then
     printf '%s\n' "$out"
     return 0
@@ -505,7 +542,7 @@ main() {
     stop) cmd_server_stop ;;
     restart) cmd_server_stop 2>/dev/null; cmd_server_start ;;
     server-status) cmd_server_status ;;
-    ""|--help|-h|help) sed -n '2,58p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+    ""|--help|-h|help) sed -n '2,63p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
     *) die "unknown command '$cmd' - run: fm-dashboard.sh --help" ;;
   esac
 }

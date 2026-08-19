@@ -497,6 +497,102 @@ EOF
   pass "a card record survives a failed link and completes on the secondmate's next handoff"
 }
 
+# Regression: the link writes ref and agent as two separate board calls, so a
+# link of the handoff's own that fails between them leaves the card carrying
+# OUR ref and nothing else. Asking only "does this card carry anything at all"
+# reads that half-written attempt as somebody else's claim, retires the
+# pending record, and leaves the card frozen at not_started with nothing left
+# to retry from - the exact failure the record exists to prevent. The guard
+# has to test identity: never overwrite another writer's link, always finish
+# your own.
+test_handoff_finishes_its_own_half_written_card_link() {
+  local home sub id card out record
+  home="$TMP_ROOT/handoff-halfwritten-main"
+  sub="$TMP_ROOT/handoff-halfwritten-sub"
+  id=handoff-halfwritten-sm
+  setup_handoff_homes "$home" "$sub" "$id"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] handoff-item-c1 - the half-linked item (repo: alpha)
+- [ ] handoff-item-c2 - a later unrelated handoff (repo: alpha)
+
+## Done
+EOF
+  card=$(add_card "Half-written link coverage")
+  [ -n "$card" ] || fail "add_card returned no id"
+  record="$home/state/handoff-cards/$id"
+
+  # Stage the pair against an unreachable board, so the pending record is
+  # written and survives exactly as a real interrupted link leaves it.
+  out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-c1 --card "$card" 2>&1)
+  expect_code 0 "$?" "handoff must not fail just because the dashboard is unreachable"
+  assert_grep "$(printf 'handoff-item-c1\t%s' "$card")" "$record" \
+    "the pending card record was not staged"
+
+  # The board state a link that set ref and then failed leaves behind: our own
+  # ref present, no agent, still not_started.
+  "$DASH" ref "$card" "$id:handoff-item-c1" >/dev/null || fail "setup: could not set the card ref"
+  [ -z "$(card_field "$card" agent)" ] || fail "setup: the card should not carry an agent yet"
+  [ "$(card_status "$card")" = not_started ] || fail "setup: the card should still be not_started"
+
+  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-c2 2>&1)
+  expect_code 0 "$?" "the next ordinary handoff should succeed"
+  assert_not_contains "$out" "left unchanged" \
+    "the sweep mistook this mechanism's own half-written link for somebody else's claim"
+  [ "$(card_field "$card" backlog_ref)" = "$id:handoff-item-c1" ] \
+    || fail "finishing our own link changed the ref it had already staged"
+  [ "$(card_field "$card" agent)" = "$id" ] \
+    || fail "a half-written link of our own was abandoned instead of finished"
+  [ "$(card_status "$card")" = working ] \
+    || fail "the half-linked card never advanced past not_started"
+  [ ! -e "$record" ] || fail "the record should retire once the link is genuinely complete"
+  pass "a handoff finishes its own half-written card link instead of retiring it as somebody else's"
+}
+
+# Regression: a card id the board itself rejects can never be linked, so a
+# record that keeps retrying it re-warns and appends another identical
+# audit-log --fleet entry on every future handoff to this secondmate, forever
+# - an unbounded stream of identical findings trains the auditor's reader to
+# ignore the log. A definitive board rejection is retired once, loudly; only a
+# board that could not be read at all keeps its retry.
+test_handoff_retires_a_pair_the_board_says_names_no_such_card() {
+  local home sub id card out record findings
+  home="$TMP_ROOT/handoff-nocard-id-main"
+  sub="$TMP_ROOT/handoff-nocard-id-sub"
+  id=handoff-nocardid-sm
+  setup_handoff_homes "$home" "$sub" "$id"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] handoff-item-d1 - names a card that does not exist (repo: alpha)
+- [ ] handoff-item-d2 - a later unrelated handoff (repo: alpha)
+
+## Done
+EOF
+  card=does-not-exist-handoff-zzzz
+  record="$home/state/handoff-cards/$id"
+
+  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-d1 --card "$card" 2>&1)
+  expect_code 0 "$?" "handoff must not fail just because --card names an unknown card"
+  assert_contains "$out" "handed off 1 item(s)" "the handoff itself did not succeed"
+  assert_contains "$out" "does not exist on the board" \
+    "the handoff did not report the board's definitive rejection of the card id"
+  assert_grep 'handoff-item-d1' "$sub/data/backlog.md" "the item did not land"
+  [ ! -e "$record" ] \
+    || fail "a card the board itself says does not exist stayed pending, so it will be retried forever"
+
+  findings=$("$DASH" audit-status --json | jq --arg c "$card" '[.log[] | select(.text | contains($c))] | length')
+  [ "$findings" = 1 ] \
+    || fail "expected exactly one fleet audit-log finding for the rejected card, got $findings"
+
+  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-d2 2>&1)
+  expect_code 0 "$?" "the next ordinary handoff should succeed"
+  assert_not_contains "$out" "$card" "a retired, impossible link re-warned on the next handoff"
+  findings=$("$DASH" audit-status --json | jq --arg c "$card" '[.log[] | select(.text | contains($c))] | length')
+  [ "$findings" = 1 ] \
+    || fail "the impossible link appended another audit-log finding on the next handoff ($findings total)"
+  pass "a card the board definitively rejects is retired once, loudly, and never retried"
+}
+
 test_handoff_refuses_card_with_more_than_one_item() {
   local home sub id out rc
   home="$TMP_ROOT/handoff-multi-main"
@@ -865,6 +961,8 @@ test_handoff_links_card_and_advances_not_started_to_working
 test_handoff_without_card_flag_never_touches_the_dashboard
 test_handoff_with_unreachable_dashboard_still_succeeds_and_warns
 test_handoff_card_record_survives_a_failed_link_and_completes_on_the_next_handoff
+test_handoff_finishes_its_own_half_written_card_link
+test_handoff_retires_a_pair_the_board_says_names_no_such_card
 test_handoff_refuses_card_with_more_than_one_item
 test_handoff_already_present_never_overwrites_an_existing_card_link
 test_handoff_into_a_non_empty_destination_queue_links_the_card
