@@ -62,6 +62,19 @@ case "${1:-}" in
   list-windows)
     printf 'foreign:%s\n' "${FM_FAKE_TMUX_WINDOW:-fm-lost}"
     exit 0 ;;
+  list-panes)
+    target=
+    prev=
+    for arg in "$@"; do
+      [ "$prev" = -t ] && target=$arg
+      prev=$arg
+    done
+    target=${target//=/}
+    if [ -n "${FM_FAKE_TMUX_DEAD_TARGET:-}" ] && [ "$target" = "$FM_FAKE_TMUX_DEAD_TARGET" ]; then
+      exit 1
+    fi
+    printf '%%1\n'
+    exit 0 ;;
 esac
 exit 0
 SH

@@ -152,6 +152,15 @@ case "${1:-}" in
     done
     [ "$_print" = 1 ] && printf 'fakepane\n'
     exit 0 ;;
+  list-panes)
+    # fm_backend_target_exists probes tmux endpoint liveness with list-panes,
+    # never display-message (whose exit status is 0 for a missing target
+    # whenever the caller is itself inside a tmux client). This fake answers
+    # the same FM_FAKE_TMUX_PANE_ALIVE switch so a supervisor-pane liveness
+    # read stays modeled at the boundary the daemon actually calls.
+    [ "${FM_FAKE_TMUX_PANE_ALIVE:-1}" = "1" ] || exit 1
+    printf '1: [1x1] [history 0/0, 0 bytes] %%1\n'
+    exit 0 ;;
   list-windows)
     [ -n "${FM_FAKE_TMUX_WINDOW:-}" ] && printf '%s\n' "$FM_FAKE_TMUX_WINDOW"
     exit 0 ;;
@@ -242,6 +251,7 @@ case "${1:-}" in
     exit 0 ;;
   capture-pane) cat "$COMPOSER" 2>/dev/null; exit 0 ;;
   list-windows) exit 0 ;;
+  list-panes) printf '1: [1x1] [history 0/0, 0 bytes] %%1\n'; exit 0 ;;
   send-keys)
     shift
     text=""; is_enter=0; lit=0

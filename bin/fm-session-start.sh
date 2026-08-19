@@ -798,7 +798,28 @@ for meta in "$STATE"/*.meta; do
 
   window=$(fm_meta_get "$meta" window)
   target=$(fm_backend_target_of_meta "$meta")
-  if [ -n "$window" ]; then
+  remote_host=$(fm_meta_get "$meta" remote_host)
+  # This digest emits THREE endpoint verdicts, not two:
+  #   alive   - fm_backend_target_exists resolved the recorded local endpoint.
+  #   dead    - it did not, and the answer is trustworthy (see that function's
+  #             header for why its exit status can be trusted now).
+  #   unknown - no local answer is possible. Either the record names a remote
+  #             host, which this machine deliberately does not judge, or no
+  #             window was ever recorded.
+  # The remote arm comes FIRST and bypasses fm_backend_target_exists entirely;
+  # it is not a probe failure rendered as unknown.
+  if [ -n "$remote_host" ]; then
+    # A remote mate's endpoint lives on ANOTHER host's server, so the local
+    # tmux server cannot answer for it - fm-spawn.sh records `window=remote:<id>`
+    # with no backend= key, which fm_backend_of_meta defaults to tmux, and
+    # probing that locally can only produce a wrong answer in one direction or
+    # the other. fm-fleet-snapshot.sh actually asks the remote host;
+    # fm-crew-state.sh instead skips the local probe entirely and falls back
+    # to the status log; this digest deliberately does not reach off the box
+    # either, so it reports the endpoint as unchecked rather than guessing.
+    printf 'endpoint: unknown (remote %s; not checked from here, window=%s)\n' \
+      "$remote_host" "$window"
+  elif [ -n "$window" ]; then
     backend=$(fm_backend_of_meta "$meta")
     if fm_backend_target_exists "$backend" "${target:-$window}" "fm-$id"; then
       printf 'endpoint: alive (backend=%s window=%s)\n' "$backend" "$window"

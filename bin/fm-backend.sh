@@ -831,11 +831,126 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
 # Mirrors fm-crew-state.sh's pane_readable check; exists here as one shared
 # primitive so callers that only need a fast alive/dead read (recovery
 # digests, the session-start fleet digest) do not re-derive it inline.
+# It answers only for endpoints on THIS machine's backend server, so it is not
+# the whole story for any caller that also tracks remote mates: a record
+# carrying remote_host names an endpoint on another host and must not be
+# passed here at all - fm-fleet-snapshot.sh and fm-crew-state.sh ask the
+# remote host first, and fm-session-start.sh's digest reports those records
+# as unchecked without probing. Callers therefore render three verdicts, not
+# two: alive, dead, and unknown (no local answer is possible or none was
+# recorded).
+# tmux branch: `display-message -p -t <target>` is NOT a valid existence
+# probe - verified empirically (tmux 3.4) that for a caller itself attached to
+# a tmux client, a missing session or window makes it silently print nothing
+# (or, for an existing session with a missing window, fall back to the
+# client's own active pane) while still exiting 0, so trusting its exit
+# status reports every dead target as alive whenever firstmate runs inside
+# tmux, which it always does. Nor is a bare `list-panes -t <target>` exit
+# status enough, because tmux resolves a name target by PREFIX: verified on
+# tmux 3.4 that `list-panes -t remote:main` exits 0 when only `remote-backup`
+# survives, and `list-panes -t sess:fm-alpha` exits 0 when only `fm-alpha-2`
+# exists - prefix-colliding session and fm-<task-id> window names are routine,
+# so a bare probe reproduces the very false-alive this must not report. Both
+# components of a `session:window` target are therefore pinned with tmux's
+# exact-match `=` prefix (the same `=$session:=$window` form
+# fm_backend_tmux_kill already uses), which also resolves a window INDEX
+# exactly, so `FM_SUPERVISOR_TARGET_DEFAULT` ("firstmate:0") keeps working.
+#
+# The one shape the `=` pin cannot express is a window name containing a dot:
+# tmux splits the last `.` off as a pane specifier BEFORE matching the name, so
+# a live window `fm-release-1.2` makes `list-panes -t '=s:=fm-release-1.2'`
+# fail with "can't find window: fm-release-1". Task ids admit dots, so a dotted
+# window component is instead matched byte-exactly against the session's own
+# name inventory - the way fm_backend_tmux_agent_state already resolves its
+# window component - since `grep -Fqx` never reinterprets `.`.
+#
+# `session:window.pane` is a legitimate tmux target too, and the two readings
+# compete for the same string, so both are answered: the window NAME wins when
+# the inventory has it, and otherwise the trailing component is read as a pane
+# (index, or a `%N` pane id) qualifying either a window NAME or a window INDEX,
+# both of which tmux itself accepts there (`sess:1.2` addresses pane 2 of
+# window index 1). The pane lookup inverts the format to
+# `#{pane_index}.#{window_name}` (then `#{pane_index}.#{window_index}`) and
+# compares byte-exactly against `<pane>.<window>`, which keeps the match
+# unambiguous even when the window name itself contains dots, since a pane
+# index or id never does.
+#
+# That pane inventory is scoped with a TRAILING COLON (`-t "=$session:"`), and
+# the colon is load-bearing. `list-panes` takes a target-WINDOW even under -s,
+# so a bare `-t "=$session"` is resolved as a window NAME first and only falls
+# back to a session: verified on tmux 3.4 that with a session `alpha` and a
+# separate session `cap` owning a window named `alpha`, `list-panes -s -t
+# '=alpha'` enumerates CAP's panes, which answers the wrong server object in
+# both directions (a dead `alpha:win.2` reads alive off cap's second pane, and
+# a live one reads dead once cap's window goes away). The trailing colon makes
+# the component unambiguously a session, and it stays exact: `-t '=alph:'`
+# fails with "can't find session: alph". Validating the session with
+# `list-windows -t "=$session"` above is NOT sufficient on its own - that
+# proves the session exists, it does not make a later `list-panes` address it -
+# and the asymmetry is real: `list-windows` takes a target-session, so its
+# bare `=` pin already means the session.
+#
+# Targets that are already exact, unambiguous handles need no pin at all: tmux
+# never prefix-matches a pane id (`%N`, what discover_supervisor_target hands
+# the away-mode supervise daemon from $TMUX_PANE), a window id (`@N`), or a
+# session id (`$N`) - verified that `%999`/`@999`/`$999` all fail while live
+# ids succeed. A bare session NAME is NOT in that group despite having no
+# colon: `list-panes -t alpha` exits 0 when only `alphabet` is live, and the
+# `=` pin is ignored in the bare form, so it is resolved against the exact
+# session inventory instead. Only empty, malformed, or 3+ colon shapes remain
+# a hard negative.
 fm_backend_target_exists() {  # <backend> <target> [expected-label]
-  local backend=$1 target=$2 expected_label=${3:-} session pane
+  local backend=$1 target=$2 expected_label=${3:-} session pane window names pane_field base want window_field
   case "$backend" in
     tmux)
-      tmux display-message -p -t "$target" '#{pane_id}' >/dev/null 2>&1
+      case "$target" in
+        %*|@*|'$'*)
+          tmux list-panes -t "$target" >/dev/null 2>&1
+          ;;
+        *:*:*|'':*|*:'')
+          return 1
+          ;;
+        *:*.*)
+          session=${target%%:*}
+          window=${target#*:}
+          names=$(LC_ALL=C tmux list-windows -t "=$session" -F '#{window_name}' 2>/dev/null) \
+            || return 1
+          printf '%s\n' "$names" | grep -Fqx "$window" && return 0
+          pane=${window##*.}
+          base=${window%.*}
+          want=$pane.$base
+          case "$pane" in
+            %*) pane_field='#{pane_id}' ;;
+            *)  pane_field='#{pane_index}' ;;
+          esac
+          for window_field in '#{window_name}' '#{window_index}'; do
+            LC_ALL=C tmux list-panes -s -t "=$session:" -F "$pane_field.$window_field" 2>/dev/null \
+              | grep -Fqx "$want" && return 0
+          done
+          return 1
+          ;;
+        *:*)
+          session=${target%%:*}
+          window=${target#*:}
+          tmux list-panes -t "=$session:=$window" >/dev/null 2>&1
+          ;;
+        *)
+          # A bare, colon-less string is a legitimate tmux target too: tmux
+          # resolves it against EITHER a session name or a window name in ANY
+          # session. The `=` pin does NOT make this exact for a bare target
+          # the way it does for the session component of a session:window
+          # target - verified live that `list-panes -t "=alpha"` still exits 0
+          # when only session `alphabet` is live, even though the equivalent
+          # `=alpha:=win` two-component form correctly refuses that same
+          # prefix. So a bare target is answered from exact inventory instead:
+          # an exact session name, or an exact window name in any session (the
+          # same live listing fm_backend_tmux_resolve_bare_selector already
+          # uses for bare selectors). A session-only check here (the prior
+          # form) silently misreported a live bare WINDOW-name target as dead.
+          LC_ALL=C tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -Fqx "$target" && return 0
+          LC_ALL=C tmux list-windows -a -F '#{window_name}' 2>/dev/null | grep -Fqx "$target"
+          ;;
+      esac
       ;;
     herdr)
       fm_backend_source herdr || return 1
