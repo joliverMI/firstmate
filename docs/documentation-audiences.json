@@ -213,6 +213,10 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": "docs/arm-readiness-determinism-proof.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/architecture.md",
       "audience": "maintainer-architecture"
     },
