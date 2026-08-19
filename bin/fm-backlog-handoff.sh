@@ -59,16 +59,16 @@
 # in the secondmate's backlog (local move confirmed, or remote delivery
 # confirmed), this best-effort sets the card's ref to "<secondmate-id>:<item-
 # key>" and its agent to the secondmate id, advancing a not_started card to
-# working - all through bin/fm-dashboard.sh, never a second store. Because a
-# handed-off item has no local task metadata to hold dashboard_card= the way
-# state/<id>.meta does, the card id is instead recorded as a `dashboard_card:
-# <card-id>` body line on the item itself, via `tasks-axi update
-# --body-file` (delegating the write to the same single owner of the backlog
-# format used everywhere else in this script), so the identity travels with
-# the item through any later move. That is the item's SINGLE card identity:
-# the write replaces any `dashboard_card:` line already present rather than
-# appending beside it, so a corrected card id never leaves one item pointing
-# at two cards (which the outbox-resume path would then link both of).
+# working - all through bin/fm-dashboard.sh, never a second store. A handed-off
+# item has no local state/<id>.meta to hold dashboard_card= the way a spawned
+# task does, so the pairing is held in this home's own state directory instead
+# (state/handoff-cards/<secondmate-id>, one "<item-key>\t<card-id>" line per
+# item), written once staging has actually landed and consumed at the moment
+# arrival is confirmed. The handed-off item itself is never rewritten: which
+# card a deliverable serves is firstmate-local bookkeeping, and recording it in
+# the item's body would mean this script performing a read-modify-write on
+# backlog content it does not own, where any disagreement with tasks-axi about
+# where a body ends silently destroys the rest of it.
 # Because handoffs are idempotent, the path where nothing actually moved
 # claims the card only when it carries neither a ref nor an agent: by then the
 # secondmate may already have spawned against it with a more precise identity,
@@ -78,10 +78,8 @@
 # stderr and, when the dashboard answers at all, recorded through
 # `fm-dashboard.sh audit-log --fleet`. No --card is the default and stages
 # nothing on the board. Its one point of contact is completing a link an
-# earlier --card call already staged: a remote outbox is delivered whole, so a
-# later handoff (with or without --card) can land items an earlier failed run
-# annotated, and deleting the delivered outbox destroys the only record of
-# them - so every card the delivery actually landed is linked, not just the
+# earlier --card call already staged and could not finish: arrival is what
+# clears the record, so every card an arrival lands is linked, not just the
 # one this command line named.
 # Usage: fm-backlog-handoff.sh <secondmate-id> <item-key> [--card <card-id>]
 #        fm-backlog-handoff.sh --resume-pending
@@ -317,133 +315,52 @@ backlog_key_noncanonical_body_lines() {
   ' "$file"
 }
 
-# Plain-text (indent stripped) canonical body lines for one item, using the
-# same header/section boundary rules as backlog_key_section: stops at the next
-# item header or an unindented `## ` section heading. Feeds
-# annotate_dashboard_card's read-modify-write; the write itself is delegated
-# to `tasks-axi update --body-file`, which re-applies the canonical indent.
-# A whitespace-only line is a BLANK body line that the body continues past,
-# not a boundary - that is what tasks-axi itself does with it, and treating a
-# stray lone space or tab as the end of the item would make this reader claim
-# a shorter body than the item really has, which the rewrite below would then
-# make true by writing the truncation back.
-backlog_key_body_lines() { # <file> <key>
-  local file=$1 key=$2
-  [ -f "$file" ] || return 0
-  awk -v key="$key" '
-    /^- \[[ x]\] / {
-      rest = $0
-      sub(/^- \[[ x]\] +/, "", rest)
-      id = rest
-      sub(/[ \t].*/, "", id)
-      if (capturing) exit
-      if (id == key) { capturing = 1 }
-      next
-    }
-    capturing && /^##[[:space:]]/ { exit }
-    capturing && /^[[:space:]]*$/ { print ""; next }
-    capturing && /^  / { line = $0; sub(/^  /, "", line); print line; next }
-    capturing { exit }
-  ' "$file"
+# Durable record of which dashboard card a handed-off item serves, kept in this
+# home's own state directory as one "<item-key>\t<card-id>" line per item under
+# handoff-cards/<secondmate-id>. A handed-off item has no local state/<id>.meta
+# to hold dashboard_card= the way a spawned task does, and the item's own body
+# is deliberately NOT used for it: recording the card there would mean this
+# script rewriting an item body it does not own, through a read-modify-write
+# whose reader has to agree with tasks-axi about where a body ends, and any
+# disagreement silently writes away backlog content. The card link is
+# firstmate-local bookkeeping, so it lives in firstmate-local state and the
+# backlog item is never rewritten at all.
+#
+# Written once staging has actually succeeded (the local move landed, or the
+# item reached the outbox), so a record only ever names an item that is really
+# on its way. Read at the two points that confirm arrival - a completed local
+# move or remote delivery, and the --resume-pending recovery path, which takes
+# no keys or card id at all and has nothing else to work from.
+handoff_card_record() { # <secondmate-id>
+  local id=$1
+  case "$id" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  printf '%s\n' "$STATE/handoff-cards/$id"
 }
 
-# Prove the reader above agrees with tasks-axi - the single owner of the
-# backlog format - BEFORE anything is rewritten, by writing the body back
-# unchanged on a throwaway copy and requiring the copy to still say what the
-# original said. `tasks-axi update --body-file` REPLACES the whole body, so any
-# line this reader failed to see would be silently and unrecoverably written
-# away; a body that does not survive being written back unchanged is refused
-# instead, which surfaces as the caller's ordinary loud, non-fatal `annotate`
-# warning and leaves the item exactly as it was. Trailing whitespace is
-# normalized on both sides because tasks-axi rewrites a whitespace-only line as
-# an empty one, which loses no content.
-annotate_body_roundtrips() { # <file> <key> <body-path>
-  local file=$1 key=$2 body=$3 probe rc=0
-  probe=$(mktemp "${TMPDIR:-/tmp}/fm-handoff-probe.XXXXXX") || return 1
-  if ! cp -p -- "$file" "$probe"; then
-    rm -f "$probe" "$probe.lock"
-    return 1
+handoff_card_record_put() { # <secondmate-id> <item-key> <card-id>
+  local id=$1 key=$2 card=$3 record tmp
+  record=$(handoff_card_record "$id") || return 1
+  mkdir -p "$(dirname "$record")" || return 1
+  tmp=$(umask 077; mktemp "$(dirname "$record")/.card.XXXXXX") || return 1
+  if [ -f "$record" ] && [ ! -L "$record" ]; then
+    awk -F'\t' -v key="$key" '$1 != key' "$record" > "$tmp" || { rm -f "$tmp"; return 1; }
   fi
-  if ! tasks-axi update "$key" --file "$probe" --body-file "$body" >/dev/null 2>&1; then
-    rm -f "$probe" "$probe.lock"
-    return 1
-  fi
-  diff -q <(sed 's/[[:space:]]*$//' "$file") <(sed 's/[[:space:]]*$//' "$probe") >/dev/null 2>&1 || rc=1
-  rm -f "$probe" "$probe.lock"
-  return "$rc"
-}
-
-# Record the card id as a durable `dashboard_card: <card-id>` body line on the
-# handed-off item itself - the local equivalent of fm-spawn.sh's
-# state/<id>.meta dashboard_card=, since a handed-off item has no local task
-# metadata to hold that. Read-modify-write: reads the existing plain body with
-# backlog_key_body_lines above, then delegates the actual write to `tasks-axi
-# update --body-file`, the single owner of the backlog format, so this never
-# hand-writes markdown indentation itself. This line is the item's single
-# durable card identity, exactly like the one `dashboard_card=` in
-# state/<id>.meta, so the write REPLACES any `dashboard_card:` line already on
-# the item rather than appending beside it: an item that could carry two card
-# lines would double-link on the outbox-resume path, which reads them all back.
-# Idempotent - a re-run that already records exactly this card id is a no-op.
-# Failure here is reported by the caller exactly like a failed dashboard call;
-# it never fails the handoff itself.
-annotate_dashboard_card() { # <file> <key> <card-id>
-  local file=$1 key=$2 card=$3 tmp unchanged existing kept desired
-  existing=$(backlog_key_body_lines "$file" "$key")
-  kept=
-  if [ -n "$existing" ]; then
-    kept=$(printf '%s\n' "$existing" | grep -v '^dashboard_card:[[:space:]]' || true)
-  fi
-  if [ -n "$kept" ]; then
-    desired=$(printf '%s\ndashboard_card: %s' "$kept" "$card")
-  else
-    desired="dashboard_card: $card"
-  fi
-  [ "$desired" != "$existing" ] || return 0
-  if [ -n "$existing" ]; then
-    unchanged=$(mktemp "${TMPDIR:-/tmp}/fm-handoff-body.XXXXXX") || return 1
-    printf '%s\n' "$existing" > "$unchanged"
-    if ! annotate_body_roundtrips "$file" "$key" "$unchanged"; then
-      rm -f "$unchanged"
-      echo "warning: refusing to rewrite $key's body: it does not survive a tasks-axi round-trip unchanged, so recording card $card on it could lose body content" >&2
-      return 1
-    fi
-    rm -f "$unchanged"
-  fi
-  tmp=$(mktemp "${TMPDIR:-/tmp}/fm-handoff-body.XXXXXX") || return 1
-  printf '%s\n' "$desired" > "$tmp"
-  if ! tasks-axi update "$key" --file "$file" --body-file "$tmp" >/dev/null 2>&1; then
-    rm -f "$tmp"
-    return 1
-  fi
-  rm -f "$tmp"
+  printf '%s\t%s\n' "$key" "$card" >> "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f -- "$tmp" "$record" || { rm -f "$tmp"; return 1; }
   return 0
 }
 
-# Scan a whole backlog/outbox file for every item carrying a `dashboard_card:
-# <card-id>` body line, emitting one "<key>\t<card-id>" pair per match. Used
-# only by the remote outbox-resume path, which (unlike the immediate local and
-# remote paths) has no explicit key/card argument to work from - the annotated
-# item text is the only record left once a crash separates staging from
-# delivery.
-outbox_dashboard_card_pairs() { # <file>
-  local file=$1
-  [ -f "$file" ] || return 0
-  awk '
-    /^- \[[ x]\] / {
-      rest = $0
-      sub(/^- \[[ x]\] +/, "", rest)
-      key = rest
-      sub(/[ \t].*/, "", key)
-      next
-    }
-    /^  dashboard_card: / {
-      card = $0
-      sub(/^  dashboard_card: /, "", card)
-      if (key != "") print key "\t" card
-      next
-    }
-  ' "$file"
+handoff_card_record_pairs() { # <secondmate-id>
+  local id=$1 record
+  record=$(handoff_card_record "$id") || return 0
+  [ -f "$record" ] && [ ! -L "$record" ] || return 0
+  cat -- "$record"
+}
+
+handoff_card_record_clear() { # <secondmate-id>
+  local id=$1 record
+  record=$(handoff_card_record "$id") || return 0
+  rm -f -- "$record"
 }
 
 # Best-effort mechanical link to the Admiral's Fleet Dashboard
@@ -517,23 +434,15 @@ card_already_linked() { # <card-id>
   [ -n "$CARD_EXISTING_REF" ] || [ -n "$CARD_EXISTING_AGENT" ]
 }
 
-# Annotate then link: the single-item path both the immediate local move and
-# the immediate remote delivery use once the item has genuinely landed.
-# <preserve-existing-link> is 1 on the idempotent already-present path, where
-# nothing actually moved: a re-run there must never overwrite a link that has
-# since become more precise than this handoff's own coarse identity (the
-# secondmate's fm-spawn.sh --card sets ref=<home>:<task-id>, agent=<task-id>),
-# so the board is only claimed when the card carries neither a ref nor an
-# agent. The durable `dashboard_card:` annotation is still (re)written either
-# way - it records which card the item serves, not who currently owns the card.
-# Link every card a confirmed remote delivery actually landed, not just the one
-# the current command line named. One outbox is delivered as a whole, so it can
-# carry items annotated by earlier runs whose delivery failed; those cards were
-# deliberately left unlinked then, and once the outbox is transferred and
-# deleted the annotated item text - the only record of them - is gone with it,
-# so this is the last moment they can ever be linked. <unguarded-card> is the
-# one card this run is actively claiming and may overwrite; every other pair is
-# a leftover completion that only fills in a card nothing has claimed yet.
+# Link every card this arrival actually landed, not just the one the current
+# command line named. A remote outbox is delivered as a whole, so it can carry
+# items an earlier run staged and could not link; the same is true of any
+# record an earlier run wrote and died before consuming. Those cards were
+# deliberately left unlinked then, and the record is cleared once arrival is
+# confirmed, so this is the last moment they can be linked at all.
+# <unguarded-card> is the one card this run is actively claiming and may
+# overwrite; every other pair is a leftover completion that only fills in a
+# card nothing has claimed yet.
 link_delivered_card_pairs() { # <secondmate-id> <unguarded-card|''> <pair>...
   local sm_id=$1 unguarded=$2 pair key card
   shift 2
@@ -553,16 +462,20 @@ link_delivered_card_pairs() { # <secondmate-id> <unguarded-card|''> <pair>...
   done
 }
 
-handoff_dashboard_link() { # <backlog-file> <secondmate-id> <item-key> <card-id> [preserve-existing-link]
-  local file=$1 sm_id=$2 key=$3 card=$4 preserve=${5:-0}
-  if ! annotate_dashboard_card "$file" "$key" "$card"; then
-    echo "warning: dashboard card link failed for $key -> card $card (annotate): could not record dashboard_card= on the handed-off item" >&2
-  fi
-  if [ "$preserve" -eq 1 ] && card_already_linked "$card"; then
-    echo "dashboard: card $card already links to ${CARD_EXISTING_REF:-(no ref)} (agent=${CARD_EXISTING_AGENT:-none}); left unchanged"
-    return 0
-  fi
-  dashboard_link_card "$sm_id" "$key" "$card"
+# The one place arrival is turned into board state: consume this secondmate's
+# whole record, link every pair it names, and clear it. <unguarded-card> is the
+# card this run staged itself and may therefore claim outright; passing it
+# empty makes every pair guarded, which is what a run that staged nothing new
+# needs - a re-run of an idempotent handoff is not new evidence about who owns
+# a card the secondmate may since have spawned against.
+consume_handoff_card_record() { # <secondmate-id> <unguarded-card|''>
+  local id=$1 unguarded=$2 pair
+  local -a pairs=()
+  while IFS= read -r pair; do
+    [ -n "$pair" ] && pairs+=("$pair")
+  done < <(handoff_card_record_pairs "$id")
+  [ "${#pairs[@]}" -eq 0 ] || link_delivered_card_pairs "$id" "$unguarded" "${pairs[@]}"
+  handoff_card_record_clear "$id"
 }
 
 seed_backlog_scaffold() { # <path>
@@ -673,8 +586,8 @@ remove_interrupted_source_duplicates() { # <outbox> <keys...>
 }
 
 remote_handoff() { # <secondmate-id> <keys...>
-  local id=$1 outbox section main_section out_section key mv_out pair found unguarded
-  local -a requested to_move already missing in_flight done_items not_queued staged
+  local id=$1 outbox section main_section out_section key mv_out unguarded
+  local -a requested to_move already missing in_flight done_items not_queued
   shift
   requested=("$@")
   outbox="$DATA/handoff/$id.outbox.md"
@@ -733,27 +646,12 @@ remote_handoff() { # <secondmate-id> <keys...>
   # persist. The outbox is already authoritative in that state, so converge by
   # deleting only duplicates that tasks-axi itself confirms are dependency-safe.
   remove_interrupted_source_duplicates "$outbox" "${requested[@]}" || return 1
-  # --card requires exactly one requested key, so this annotates the outbox's
-  # single staged item before it is transferred and deleted; the card link
+  # --card requires exactly one requested key, so this records the outbox's
+  # single staged item now that staging has actually landed; the card link
   # itself only fires once delivery is confirmed below.
   if [ "$CARD_SET" -eq 1 ]; then
-    annotate_dashboard_card "$outbox" "${requested[0]}" "$CARD_ARG" \
-      || echo "warning: dashboard card link failed for ${requested[0]} -> card $CARD_ARG (annotate): could not record dashboard_card= on the handed-off item" >&2
-  fi
-  # Read the staged pairs while the outbox still exists: delivery transfers and
-  # then deletes it, and the same read is what the crash-recovery path replays.
-  staged=()
-  while IFS= read -r pair; do
-    [ -n "$pair" ] && staged+=("$pair")
-  done < <(outbox_dashboard_card_pairs "$outbox")
-  if [ "$CARD_SET" -eq 1 ]; then
-    found=0
-    for pair in ${staged[@]+"${staged[@]}"}; do
-      [ "${pair#*$'\t'}" != "$CARD_ARG" ] || found=1
-    done
-    # An annotation that could not be written still gets its board link; only
-    # the durable record on the item is missing, and that was already warned.
-    [ "$found" -eq 1 ] || staged+=("${requested[0]}"$'\t'"$CARD_ARG")
+    handoff_card_record_put "$id" "${requested[0]}" "$CARD_ARG" \
+      || echo "warning: could not record card $CARD_ARG for ${requested[0]}; a crash before delivery would lose the link" >&2
   fi
   remote_deliver_outbox "$id" "$outbox" || return 1
   echo "handed off ${#requested[@]} item(s) to remote secondmate $id: ${requested[*]}"
@@ -766,7 +664,7 @@ remote_handoff() { # <secondmate-id> <keys...>
   if [ "$CARD_SET" -eq 1 ] && [ "${#to_move[@]}" -gt 0 ]; then
     unguarded=$CARD_ARG
   fi
-  link_delivered_card_pairs "$id" "$unguarded" ${staged[@]+"${staged[@]}"}
+  consume_handoff_card_record "$id" "$unguarded"
 }
 
 with_remote_route_locks() { # <secondmate-id> <function> <args...>
@@ -788,23 +686,19 @@ with_remote_route_locks() { # <secondmate-id> <function> <args...>
 }
 
 resume_remote_outbox() { # <secondmate-id> <outbox-path>
-  local id=$1 outbox=$2 pair
-  local -a pending_cards=()
+  local id=$1 outbox=$2
   [ -e "$outbox" ] || [ -L "$outbox" ] || return 0
   if [ ! -f "$outbox" ] || [ -L "$outbox" ]; then
     echo "error: unsafe pending handoff outbox: $outbox" >&2
     return 1
   fi
-  # A crash between staging (which annotated any --card item) and delivery
-  # loses the CLI's own $CARD_ARG/$CARD_SET context - --resume-pending takes
-  # no keys or card id at all - so the annotated item text left in the outbox
-  # is the only surviving record of which card(s) to link once delivery
-  # actually completes.
-  while IFS= read -r pair; do
-    [ -n "$pair" ] && pending_cards+=("$pair")
-  done < <(outbox_dashboard_card_pairs "$outbox")
+  # A crash between staging and delivery loses the CLI's own $CARD_ARG/$CARD_SET
+  # context - --resume-pending takes no keys or card id at all - so the record
+  # this home wrote at staging time is the only surviving statement of which
+  # card(s) to link once delivery actually completes. Nothing here is claiming
+  # a card on its own behalf, so every pair stays guarded.
   remote_deliver_outbox "$id" "$outbox" || return 1
-  link_delivered_card_pairs "$id" '' ${pending_cards[@]+"${pending_cards[@]}"}
+  consume_handoff_card_record "$id" ''
 }
 
 resume_pending_outboxes() {
@@ -890,7 +784,15 @@ fi
 
 if [ "${#TO_MOVE[@]}" -eq 0 ]; then
   echo "nothing to move: ${ALREADY[*]:-no keys} already present in $SUB_BACKLOG"
-  [ "$CARD_SET" -eq 0 ] || handoff_dashboard_link "$SUB_BACKLOG" "$ID" "${ALREADY[0]}" "$CARD_ARG" 1
+  # Nothing was staged, so nothing is recorded: the item is already where it
+  # belongs. This run has no claim of its own to make, so every pair - this
+  # card included - stays guarded against a link the secondmate may since have
+  # made more precise by spawning against it.
+  if [ "$CARD_SET" -eq 1 ]; then
+    handoff_card_record_put "$ID" "${ALREADY[0]}" "$CARD_ARG" \
+      || echo "warning: could not record card $CARD_ARG for ${ALREADY[0]}" >&2
+  fi
+  consume_handoff_card_record "$ID" ''
   exit 0
 fi
 
@@ -945,4 +847,11 @@ if [ "${#ALREADY[@]}" -gt 0 ]; then
   echo "  already present (skipped): ${ALREADY[*]}"
 fi
 warn_stale_public_commitments "$ID" "${TO_MOVE[@]}"
-[ "$CARD_SET" -eq 0 ] || handoff_dashboard_link "$SUB_BACKLOG" "$ID" "${TO_MOVE[0]}" "$CARD_ARG"
+# The move has landed, so record the card before consuming: a crash between
+# here and the board leaves a statement the next handoff to this secondmate
+# completes, the local twin of the remote outbox's own recovery.
+if [ "$CARD_SET" -eq 1 ]; then
+  handoff_card_record_put "$ID" "${TO_MOVE[0]}" "$CARD_ARG" \
+    || echo "warning: could not record card $CARD_ARG for ${TO_MOVE[0]}; a crash before the board is reached would lose the link" >&2
+fi
+consume_handoff_card_record "$ID" "$CARD_ARG"
