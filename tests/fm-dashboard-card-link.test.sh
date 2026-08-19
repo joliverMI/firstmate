@@ -19,7 +19,6 @@ fm_git_identity fmtest fmtest@example.invalid
 command -v python3 >/dev/null 2>&1 || { pass "skipped - python3 not available"; exit 0; }
 command -v jq >/dev/null 2>&1 || { pass "skipped - jq not available"; exit 0; }
 command -v curl >/dev/null 2>&1 || { pass "skipped - curl not available"; exit 0; }
-command -v tasks-axi >/dev/null 2>&1 || { pass "skipped - tasks-axi not available (required by the handoff card-link coverage)"; exit 0; }
 
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
@@ -39,6 +38,10 @@ SERVER_PID=""
 
 fm_card_link_test_cleanup() {
   local worker_pid i
+  if [ -n "${CARD_READ_FAIL_PID:-}" ] && kill -0 "$CARD_READ_FAIL_PID" 2>/dev/null; then
+    kill "$CARD_READ_FAIL_PID" 2>/dev/null
+    wait "$CARD_READ_FAIL_PID" 2>/dev/null
+  fi
   if [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
     kill "$SERVER_PID" 2>/dev/null
     wait "$SERVER_PID" 2>/dev/null
@@ -98,6 +101,76 @@ wait_for_port_file() {  # <portfile> <pid> <label>
     kill -0 "$pid" 2>/dev/null || fail "$label died before binding a port"
     sleep 0.05
   done
+}
+
+# A real HTTP peer that forwards every write to the real board but fails every
+# card READ. That is the mid-sequence outage shape - a board restarting, a
+# transient 5xx, or a GET that alone hits the call timeout - and it is the only
+# way to drive the paths where the link's own ownership and status decisions
+# have no answer to work from. Sets CARD_READ_FAIL_PORT for the caller.
+CARD_READ_FAIL_PID=
+CARD_READ_FAIL_PORT=
+start_card_read_failing_proxy() {  # <label>
+  local portfile="$TMP_ROOT/card-read-fail-$1.port"
+  rm -f "$portfile"
+  python3 - "$portfile" "$FM_DASHBOARD_HOST" "$FM_DASHBOARD_PORT" >/dev/null 2>&1 <<'PY' &
+import http.server, os, socketserver, sys, urllib.error, urllib.request
+
+portfile, up_host, up_port = sys.argv[1], sys.argv[2], sys.argv[3]
+UPSTREAM = "http://%s:%s" % (up_host, up_port)
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.0"
+
+    def log_message(self, *args):
+        pass
+
+    def _reply(self, code, data):
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _relay(self):
+        if self.command == "GET" and self.path.startswith("/api/tasks/"):
+            self._reply(500, b'{"error":"card read deliberately failed by the test proxy"}')
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else None
+        request = urllib.request.Request(UPSTREAM + self.path, data=body, method=self.command)
+        content_type = self.headers.get("Content-Type")
+        if content_type:
+            request.add_header("Content-Type", content_type)
+        try:
+            with urllib.request.urlopen(request) as response:
+                self._reply(response.status, response.read())
+        except urllib.error.HTTPError as exc:
+            self._reply(exc.code, exc.read())
+        except Exception:
+            self._reply(502, b'{"error":"proxy could not reach the board"}')
+
+    do_GET = do_POST = do_PATCH = do_PUT = do_DELETE = _relay
+
+
+socketserver.TCPServer.allow_reuse_address = True
+server = socketserver.TCPServer(("127.0.0.1", 0), Handler)
+with open(portfile + ".tmp", "w") as fh:
+    fh.write(str(server.server_address[1]))
+os.rename(portfile + ".tmp", portfile)
+server.serve_forever()
+PY
+  CARD_READ_FAIL_PID=$!
+  wait_for_port_file "$portfile" "$CARD_READ_FAIL_PID" "the card-read-failing proxy"
+  CARD_READ_FAIL_PORT=$(cat "$portfile")
+}
+
+stop_card_read_failing_proxy() {
+  [ -n "$CARD_READ_FAIL_PID" ] || return 0
+  kill "$CARD_READ_FAIL_PID" 2>/dev/null
+  wait "$CARD_READ_FAIL_PID" 2>/dev/null
+  CARD_READ_FAIL_PID=
 }
 
 card_status() {  # <card-id>
@@ -616,7 +689,7 @@ EOF
 # forwards the writes to the real board but fails every card read, which is
 # exactly the mid-sequence outage the original report describes.
 test_handoff_never_confirms_a_link_whose_card_state_it_could_not_read() {
-  local home sub id card out record portfile proxy_pid port
+  local home sub id card out record
   home="$TMP_ROOT/handoff-blindstatus-main"
   sub="$TMP_ROOT/handoff-blindstatus-sub"
   id=handoff-blindstatus-sm
@@ -632,63 +705,9 @@ EOF
   [ -n "$card" ] || fail "add_card returned no id"
   record="$home/state/handoff-cards/$id"
 
-  portfile="$TMP_ROOT/blindstatus.port"
-  rm -f "$portfile"
-  python3 - "$portfile" "$FM_DASHBOARD_HOST" "$FM_DASHBOARD_PORT" >/dev/null 2>&1 <<'PY' &
-import http.server, os, socketserver, sys, urllib.error, urllib.request
+  start_card_read_failing_proxy blindstatus
 
-portfile, up_host, up_port = sys.argv[1], sys.argv[2], sys.argv[3]
-UPSTREAM = "http://%s:%s" % (up_host, up_port)
-
-
-class Handler(http.server.BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.0"
-
-    def log_message(self, *args):
-        pass
-
-    def _reply(self, code, data):
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-    def _relay(self):
-        # Reading a card is the one call this fixture breaks; every write is
-        # forwarded to the real board, which is the mid-sequence outage shape.
-        if self.command == "GET" and self.path.startswith("/api/tasks/"):
-            self._reply(500, b'{"error":"card read deliberately failed by the test proxy"}')
-            return
-        length = int(self.headers.get("Content-Length") or 0)
-        body = self.rfile.read(length) if length else None
-        request = urllib.request.Request(UPSTREAM + self.path, data=body, method=self.command)
-        content_type = self.headers.get("Content-Type")
-        if content_type:
-            request.add_header("Content-Type", content_type)
-        try:
-            with urllib.request.urlopen(request) as response:
-                self._reply(response.status, response.read())
-        except urllib.error.HTTPError as exc:
-            self._reply(exc.code, exc.read())
-        except Exception:
-            self._reply(502, b'{"error":"proxy could not reach the board"}')
-
-    do_GET = do_POST = do_PATCH = do_PUT = do_DELETE = _relay
-
-
-socketserver.TCPServer.allow_reuse_address = True
-server = socketserver.TCPServer(("127.0.0.1", 0), Handler)
-with open(portfile + ".tmp", "w") as fh:
-    fh.write(str(server.server_address[1]))
-os.rename(portfile + ".tmp", portfile)
-server.serve_forever()
-PY
-  proxy_pid=$!
-  wait_for_port_file "$portfile" "$proxy_pid" "the card-read-failing proxy"
-  port=$(cat "$portfile")
-
-  out=$(FM_DASHBOARD_URL="http://127.0.0.1:$port" FM_HOME="$home" \
+  out=$(FM_DASHBOARD_URL="http://127.0.0.1:$CARD_READ_FAIL_PORT" FM_HOME="$home" \
     "$HANDOFF" "$id" handoff-item-e1 --card "$card" 2>&1)
   expect_code 0 "$?" "the handoff must not fail because the card could not be read"
   assert_contains "$out" "handed off 1 item(s)" "the handoff itself did not succeed"
@@ -701,8 +720,7 @@ PY
   assert_grep "$(printf 'handoff-item-e1\t%s' "$card")" "$record" \
     "a link that never confirmed the card's status retired the only record that could retry it"
 
-  kill "$proxy_pid" 2>/dev/null
-  wait "$proxy_pid" 2>/dev/null
+  stop_card_read_failing_proxy
 
   out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-e2 2>&1)
   expect_code 0 "$?" "the next ordinary handoff should succeed"
@@ -712,11 +730,13 @@ PY
   pass "a link whose card state could not be read is never confirmed, so its record stays retriable"
 }
 
-# Regression: re-recording a key with a corrected card id used to replace the
-# old pair outright, discarding a link that may already be half-written on the
-# old card - it keeps a dangling ref at not_started with no record left to
-# finish it, and nothing said so.
-test_handoff_re_card_keeps_the_unresolved_pairing_it_would_replace() {
+# Regression, two halves of the same rule. Re-recording a key with a corrected
+# card id used to replace the old pair outright, discarding a link that may
+# already be half-written on the old card; keeping it must not swing the other
+# way either, because linking BOTH would mark a card the operator has already
+# disowned as served under an agent that is not serving it. Only the newest
+# card recorded for an item key is ever written to.
+test_handoff_supersedes_rather_than_also_linking_a_corrected_card() {
   local home sub id first second out record
   home="$TMP_ROOT/handoff-recard-main"
   sub="$TMP_ROOT/handoff-recard-sub"
@@ -725,6 +745,7 @@ test_handoff_re_card_keeps_the_unresolved_pairing_it_would_replace() {
   cat > "$home/data/backlog.md" <<'EOF'
 ## Queued
 - [ ] handoff-item-f1 - first named the wrong card (repo: alpha)
+- [ ] handoff-item-f2 - a later handoff that sweeps with the board up (repo: alpha)
 
 ## Done
 EOF
@@ -745,7 +766,81 @@ EOF
     "a still-unresolved pairing was silently dropped when a different card was named"
   assert_grep "$(printf 'handoff-item-f1\t%s' "$second")" "$record" \
     "the newly named card was not recorded"
-  pass "naming a different card for the same item keeps the unresolved pairing and says so"
+  assert_contains "$out" "was superseded by a later --card" \
+    "the sweep said nothing about skipping the superseded card"
+
+  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-f2 2>&1)
+  expect_code 0 "$?" "the next ordinary handoff should succeed"
+  [ "$(card_field "$second" backlog_ref)" = "$id:handoff-item-f1" ] \
+    || fail "the corrected card was not linked"
+  [ "$(card_status "$second")" = working ] || fail "the corrected card did not advance to working"
+  [ -z "$(card_field "$first" backlog_ref)" ] \
+    || fail "a card the operator already disowned was linked anyway"
+  [ -z "$(card_field "$first" agent)" ] \
+    || fail "a card the operator already disowned had an agent written to it"
+  [ "$(card_status "$first")" = not_started ] \
+    || fail "a card the operator already disowned was advanced as if it were being served"
+  assert_not_contains "$out" "was superseded by a later --card" \
+    "the superseded card was re-reported on a later arrival instead of once"
+  assert_grep "$(printf 'handoff-item-f1\t%s' "$first")" "$record" \
+    "the superseded pair should stay recorded as the reminder to check that card by hand"
+  pass "only the newest card recorded for an item is linked; the superseded one is reported once and never written"
+}
+
+# Regression: the ownership guard was gated on a successful card read, so a
+# read failure skipped the identity check entirely and the link wrote ref and
+# agent blind - destroying the precise <home>:<task-id> claim a secondmate's
+# own fm-spawn.sh --card had since made, which is the one thing the rule
+# "never overwrite another writer's link" forbids. The guard has to fail
+# closed: no read, no write.
+test_handoff_never_writes_a_guarded_card_it_could_not_read() {
+  local home sub id card out record
+  home="$TMP_ROOT/handoff-blindguard-main"
+  sub="$TMP_ROOT/handoff-blindguard-sub"
+  id=handoff-blindguard-sm
+  setup_handoff_homes "$home" "$sub" "$id"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] handoff-item-h1 - staged before the secondmate spawned against the card (repo: alpha)
+- [ ] handoff-item-h2 - a later handoff that sweeps while reads fail (repo: alpha)
+
+## Done
+EOF
+  card=$(add_card "Blind guard coverage")
+  [ -n "$card" ] || fail "add_card returned no id"
+  record="$home/state/handoff-cards/$id"
+
+  out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-h1 --card "$card" 2>&1)
+  expect_code 0 "$?" "handoff must not fail just because the dashboard is unreachable"
+  assert_grep "$(printf 'handoff-item-h1\t%s' "$card")" "$record" "the pending pair was not recorded"
+
+  # Exactly what the secondmate's own fm-spawn.sh --card writes once it picks
+  # the item up: a precise <home>:<task-id> ref and the task id as agent.
+  "$DASH" ref "$card" "sm-home:task-9" >/dev/null || fail "setup: could not set the card ref"
+  "$DASH" agent "$card" task-9 >/dev/null || fail "setup: could not set the card agent"
+  "$DASH" status "$card" working >/dev/null || fail "setup: could not move the card to working"
+
+  start_card_read_failing_proxy blindguard
+  out=$(FM_DASHBOARD_URL="http://127.0.0.1:$CARD_READ_FAIL_PORT" FM_HOME="$home" \
+    "$HANDOFF" "$id" handoff-item-h2 2>&1)
+  expect_code 0 "$?" "the card-less handoff must not fail because a card could not be read"
+  stop_card_read_failing_proxy
+
+  assert_contains "$out" "could not read dashboard card $card" \
+    "the sweep did not report that it could not check the card before writing"
+  [ "$(card_field "$card" backlog_ref)" = "sm-home:task-9" ] \
+    || fail "an unreadable card was overwritten with the coarse handoff ref"
+  [ "$(card_field "$card" agent)" = task-9 ] \
+    || fail "an unreadable card was overwritten with the coarse handoff agent"
+  assert_grep "$(printf 'handoff-item-h1\t%s' "$card")" "$record" \
+    "a pair whose card could not be read was retired instead of left for the next arrival"
+
+  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-h2 2>&1)
+  expect_code 0 "$?" "the retry should succeed once reads work again"
+  assert_contains "$out" "already links to sm-home:task-9" \
+    "the retry did not report leaving the more precise claim alone"
+  [ ! -e "$record" ] || fail "the pair should retire once the board confirmed a more precise claim"
+  pass "a guarded card that could not be read is never written to, and stays recorded for the retry"
 }
 
 # The card link is firstmate-local bookkeeping done after the move has already
@@ -1145,20 +1240,28 @@ test_teardown_with_unreachable_dashboard_still_succeeds_and_warns
 test_teardown_without_dashboard_card_meta_is_a_noop
 test_teardown_force_discard_never_advances_the_card
 test_teardown_never_downgrades_an_already_complete_card
-test_handoff_links_card_and_advances_not_started_to_working
-test_handoff_without_card_flag_never_touches_the_dashboard
-test_handoff_with_unreachable_dashboard_still_succeeds_and_warns
-test_handoff_card_record_survives_a_failed_link_and_completes_on_the_next_handoff
-test_handoff_finishes_its_own_half_written_card_link
-test_handoff_keeps_but_reports_once_a_pair_the_host_says_names_no_such_card
-test_handoff_never_confirms_a_link_whose_card_state_it_could_not_read
-test_handoff_re_card_keeps_the_unresolved_pairing_it_would_replace
-test_handoff_record_bookkeeping_failure_never_fails_the_handoff
-test_handoff_refuses_card_with_more_than_one_item
-test_handoff_already_present_never_overwrites_an_existing_card_link
-test_handoff_into_a_non_empty_destination_queue_links_the_card
-test_handoff_card_leaves_the_item_body_byte_identical
-if command -v node >/dev/null 2>&1; then
+# Only the handoff cases move backlog items, which bin/fm-backlog-handoff.sh
+# delegates to tasks-axi; the spawn/teardown cases above need none of it, so
+# they keep running on a machine without it.
+if command -v tasks-axi >/dev/null 2>&1; then
+  test_handoff_links_card_and_advances_not_started_to_working
+  test_handoff_without_card_flag_never_touches_the_dashboard
+  test_handoff_with_unreachable_dashboard_still_succeeds_and_warns
+  test_handoff_card_record_survives_a_failed_link_and_completes_on_the_next_handoff
+  test_handoff_finishes_its_own_half_written_card_link
+  test_handoff_keeps_but_reports_once_a_pair_the_host_says_names_no_such_card
+  test_handoff_never_confirms_a_link_whose_card_state_it_could_not_read
+  test_handoff_never_writes_a_guarded_card_it_could_not_read
+  test_handoff_supersedes_rather_than_also_linking_a_corrected_card
+  test_handoff_record_bookkeeping_failure_never_fails_the_handoff
+  test_handoff_refuses_card_with_more_than_one_item
+  test_handoff_already_present_never_overwrites_an_existing_card_link
+  test_handoff_into_a_non_empty_destination_queue_links_the_card
+  test_handoff_card_leaves_the_item_body_byte_identical
+else
+  pass "skipped handoff card-link coverage - tasks-axi not available for the backlog move"
+fi
+if command -v tasks-axi >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
   setup_remote_route
   test_remote_handoff_links_card_only_after_confirmed_delivery
   test_resume_pending_links_the_card_recorded_in_the_staged_outbox
@@ -1166,7 +1269,7 @@ if command -v node >/dev/null 2>&1; then
   test_remote_handoff_links_every_card_its_delivery_lands
   test_card_less_remote_handoff_completes_a_link_its_delivery_lands
 else
-  pass "skipped remote-route card coverage - node not available for the remote fixture"
+  pass "skipped remote-route card coverage - tasks-axi or node not available for the remote fixture"
 fi
 
 echo "# all fm-dashboard-card-link tests passed"
