@@ -1660,8 +1660,13 @@ EOF
 # through PATH additions the account's profile makes, so an arm child spawned
 # without the login shell would die at exec on such a machine. A temp HOME whose
 # .profile exports a marker makes "did the arm child inherit the profile"
-# directly observable, and this case owns no readiness window, so paying the
-# profile cost here costs the timed cases nothing.
+# directly observable. This case owns no ADAPTER readiness window - neither
+# adapter awaits arm readiness on the path it drives - so paying the profile
+# cost here costs the other cases' timed windows nothing. It does own a 10s
+# wait of its own for the arm child to record itself, which makes its login
+# branch the one place left in this suite that times an unbounded
+# profile-sourcing cost; that is inherent to verifying the production default,
+# and the wait below says so where it happens.
 test_watch_arm_login_shell_default_reaches_the_arm_child() {
   local repo home oshome plugin ext log envprefix expected out status mode
   repo="$TMP_ROOT/login-shell-root"
