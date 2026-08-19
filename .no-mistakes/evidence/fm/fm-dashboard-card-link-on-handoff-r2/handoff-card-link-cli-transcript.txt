@@ -1,0 +1,132 @@
+
+$ FM_HOME=/tmp/cardlink-demo/run/board-home /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-dashboard.sh start
+fleet dashboard started (pid 3050116) - http://127.0.0.1:53097/  log: /tmp/cardlink-demo/run/board-home/state/dashboard.log
+
+$ FM_HOME=/tmp/cardlink-demo/run/board-home /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-dashboard.sh server-status
+process: running (pid 3050116)
+api:     reachable at http://127.0.0.1:53097
+
+$ /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-dashboard.sh add --title 'Ship the alpha widget' --captain firstmate --prompt '...'   # -> ship-the-alpha-widget-orbl
+
+$ /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-dashboard.sh show ship-the-alpha-widget-orbl --json | jq '{id,title,status,agent,backlog_ref}'
+{
+  "id": "ship-the-alpha-widget-orbl",
+  "title": "Ship the alpha widget",
+  "status": "not_started",
+  "agent": "",
+  "backlog_ref": null
+}
+
+$ cat /tmp/cardlink-demo/run/main-home/data/backlog.md
+## Queued
+- [ ] alpha-widget - wire the new intake path (repo: alpha)
+  ## Intent
+  The alpha widget must accept the new intake payload.
+- [ ] beta-polish - unrelated later work (repo: alpha)
+
+## Done
+
+$ FM_HOME=/tmp/cardlink-demo/run/main-home /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-backlog-handoff.sh design alpha-widget --card ship-the-alpha-widget-orbl
+handed off 1 item(s) to design: alpha-widget
+  into /tmp/cardlink-demo/run/design-home/data/backlog.md
+dashboard: linked card ship-the-alpha-widget-orbl to alpha-widget (ref=design:alpha-widget, agent=design, status not_started -> working)
+
+$ /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-dashboard.sh show ship-the-alpha-widget-orbl --json | jq '{id,title,status,agent,backlog_ref}'
+{
+  "id": "ship-the-alpha-widget-orbl",
+  "title": "Ship the alpha widget",
+  "status": "working",
+  "agent": "design",
+  "backlog_ref": "design:alpha-widget"
+}
+
+$ cat /tmp/cardlink-demo/run/design-home/data/backlog.md
+## In flight
+
+## Queued
+- [ ] alpha-widget - wire the new intake path (repo: alpha)
+  ## Intent
+  The alpha widget must accept the new intake payload.
+
+## Done
+
+$ cat /tmp/cardlink-demo/run/main-home/data/backlog.md
+## Queued
+- [ ] beta-polish - unrelated later work (repo: alpha)
+
+## Done
+
+$ the pairing lived in this home's own state, and was retired once the board confirmed the link
+
+$ ls -A /tmp/cardlink-demo/run/main-home/state/handoff-cards 2>&1 || true
+
+$ /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-dashboard.sh add --title 'Polish the beta surface' ...   # -> polish-the-beta-surface-d22h
+
+$ the board is unreachable at handoff time (FM_DASHBOARD_PORT=1)
+
+$ FM_DASHBOARD_PORT=1 FM_HOME=/tmp/cardlink-demo/run/main-home /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-backlog-handoff.sh design beta-polish --card polish-the-beta-surface-d22h
+handed off 1 item(s) to design: beta-polish
+  into /tmp/cardlink-demo/run/design-home/data/backlog.md
+warning: dashboard card link failed for beta-polish -> card polish-the-beta-surface-d22h (ref): fm-dashboard.sh: could not reach dashboard at http://127.0.0.1:1 (is it running? see: fm-dashboard.sh start / server-status): curl: (7) Failed to connect to 127.0.0.1 port 1 after 0 ms: Couldn't connect to server
+
+000
+warning: dashboard card link failed for beta-polish -> card polish-the-beta-surface-d22h (agent): fm-dashboard.sh: could not reach dashboard at http://127.0.0.1:1 (is it running? see: fm-dashboard.sh start / server-status): curl: (7) Failed to connect to 127.0.0.1 port 1 after 0 ms: Couldn't connect to server
+
+000
+
+$ the handoff still landed the item, the card is untouched, and the pairing is REMEMBERED for a retry
+
+$ /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-dashboard.sh show polish-the-beta-surface-d22h --json | jq '{id,status,agent,backlog_ref}'
+{
+  "id": "polish-the-beta-surface-d22h",
+  "status": "not_started",
+  "agent": "",
+  "backlog_ref": null
+}
+
+$ cat /tmp/cardlink-demo/run/main-home/state/handoff-cards/design
+beta-polish	polish-the-beta-surface-d22h
+
+$ the secondmate's very next arrival retries the stranded link, with no --card on the command line
+
+$ FM_HOME=/tmp/cardlink-demo/run/main-home /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-backlog-handoff.sh design gamma-cleanup
+handed off 1 item(s) to design: gamma-cleanup
+  into /tmp/cardlink-demo/run/design-home/data/backlog.md
+dashboard: linked card polish-the-beta-surface-d22h to beta-polish (ref=design:beta-polish, agent=design, status not_started -> working)
+
+$ /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-dashboard.sh show polish-the-beta-surface-d22h --json | jq '{id,status,agent,backlog_ref}'
+{
+  "id": "polish-the-beta-surface-d22h",
+  "status": "working",
+  "agent": "design",
+  "backlog_ref": "design:beta-polish"
+}
+
+$ ls -A /tmp/cardlink-demo/run/main-home/state/handoff-cards 2>&1 || true
+
+$ a card names ONE deliverable, so --card with two items is refused and nothing moves
+
+$ FM_HOME=/tmp/cardlink-demo/run/main-home /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-backlog-handoff.sh design delta-one delta-two --card ship-the-alpha-widget-orbl; echo "exit: $?"
+error: --card applies only to a single-item handoff (a card names one deliverable); hand off delta-one delta-two without --card, or one item at a time
+exit: 1
+
+$ cat /tmp/cardlink-demo/run/main-home/data/backlog.md
+## Queued
+- [ ] delta-one - first (repo: alpha)
+- [ ] delta-two - second (repo: alpha)
+
+## Done
+
+$ a board that accepts the connection and then answers nothing (a powered-off tailnet host)
+
+$ time FM_DASHBOARD_URL=http://127.0.0.1:44727 /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-dashboard.sh show ship-the-alpha-widget-orbl --json; echo "exit: $?"
+fm-dashboard.sh: could not reach dashboard at http://127.0.0.1:44727 (is it running? see: fm-dashboard.sh start / server-status): curl: (28) Operation timed out after 20008 milliseconds with 0 bytes received
+
+000
+
+real	0m19.923s
+user	0m0.005s
+sys	0m0.006s
+exit: 1
+
+$ bounded by --max-time (20s default), so a held handoff lock can never stall on an unreachable board

@@ -1,0 +1,26 @@
+# GET /api/tasks on the live board, after three handoffs made with bin/fm-backlog-handoff.sh --card
+# (the "Ship the alpha widget" and "Wire the epsilon importer" links fired on the handoff itself;
+#  "Polish the beta surface" was staged against an unreachable board and linked by the NEXT arrival)
+[
+  {
+    "id": "wire-the-epsilon-importer-kul5",
+    "title": "Wire the epsilon importer",
+    "status": "working",
+    "agent": "design",
+    "backlog_ref": "design:epsilon-importer"
+  },
+  {
+    "id": "polish-the-beta-surface-d22h",
+    "title": "Polish the beta surface",
+    "status": "working",
+    "agent": "design",
+    "backlog_ref": "design:beta-polish"
+  },
+  {
+    "id": "ship-the-alpha-widget-orbl",
+    "title": "Ship the alpha widget",
+    "status": "working",
+    "agent": "design",
+    "backlog_ref": "design:alpha-widget"
+  }
+]
