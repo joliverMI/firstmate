@@ -164,6 +164,14 @@ else
   done
   [ "${#ITEM_KEYS[@]}" -ge 1 ] || { echo "usage: fm-backlog-handoff.sh <secondmate-id> <item-key>... [--card <card-id>]" >&2; exit 1; }
   [ "$CARD_SET" -eq 0 ] || [ -n "$CARD_ARG" ] || { echo "error: --card requires a non-empty value" >&2; exit 1; }
+  if [ "$CARD_SET" -eq 1 ]; then
+    case "$CARD_ARG" in
+      *[$'\t\n']*)
+        echo "error: --card value must not contain a tab or newline; the pending card record and its ledgers hold one tab-delimited <item-key>\\t<card-id> line per pair, and either character would silently corrupt that state" >&2
+        exit 1
+        ;;
+    esac
+  fi
   [ "$CARD_SET" -eq 0 ] || [ "${#ITEM_KEYS[@]}" -eq 1 ] || {
     echo "error: --card applies only to a single-item handoff (a card names one deliverable); hand off ${ITEM_KEYS[*]} without --card, or one item at a time" >&2
     exit 1
@@ -379,6 +387,8 @@ handoff_card_record() { # <secondmate-id>
 handoff_card_record_put() { # <secondmate-id> <item-key> <card-id>
   local id=$1 key=$2 card=$3 record tmp pending revived
   local -a displaced=()
+  case "$key" in ''|*[$'\t\n']*) return 1 ;; esac
+  case "$card" in ''|*[$'\t\n']*) return 1 ;; esac
   record=$(handoff_card_record "$id") || return 1
   mkdir -p "$(dirname "$record")" || return 1
   tmp=$(umask 077; mktemp "$(dirname "$record")/.card.XXXXXX") || return 1

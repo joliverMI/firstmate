@@ -1052,6 +1052,51 @@ EOF
   pass "handoff refuses --card with more than one item and moves nothing"
 }
 
+# Regression: the pending record and both ledgers are one tab-delimited
+# "<item-key>\t<card-id>" line per pair, and --card was checked only for being
+# non-empty. A tab in the value split the pair at the wrong place; a newline
+# forged a whole second line with no tab at all, whose key and card then parse
+# as the same string. Either bogus pair is guarded, so no arrival can ever
+# confirm and retire it - it re-warns on every later handoff and every resume
+# sweep, clearable only by hand-editing state, which is exactly the corner the
+# record's "reversible from the CLI alone" rule exists to keep the operator out
+# of. Refuse the value up front instead, before anything moves.
+test_handoff_refuses_a_card_id_that_would_corrupt_the_pending_record() {
+  local home sub id out rc record
+  home="$TMP_ROOT/handoff-cardsep-main"
+  sub="$TMP_ROOT/handoff-cardsep-sub"
+  id=handoff-cardsep-sm
+  setup_handoff_homes "$home" "$sub" "$id"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] handoff-item-s1 - named with a separator-bearing card (repo: alpha)
+- [ ] handoff-item-s2 - named with a newline-bearing card (repo: alpha)
+
+## Done
+EOF
+  record="$home/state/handoff-cards/$id"
+
+  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-s1 --card "$(printf 't-abc\tx')" 2>&1) && rc=0 || rc=$?
+  expect_code 1 "$rc" "a --card value carrying a tab should be refused" "$out"
+  assert_contains "$out" "must not contain a tab or newline" "the refusal did not name the reason"
+  assert_grep 'handoff-item-s1' "$home/data/backlog.md" "the refused handoff moved the item anyway"
+  [ ! -e "$sub/data/backlog.md" ] \
+    || assert_no_grep 'handoff-item-s1' "$sub/data/backlog.md" "the refused handoff landed the item at the secondmate"
+  [ ! -e "$record" ] || fail "a refused --card still wrote a pending card record"
+
+  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-s2 --card "$(printf 't-abc\nt-def')" 2>&1) && rc=0 || rc=$?
+  expect_code 1 "$rc" "a --card value carrying a newline should be refused" "$out"
+  assert_contains "$out" "must not contain a tab or newline" "the refusal did not name the reason"
+  assert_grep 'handoff-item-s2' "$home/data/backlog.md" "the refused handoff moved the item anyway"
+  [ ! -e "$record" ] || fail "a refused --card still wrote a pending card record"
+
+  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-s1 --card t-abc 2>&1)
+  expect_code 0 "$?" "an ordinary card id should still be accepted" "$out"
+  [ "$(wc -l < "$record")" -eq 1 ] \
+    || fail "the record should hold exactly one pair line for one accepted --card"
+  pass "a --card id that would corrupt the tab-delimited pending record is refused before anything moves"
+}
+
 # Regression: a handoff is documented as idempotent, so the same command is
 # expected to be re-run. By then the secondmate may already have spawned
 # against the card, replacing the coarse handoff identity with a precise
@@ -1459,6 +1504,7 @@ if command -v tasks-axi >/dev/null 2>&1; then
   test_reviving_a_superseded_card_restores_its_owed_failure_report
   test_handoff_record_bookkeeping_failure_never_fails_the_handoff
   test_handoff_refuses_card_with_more_than_one_item
+  test_handoff_refuses_a_card_id_that_would_corrupt_the_pending_record
   test_handoff_already_present_never_overwrites_an_existing_card_link
   test_handoff_into_a_non_empty_destination_queue_links_the_card
   test_handoff_card_leaves_the_item_body_byte_identical
