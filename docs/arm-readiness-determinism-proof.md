@@ -29,7 +29,7 @@ Cause A is real, was demonstrated when it was diagnosed, and is fixed here; what
 The lock assertion still belongs to cause A, but on the reproduction above rather than on a budget-headroom argument.
 An earlier draft of this record also excluded cause B from it by arguing that its pre-change 5s wait had ample headroom over a `bash -lc` start of ~1150ms (at most ~1740ms).
 That figure was inherited from `main`'s comment rather than re-measured at this record's own load level, and it understates this host.
-Re-measured at the same 5x oversubscription the loaded phase below uses (160 busy loops on 32 cores, 1-minute load average ~151, 30 samples), a loaded `bash -lc true` is min 1096ms, median ~1620ms, max 4246ms, with two samples above 3.9s; idle matches `main`'s reading at ~131ms median.
+Re-measured at the same 5x oversubscription the loaded phase below uses (160 busy loops on 32 cores, 1-minute load average ~151, 30 samples), a loaded `bash -lc true` is min 1096ms, median ~1620ms, max 4246ms, with two samples above 3.9s; idle is unchanged, ~131ms median here against the ~140ms `main`'s comment records.
 Against a real 4246ms worst case a 5s budget leaves ~18% headroom, not ample, so that secondary exclusion is withdrawn: budget arithmetic cannot rule cause B out as a contributor to the lock assertion.
 It does not need to. The attribution rests on the direct reproduction - reverting the `ensureArm` fix fails that assertion deterministically - and cause B is not what the fix for it addresses.
 
@@ -44,7 +44,7 @@ It cannot be removed there without defeating what the case verifies; the bound i
 
 ## Base state (already on `main` before this change)
 
-`main` independently raised `FM_PI_ARM_READY_TIMEOUT_MS` / `FM_OPENCODE_ARM_READY_TIMEOUT_MS` from 250ms to 2000ms and rewrote `test_pi_session_transition_generation_owner`'s fixture to write its arm-log row before the pid-file row that its waiters gate on, both landed independently of this change.
+`main` independently raised the `FM_PI_ARM_READY_TIMEOUT_MS` / `FM_OPENCODE_ARM_READY_TIMEOUT_MS` values this suite sets for its unready-arm cases from 250ms to 2000ms - per-case overrides, not the production defaults [`configuration.md`](configuration.md) owns - and rewrote `test_pi_session_transition_generation_owner`'s fixture to write its arm-log row before the pid-file row that its waiters gate on, both landed independently of this change.
 `882004e` on `main` also replaced the lock test's fixed 120ms sleep with a direct `coordinator.ensureArmed(...)` await, again independently of this change; that is what stops this branch's inherited copy of that case from reconstructing cause A, as described above.
 None of those addresses cause A: `ensureArm` still reused an in-flight attempt's result unconditionally, and its own comment on the timeout raise records a measured worst case of ~1740ms against the new 2000ms budget under contention - narrower headroom, not a removed confound.
 The re-measurement above sharpens that second point rather than softening it: at 4246ms the loaded worst case sits *above* the raised 2000ms budget outright, so the raise narrowed the confound without removing it, which is what the opt-out below does instead.
