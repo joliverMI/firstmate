@@ -1330,11 +1330,12 @@ EOF
 # reacquired and a second caller runs: it must evaluate the lock it can see now
 # rather than inherit the first caller's still-unresolved read-only verdict.
 test_opencode_primary_watch_plugin_requires_session_lock() {
-  local plugin repo home log fakebin real_ps gate entered release out status
+  local plugin repo home log fakebin real_ps real_git gitlog gate entered release out status
   plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
   repo="$TMP_ROOT/opencode-lock-root"
   home="$TMP_ROOT/opencode-lock-home"
   log="$TMP_ROOT/opencode-lock.log"
+  gitlog="$TMP_ROOT/opencode-lock-git.log"
   gate="$TMP_ROOT/opencode-lock-ps-gate"
   entered="$TMP_ROOT/opencode-lock-ps-entered"
   release="$TMP_ROOT/opencode-lock-ps-release"
@@ -1349,6 +1350,7 @@ printf 'watcher: healthy pid=1 (beacon 0s)\n'
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   real_ps=$(command -v ps) || fail "OpenCode session-lock test needs a real ps on PATH"
+  real_git=$(command -v git) || fail "OpenCode session-lock test needs a real git on PATH"
   fakebin=$(fm_fakebin "$TMP_ROOT/opencode-lock")
   # mkdir is the atomic claim: exactly one invocation wins it and blocks, every
   # later one falls straight through to the real ps.
@@ -1361,7 +1363,15 @@ fi
 exec "$real_ps" "\$@"
 SH
   chmod +x "$fakebin/ps"
-  out=$(PATH="$fakebin:$PATH" PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_PS_ENTERED="$entered" FM_PS_RELEASE="$release" node 2>&1 <<'EOF'
+  # isPrimaryRoot runs exactly two `git rev-parse` probes per beginArm and runs
+  # before anything can block, so counting them counts evaluations.
+  cat > "$fakebin/git" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$gitlog"
+exec "$real_git" "\$@"
+SH
+  chmod +x "$fakebin/git"
+  out=$(PATH="$fakebin:$PATH" PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_GIT_LOG="$gitlog" FM_PS_ENTERED="$entered" FM_PS_RELEASE="$release" FM_WATCH_REARM_RETRY_BASE_MS=60000 FM_WATCH_REARM_RETRY_MAX_MS=60000 node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -1394,6 +1404,13 @@ function settling(promise, label) {
   ]);
 }
 
+function evaluations() {
+  if (!existsSync(process.env.FM_GIT_LOG)) return 0;
+  return readFileSync(process.env.FM_GIT_LOG, "utf8")
+    .split(/\n/)
+    .filter((line) => line.includes("rev-parse")).length / 2;
+}
+
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
 const foreign = coordinator.ensureArmed("session-foreign", client);
 await waitFor(() => existsSync(process.env.FM_PS_ENTERED), "the foreign-lock ownership walk to block mid-flight");
@@ -1416,6 +1433,9 @@ const foreignStatus = await settling(foreign, "the foreign-lock arm attempt");
 if (foreignStatus !== "read-only") {
   throw new Error(`expected read-only for the foreign lock, got ${foreignStatus}`);
 }
+if (evaluations() !== 2) {
+  throw new Error(`two callers on different locks must each evaluate their own, got ${evaluations()} evaluations`);
+}
 EOF
 )
   status=$?
@@ -1423,6 +1443,116 @@ EOF
   expect_code 0 "$status" "OpenCode watch plugin must arm only when this session owns the fleet lock"
   [ -z "$out" ] || fail "OpenCode session-lock test printed output: $out"
   pass "OpenCode watcher plugin requires session lock ownership"
+}
+
+# The other half of the same invariant. Every ordinary idle turn produces two
+# callers - the plugin's own session.idle handler and the turn-end guard's
+# coordinator call - and on an unchanged lock they must share one evaluation
+# rather than each walking isPrimaryRoot's git probes and sessionOwnsLock's ps
+# probes. Pinning the first caller inside its ps walk makes the second caller's
+# choice observable: it enters while the first is provably still in flight, so
+# the probe count after both settle says whether it shared or duplicated.
+test_opencode_watch_arm_coalesces_callers_on_an_unchanged_lock() {
+  local plugin repo home log fakebin real_ps real_git gitlog gate entered release out status
+  plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
+  repo="$TMP_ROOT/opencode-coalesce-root"
+  home="$TMP_ROOT/opencode-coalesce-home"
+  log="$TMP_ROOT/opencode-coalesce.log"
+  gitlog="$TMP_ROOT/opencode-coalesce-git.log"
+  gate="$TMP_ROOT/opencode-coalesce-ps-gate"
+  entered="$TMP_ROOT/opencode-coalesce-ps-entered"
+  release="$TMP_ROOT/opencode-coalesce-ps-release"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  git init -q "$repo"
+  : > "$repo/AGENTS.md"
+  : > "$home/state/task.meta"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'arm\n' >> "${FM_ARM_LOG:?}"
+printf 'watcher: healthy pid=1 (beacon 0s)\n'
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  real_ps=$(command -v ps) || fail "OpenCode coalescing test needs a real ps on PATH"
+  real_git=$(command -v git) || fail "OpenCode coalescing test needs a real git on PATH"
+  fakebin=$(fm_fakebin "$TMP_ROOT/opencode-coalesce")
+  cat > "$fakebin/ps" <<SH
+#!/usr/bin/env bash
+if mkdir "$gate" 2>/dev/null; then
+  : > "$entered"
+  while [ ! -e "$release" ]; do sleep 0.02; done
+fi
+exec "$real_ps" "\$@"
+SH
+  chmod +x "$fakebin/ps"
+  cat > "$fakebin/git" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$gitlog"
+exec "$real_git" "\$@"
+SH
+  chmod +x "$fakebin/git"
+  out=$(PATH="$fakebin:$PATH" PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_GIT_LOG="$gitlog" FM_PS_ENTERED="$entered" FM_PS_RELEASE="$release" node 2>&1 <<'EOF'
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+const client = { session: { promptAsync: async () => {} } };
+await mod.FmPrimaryWatchArm({
+  client,
+  directory: process.env.WORKTREE,
+  worktree: process.env.WORKTREE,
+});
+const coordinator = globalThis.__firstmateOpenCodeWatchArm;
+
+async function waitFor(pred, label) {
+  for (let i = 0; i < 500; i += 1) {
+    if (pred()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`timeout waiting for ${label}`);
+}
+
+function settling(promise, label) {
+  return Promise.race([
+    promise,
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${label} never settled`)), 20000);
+      timer.unref();
+    }),
+  ]);
+}
+
+function evaluations() {
+  if (!existsSync(process.env.FM_GIT_LOG)) return 0;
+  return readFileSync(process.env.FM_GIT_LOG, "utf8")
+    .split(/\n/)
+    .filter((line) => line.includes("rev-parse")).length / 2;
+}
+
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
+const first = coordinator.ensureArmed("session-first", client);
+await waitFor(() => existsSync(process.env.FM_PS_ENTERED), "the first ownership walk to block mid-flight");
+
+const second = coordinator.ensureArmed("session-second", client);
+writeFileSync(process.env.FM_PS_RELEASE, "");
+const firstStatus = await settling(first, "the first arm attempt");
+const secondStatus = await settling(second, "the second arm attempt");
+
+if (firstStatus !== "read-only" || secondStatus !== "read-only") {
+  throw new Error(`expected both callers to report read-only, got ${firstStatus} and ${secondStatus}`);
+}
+if (existsSync(process.env.FM_ARM_LOG)) {
+  throw new Error("watch arm ran without owning the session lock");
+}
+if (evaluations() !== 1) {
+  throw new Error(`two callers on an unchanged lock must share one evaluation, got ${evaluations()}`);
+}
+EOF
+)
+  status=$?
+  : > "$release"
+  expect_code 0 "$status" "OpenCode watch plugin must share one ownership evaluation between callers on an unchanged lock"
+  [ -z "$out" ] || fail "OpenCode coalescing test printed output: $out"
+  pass "OpenCode watcher plugin coalesces callers that share a lock premise"
 }
 
 test_opencode_watch_arm_coordinator_respects_primary_scope() {
@@ -2234,6 +2364,7 @@ test_opencode_plugin_package_boundary_is_explicit_esm
 test_opencode_primary_watch_plugin_uses_effective_state_home
 test_opencode_primary_watch_plugin_sources_effective_config
 test_opencode_primary_watch_plugin_requires_session_lock
+test_opencode_watch_arm_coalesces_callers_on_an_unchanged_lock
 test_opencode_watch_arm_coordinator_respects_primary_scope
 test_opencode_primary_watch_plugin_rearms_after_wake
 test_opencode_pre_ready_actionable_close_preserves_its_successor
