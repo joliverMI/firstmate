@@ -1,0 +1,45 @@
+=== EPIPE guard, real adapter path: encoder exits before reading a 4 MiB body ===
+--- shipped .opencode/plugins/lib/fm-operational-input.js (guard present) ---
+caller observed a normal rejection: refused
+session process still alive after the encoder exited early
+exit=0
+
+--- same file with the child.stdin error listener removed ---
+node:events:497
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: write EPIPE
+    at afterWriteDispatched (node:internal/stream_base_commons:159:15)
+    at writeGeneric (node:internal/stream_base_commons:150:3)
+    at Socket._writeGeneric (node:net:967:11)
+    at Socket._write (node:net:979:8)
+    at writeOrBuffer (node:internal/streams/writable:572:12)
+    at _write (node:internal/streams/writable:501:10)
+    at Writable.end (node:internal/streams/writable:823:17)
+    at Socket.end (node:net:738:31)
+    at file:///tmp/epipe-demo/prefix/lib.js:40:17
+    at new Promise (<anonymous>)
+Emitted 'error' event on Socket instance at:
+    at emitErrorNT (node:internal/streams/destroy:170:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:129:3)
+    at process.processTicksAndRejections (node:internal/process/task_queues:89:21) {
+  errno: -32,
+  code: 'EPIPE',
+  syscall: 'write'
+}
+
+Node.js v22.23.2
+exit=1
+
+=== the regression test added for it, both directions ===
+--- shipped tree: tests/fm-operational-input.test.sh ---
+ok - operational input: the OpenCode adapter constructs through the canonical owner
+ok - operational input: an encoder that exits before reading fails one call, not the host session
+ok - operational input: current construction rejects legacy kinds and empty bodies
+exit=0
+--- same suite with the guard removed from the adapter ---
+}
+
+Node.js v22.23.2
+exit=1 (crash above)

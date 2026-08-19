@@ -1,0 +1,24 @@
+== phase: idle ==
+load at start: 0.69 20.37 58.09
+run 01/20: PASS  assertions_ok=32 failures=0
+run 02/20: PASS  assertions_ok=32 failures=0
+run 03/20: PASS  assertions_ok=32 failures=0
+run 04/20: PASS  assertions_ok=32 failures=0
+run 05/20: PASS  assertions_ok=32 failures=0
+run 06/20: PASS  assertions_ok=32 failures=0
+run 07/20: PASS  assertions_ok=32 failures=0
+run 08/20: PASS  assertions_ok=32 failures=0
+run 09/20: PASS  assertions_ok=32 failures=0
+run 10/20: PASS  assertions_ok=32 failures=0
+run 11/20: PASS  assertions_ok=32 failures=0
+run 12/20: PASS  assertions_ok=32 failures=0
+run 13/20: PASS  assertions_ok=32 failures=0
+run 14/20: PASS  assertions_ok=32 failures=0
+run 15/20: PASS  assertions_ok=32 failures=0
+run 16/20: PASS  assertions_ok=32 failures=0
+run 17/20: PASS  assertions_ok=32 failures=0
+run 18/20: PASS  assertions_ok=32 failures=0
+run 19/20: PASS  assertions_ok=32 failures=0
+run 20/20: PASS  assertions_ok=32 failures=0
+load at end: 0.97 10.55 46.52
+RESULT idle: 20/20 passed, 0 failed

@@ -1,0 +1,26 @@
+== phase: fixed-under-load ==
+tree: /home/joliv/.no-mistakes/worktrees/4cc5c0885385/01M0D29D6KBG8H6BZVRRHMZZZ5
+synthetic load: 160 busy-loop processes on 32 cores
+load at start: 111.55 60.18 59.91
+run 01/20: PASS  assertions_ok=32
+run 02/20: PASS  assertions_ok=32
+run 03/20: PASS  assertions_ok=32
+run 04/20: PASS  assertions_ok=32
+run 05/20: PASS  assertions_ok=32
+run 06/20: PASS  assertions_ok=32
+run 07/20: PASS  assertions_ok=32
+run 08/20: PASS  assertions_ok=32
+run 09/20: PASS  assertions_ok=32
+run 10/20: PASS  assertions_ok=32
+run 11/20: PASS  assertions_ok=32
+run 12/20: PASS  assertions_ok=32
+run 13/20: PASS  assertions_ok=32
+run 14/20: PASS  assertions_ok=32
+run 15/20: PASS  assertions_ok=32
+run 16/20: PASS  assertions_ok=32
+run 17/20: PASS  assertions_ok=32
+run 18/20: PASS  assertions_ok=32
+run 19/20: PASS  assertions_ok=32
+run 20/20: PASS  assertions_ok=32
+load at end: 163.61 147.57 106.79
+RESULT fixed-under-load: 20/20 passed, 0 failed

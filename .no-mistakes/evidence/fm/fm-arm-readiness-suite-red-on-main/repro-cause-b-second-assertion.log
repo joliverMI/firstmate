@@ -1,0 +1,17 @@
+== cause-B isolation, second named assertion only ==
+test: test_pi_unretired_successor_falls_back_without_retry  ('Pi must fall back without overlapping an unretired successor')
+synthetic load: 160 busy-loop processes on 32 cores
+load at start: 56.70 77.82 87.45
+run 01 FAIL: not ok - Pi must fall back without overlapping an unretired successor: expected exit 0, got 1
+run 02 FAIL: not ok - Pi must fall back without overlapping an unretired successor: expected exit 0, got 1
+run 03 FAIL: not ok - Pi must fall back without overlapping an unretired successor: expected exit 0, got 1
+run 04 FAIL: not ok - Pi must fall back without overlapping an unretired successor: expected exit 0, got 1
+run 05 FAIL: not ok - Pi must fall back without overlapping an unretired successor: expected exit 0, got 1
+run 06 FAIL: not ok - Pi must fall back without overlapping an unretired successor: expected exit 0, got 1
+run 07 FAIL: not ok - Pi must fall back without overlapping an unretired successor: expected exit 0, got 1
+run 08 FAIL: not ok - Pi must fall back without overlapping an unretired successor: expected exit 0, got 1
+run 09 FAIL: not ok - Pi must fall back without overlapping an unretired successor: expected exit 0, got 1
+run 10 FAIL: not ok - Pi must fall back without overlapping an unretired successor: expected exit 0, got 1
+RESULT [bash -lc (pre-fix)]: 0/10 passed, 10 failed
+RESULT [bash -c (shipped opt-out)]: 10/10 passed, 0 failed
+load at end: 109.25 88.72 90.71

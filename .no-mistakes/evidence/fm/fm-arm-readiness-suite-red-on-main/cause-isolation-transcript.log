@@ -1,0 +1,36 @@
+=== A1. Cause A: shipped ensureArm reverted, everything else at target (idle machine) ===
+not ok - OpenCode watch plugin must arm only when this session owns the fleet lock: expected exit 0, got 1
+diagnostic: file:///tmp/arm-repro-prodrevert/[eval1]:27
+      const timer = setTimeout(() => reject(new Error(`${label} never settled`)), 20000);
+                                            ^
+
+Error: the reacquired-lock arm attempt never settled
+    at Timeout._onTimeout (file:///tmp/arm-repro-prodrevert/[eval1]:27:45)
+    at listOnTimeout (node:internal/timers:585:17)
+    at process.processTimers (node:internal/timers:521:7)
+
+Node.js v22.23.2
+exit=1
+
+=== A2. Same two cases against the shipped tree ===
+ok - OpenCode watcher plugin requires session lock ownership
+ok - OpenCode watcher plugin coalesces callers that share a lock premise
+exit=0
+
+=== A3. Coalescing guard: premise check replaced by 'never share' (the rejected serialize-everything shape) ===
+not ok - OpenCode watch plugin must share one ownership evaluation between callers on an unchanged lock: expected exit 0, got 1
+diagnostic: file:///tmp/arm-repro-noshare/[eval1]:54
+  throw new Error(`two callers on an unchanged lock must share one evaluation, got ${evaluations()}`);
+        ^
+
+Error: two callers on an unchanged lock must share one evaluation, got 2
+    at file:///tmp/arm-repro-noshare/[eval1]:54:9
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+
+Node.js v22.23.2
+exit=1
+
+=== A4. Login-shell default guard: production default flipped to bash -c in both adapters ===
+not ok - OpenCode arm child under the login shell expected marker=sourced, got: marker=absent
+diagnostic: <none>
+exit=1

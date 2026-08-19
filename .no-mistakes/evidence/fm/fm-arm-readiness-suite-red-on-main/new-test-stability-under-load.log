@@ -1,0 +1,4 @@
+== new EPIPE regression test: stability under 160 busy loops on 32 cores ==
+load at start: 58.86 72.67 84.55
+RESULT tests/fm-operational-input.test.sh: 10/10 passed, 0 failed
+load at end: 82.47 77.21 85.85
