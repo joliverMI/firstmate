@@ -1,0 +1,66 @@
+Scenario: a firstmate home (the fleet auditor) whose only duty is a
+trust-registered custom check, registered with bin/fm-check-register.sh.
+It has zero state/*.meta task records, no x-watch.check.sh, no procevent
+sources - exactly the shape that silently lost supervision.
+
+###############################################################################
+## BEFORE the fix - guard scripts as of 03bb1d8 (parent of the fix)
+###############################################################################
+
+$ ls state/            # the home's ONLY duty is a registered custom check
+  fleet-audit.check.sh
+  fleet-audit.check-trust
+  (state/*.meta task records: 0)
+
+--- 1. Claude Stop auto-arm hook (bin/fm-claude-stop-autoarm.sh) ---
+$ echo '{"session_id":"sess-demo","stop_hook_active":false}' | FM_HOME=<home> claude -c '$FM_HOME/bin/fm-claude-stop-autoarm.sh'
+  (no output)
+  exit status: 0
+  => NO watcher was armed for this home
+
+--- 2. Turn-end guard (bin/fm-turnend-guard.sh) ---
+$ echo '{"stop_hook_active":false}' | CLAUDECODE=1 FM_HOME=<home> bin/fm-turnend-guard.sh
+  (no output - the turn ends blind)
+  exit status: 0  (2 = the turn end is blocked)
+
+--- 3. Pull-based guard (bin/fm-guard.sh) ---
+$ FM_HOME=<home> bin/fm-guard.sh
+  (no output - no warning is printed)
+  exit status: 0
+
+###############################################################################
+## AFTER the fix - guard scripts as of c58b164 (this change)
+###############################################################################
+
+$ ls state/            # the home's ONLY duty is a registered custom check
+  fleet-audit.check.sh
+  fleet-audit.check-trust
+  (state/*.meta task records: 0)
+
+--- 1. Claude Stop auto-arm hook (bin/fm-claude-stop-autoarm.sh) ---
+$ echo '{"session_id":"sess-demo","stop_hook_active":false}' | FM_HOME=<home> claude -c '$FM_HOME/bin/fm-claude-stop-autoarm.sh'
+  firstmate watcher wake - one supervision event needs a handling turn now.
+  stale: fixture-win actionable
+  Run bin/fm-wake-drain.sh first, handle the wake, then run its exact WAKE_ACK_REQUIRED --ack-through command. Until that post-handling acknowledgement, interruption leaves the wake durable for idempotent re-handling. This Stop hook owns watcher continuity: when the handling turn ends, the next needed cycle arms automatically - do NOT run bin/fm-watch-arm.sh after an ordinary wake.
+  exit status: 2
+  => a watcher WAS armed for this home
+
+--- 2. Turn-end guard (bin/fm-turnend-guard.sh) ---
+$ echo '{"stop_hook_active":false}' | CLAUDECODE=1 FM_HOME=<home> bin/fm-turnend-guard.sh
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ●  TURN WOULD END BLIND - SUPERVISION IS OFF
+  ●  1 custom check(s) registered, but no live watcher holds this home lock (last beat: never).
+  ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  exit status: 2  (2 = the turn end is blocked)
+
+--- 3. Pull-based guard (bin/fm-guard.sh) ---
+$ FM_HOME=<home> bin/fm-guard.sh
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ●  WATCHER DOWN - SUPERVISION IS OFF
+  ●  1 custom check(s) registered, but no watcher has a fresh beacon (last beat: never, grace 300s).
+  ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+  ●  This is a supervision warning only; the guarded operation WILL still run.
+  ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  exit status: 0

@@ -1,0 +1,25 @@
+Regression property of the two new tests: they fail against the pre-fix
+predicate (bin/fm-supervision-lib.sh from 03bb1d8) and pass with the fix.
+
+=== BEFORE (pre-fix bin/fm-supervision-lib.sh swapped in) ===
+
+$ bash tests/fm-turnend-guard.test.sh   # aborts at the new predicate test
+  ok - fm_supervision_unhealthy: source-only home needs supervision
+  not ok - a home with only a trust-registered check and no task record did not report supervision as needed
+  exit status: 1
+
+$ bash tests/fm-claude-stop-autoarm.test.sh   # aborts at the new auto-arm test
+  ok - auto-arm: X-mode poll need arms the cycle even with no tasks in flight
+  not ok - a trust-registered custom check must keep the auto-arm active with zero tasks in flight: expected exit 2, got 0
+  exit status: 1
+
+=== AFTER (the fix as committed) ===
+
+$ bash tests/fm-turnend-guard.test.sh
+  ok - fm_supervision_needed: a trust-registered check with no task record needs supervision
+  ok - fm-turnend-guard: non-Claude path blocks a registered-check-only home
+  ... 66 tests ok, exit status 0
+
+$ bash tests/fm-claude-stop-autoarm.test.sh
+  ok - auto-arm: a registered custom check arms the cycle even with no tasks in flight
+  ... 23 tests ok, exit status 0

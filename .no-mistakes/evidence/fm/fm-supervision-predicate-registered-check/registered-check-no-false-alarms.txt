@@ -1,0 +1,17 @@
+A. empty home (no checks, no tasks)
+  FM_SUP_CHECKS=0  FM_SUP_NEEDED=false  FM_SUP_WATCHER_FRESH=false
+  unhealthy=false  <- stays quiet
+
+B. orphaned trust binding (state/x.check-trust with NO state/x.check.sh)
+  FM_SUP_CHECKS=0  FM_SUP_NEEDED=false  FM_SUP_WATCHER_FRESH=false
+  unhealthy=false  <- no phantom supervision need
+
+C. registered check WITH a fresh watcher beacon
+  registered: state/fleet-audit.check.sh
+  FM_SUP_CHECKS=1  FM_SUP_NEEDED=true  FM_SUP_WATCHER_FRESH=true
+  unhealthy=false  <- supervised, no alarm
+
+D. registered check with a STALE watcher beacon (beyond the 300s grace)
+  registered: state/fleet-audit.check.sh
+  FM_SUP_CHECKS=1  FM_SUP_NEEDED=true  FM_SUP_WATCHER_FRESH=false
+  unhealthy=true  <- lapse is caught
