@@ -725,11 +725,23 @@ link_delivered_card_pairs() { # <secondmate-id> <unguarded-card|''> <pair>...
 # bookkeeping, so a full disk or an unwritable state directory here warns and
 # is never allowed to reach the caller's exit status - which on every route is
 # the script's own.
-consume_handoff_card_record() { # <secondmate-id> <unguarded-card|''>
-  local id=$1 unguarded=$2 pair
+#
+# <undelivered-outbox> names an outbox whose delivery has NOT been confirmed,
+# and holds back exactly the pairs whose item is still staged in it: those have
+# not arrived anywhere yet, and linking them would mark a card as being worked
+# before the item exists at the secondmate. Arrival is a property of one item,
+# never of the secondmate, so this is a per-pair hold and not a per-record one -
+# a record routinely also carries pairs from earlier deliveries that did land,
+# and those stay linkable while a later delivery is still stuck.
+consume_handoff_card_record() { # <secondmate-id> <unguarded-card|''> [<undelivered-outbox|''>]
+  local id=$1 unguarded=$2 staged=${3:-} pair
   local -a pairs=()
   while IFS= read -r pair; do
-    [ -n "$pair" ] && pairs+=("$pair")
+    [ -n "$pair" ] || continue
+    if [ -n "$staged" ] && backlog_key_section "$staged" "${pair%%$'\t'*}" >/dev/null 2>&1; then
+      continue
+    fi
+    pairs+=("$pair")
   done < <(handoff_card_record_pairs "$id")
   [ "${#pairs[@]}" -eq 0 ] && return 0
   link_delivered_card_pairs "$id" "$unguarded" "${pairs[@]}"
@@ -1022,19 +1034,35 @@ resume_pending_outboxes() {
 # --resume-pending means every pending link rather than the remote half of
 # them.
 #
-# The outbox check is what keeps the two sweeps from disagreeing: an id whose
-# outbox is still present has NOT arrived - that is precisely what the pass
-# above tries and may have failed to confirm - and its record must not be
-# linked on the strength of having merely been staged. Re-checked here under
-# the lock rather than trusted from the loop below, since the pass above runs
-# unlocked between the two. Nothing here stages a card of its own, so every
-# pair stays guarded, exactly as the remote resume path leaves them.
+# A still-present outbox is what keeps the two sweeps from disagreeing, but it
+# holds back only the pairs it actually still carries: an item staged in an
+# undelivered outbox has NOT arrived - that is precisely what the pass above
+# tries and may have failed to confirm - while every other pair recorded for
+# the same secondmate names an item that landed at some earlier delivery and is
+# owed its link now. Re-read here under the lock rather than trusted from the
+# loop below, since the pass above runs unlocked between the two. An outbox
+# that exists but is not a plain file cannot be read for what it stages, so
+# nothing is swept for that id at all - the pass above already reports it.
+# Nothing here stages a card of its own, so every pair stays guarded, exactly
+# as the remote resume path leaves them.
 resume_pending_card_record() { # <secondmate-id>
   local id=$1 outbox="$DATA/handoff/$1.outbox.md"
-  [ ! -e "$outbox" ] && [ ! -L "$outbox" ] || return 0
-  consume_handoff_card_record "$id" ''
+  if [ ! -e "$outbox" ] && [ ! -L "$outbox" ]; then
+    consume_handoff_card_record "$id" ''
+    return 0
+  fi
+  [ -f "$outbox" ] && [ ! -L "$outbox" ] || return 0
+  consume_handoff_card_record "$id" '' "$outbox"
 }
 
+# Known and accepted: a record the outbox pass above already swept - a
+# delivery that completed while the board would not answer - is read a second
+# time here in the same command. The pairs it re-reads are exactly the ones
+# still owed a link, so the retry is correct, merely redundant: against a board
+# that is down it costs one repeated warning per pair and one more bounded
+# attempt. Cheaper than tracking swept ids across two passes that must stay
+# independently correct, since either pass alone has to be able to complete a
+# link the other never reaches.
 resume_pending_card_records() {
   local record id failed=0
   [ -d "$STATE/handoff-cards" ] || return 0

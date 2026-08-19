@@ -1253,6 +1253,53 @@ test_remote_handoff_links_every_card_its_delivery_lands() {
   pass "a remote handoff links every card its delivery landed, not only the one it was asked about"
 }
 
+# A pending outbox holds back only what it actually still carries. Arrival is
+# a property of one item, never of the secondmate: a delivery that landed long
+# ago and could not be linked is owed its link now, even while a LATER delivery
+# to the same secondmate is still stuck behind an unreachable host. Skipping
+# the whole record whenever any outbox exists freezes that earlier card for as
+# long as the remote stays down, with no command left to complete it.
+test_resume_pending_links_a_landed_pair_while_a_later_delivery_is_still_stuck() {
+  local landed staged out rc record outbox
+  landed=$(add_card "Landed-while-stuck coverage")
+  staged=$(add_card "Still-staged coverage")
+  record="$REMOTE_PARENT/state/handoff-cards/$REMOTE_SM"
+  outbox="$REMOTE_PARENT/data/handoff/$REMOTE_SM.outbox.md"
+
+  # Delivered, but the board was down, so the pair stays owed with no outbox
+  # left to find it by.
+  write_remote_parent_backlog '- [ ] remote-item-r7 - lands while the board is down (repo: alpha)'
+  out=$(FM_DASHBOARD_PORT=1 run_remote_handoff "$REMOTE_SM" remote-item-r7 --card "$landed")
+  expect_code 0 "$?" "the delivery itself should succeed with only the board down" "$out"
+  assert_grep 'remote-item-r7' "$REMOTE_SM_HOME/data/backlog.md" "the item was not delivered"
+  assert_absent "$outbox" "a confirmed delivery left a pending outbox"
+  assert_grep "$(printf 'remote-item-r7\t%s' "$landed")" "$record" "the failed link was not kept for retry"
+
+  # A later handoff to the same secondmate stages an outbox the unreachable
+  # host never takes, so the record now holds one landed pair and one staged.
+  stage_unreachable_card_item remote-item-r8 "$staged"
+  assert_grep "$(printf 'remote-item-r8\t%s' "$staged")" "$record" "the staged pair was not recorded"
+
+  # Board back, remote still down.
+  out=$(FM_FAKE_SSH_MODE=unreachable run_remote_handoff --resume-pending) && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || fail "--resume-pending claimed success while the outbox delivery was still failing"
+  assert_present "$outbox" "the still-undelivered outbox was cleaned up"
+
+  [ "$(card_field "$landed" backlog_ref)" = "$REMOTE_SM:remote-item-r7" ] \
+    || fail "the pair whose item landed long ago was not linked while a later delivery was stuck"
+  [ "$(card_status "$landed")" = working ] || fail "the landed pair's card did not advance to working"
+  assert_no_grep "$(printf 'remote-item-r7\t%s' "$landed")" "$record" \
+    "the confirmed pair was not retired from the record"
+
+  [ -z "$(card_field "$staged" backlog_ref)" ] \
+    || fail "a pair still staged in an undelivered outbox was linked before it arrived anywhere"
+  [ "$(card_status "$staged")" = not_started ] \
+    || fail "a pair still staged in an undelivered outbox advanced its card before arrival"
+  assert_grep "$(printf 'remote-item-r8\t%s' "$staged")" "$record" \
+    "the still-staged pair was dropped from the record"
+  pass "--resume-pending links a pair whose delivery landed even while a later delivery to the same secondmate is stuck"
+}
+
 # The same boundary reached with no --card at all: the run stages nothing on
 # the board of its own, it only completes a link an earlier --card call staged
 # and would otherwise destroy by deleting the delivered outbox.
@@ -1311,6 +1358,7 @@ if command -v tasks-axi >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
   test_remote_handoff_into_a_non_empty_outbox_links_both_cards
   test_remote_handoff_links_every_card_its_delivery_lands
   test_card_less_remote_handoff_completes_a_link_its_delivery_lands
+  test_resume_pending_links_a_landed_pair_while_a_later_delivery_is_still_stuck
 else
   pass "skipped remote-route card coverage - tasks-axi or node not available for the remote fixture"
 fi
