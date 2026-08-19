@@ -99,6 +99,14 @@ make_spawn_case() {
   wt="$case_dir/wt"
   fm_git_worktree "$proj" "$wt" "wt-$name"
   mkdir -p "$home/data" "$home/projects" "$home/state" "$home/config" "$home/data/$id"
+  # Pin the crew harness. Without config/crew-harness, bin/fm-spawn.sh resolves
+  # the harness from bin/fm-harness.sh's OWN-process detection, so the fixture
+  # would inherit whatever harness happens to run the suite: a developer running
+  # it under Claude Code gets claude and spawns fine, while a bare CI runner
+  # detects `unknown`, finds no launch template, and fails every spawn here.
+  # codex matches tests/fm-spawn-worktree-settle.test.sh and needs no executable
+  # on PATH (its launch template is only typed into the fake pane).
+  printf 'codex\n' > "$home/config/crew-harness"
   printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
   touch "$home/state/.last-watcher-beat"
   fakebin=$(make_spawn_fakebin "$case_dir/fake" "$wt")
