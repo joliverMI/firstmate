@@ -76,6 +76,10 @@
       "target": "docs/verification/supervision.md"
     },
     {
+      "source": "docs/watcher-continuity.md",
+      "target": "docs/arm-readiness-determinism-proof.md"
+    },
+    {
       "source": "docs/wedge-alarm.md",
       "target": "docs/verification/supervision.md"
     },
@@ -212,6 +216,10 @@
     {
       "path": "docs/agent-control.md",
       "audience": "maintainer-architecture"
+    },
+    {
+      "path": "docs/arm-readiness-determinism-proof.md",
+      "audience": "maintainer-verification"
     },
     {
       "path": "docs/architecture.md",

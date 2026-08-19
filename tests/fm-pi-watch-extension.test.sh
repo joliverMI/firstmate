@@ -37,6 +37,19 @@ export NODE_NO_WARNINGS=1
 # well above a loaded login-shell start; the cases are otherwise unchanged, and
 # an arm that IS ready still settles immediately rather than waiting it out.
 
+# The login shell above is real cost, but it is also the ONLY unbounded part of
+# that budget: /etc/profile and /etc/profile.d run whatever a given machine's
+# operator put there, with no upper bound this suite can measure or budget
+# against, unlike the fixed FM_PI_ARM_READY_TIMEOUT_MS / FM_OPENCODE_ARM_READY_
+# TIMEOUT_MS padding above. FM_WATCH_ARM_NO_LOGIN_SHELL makes the arm child spawn
+# under plain `bash -c` instead, skipping profile sourcing entirely; production
+# keeps the login shell as the unconditional default (fm-watch-arm.sh and its
+# descendants may only reach node through PATH additions a profile makes), so
+# this opt-out is exported here for every case except the one that exists
+# specifically to exercise the production default,
+# test_watch_arm_login_shell_default_reaches_the_arm_child below.
+export FM_WATCH_ARM_NO_LOGIN_SHELL=1
+
 install_pi_watch_extension_fixture() {
   local repo=$1
   mkdir -p \
@@ -1351,11 +1364,15 @@ EOF
 }
 
 test_opencode_primary_watch_plugin_requires_session_lock() {
-  local plugin repo home log out status
+  local plugin repo home log fakebin real_ps real_git gitlog gate entered release out status
   plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
   repo="$TMP_ROOT/opencode-lock-root"
   home="$TMP_ROOT/opencode-lock-home"
   log="$TMP_ROOT/opencode-lock.log"
+  gitlog="$TMP_ROOT/opencode-lock-git.log"
+  gate="$TMP_ROOT/opencode-lock-ps-gate"
+  entered="$TMP_ROOT/opencode-lock-ps-entered"
+  release="$TMP_ROOT/opencode-lock-ps-release"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
   git init -q "$repo"
   : > "$repo/AGENTS.md"
@@ -1366,7 +1383,257 @@ printf 'arm\n' >> "${FM_ARM_LOG:?}"
 printf 'watcher: healthy pid=1 (beacon 0s)\n'
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" node 2>&1 <<'EOF'
+  real_ps=$(command -v ps) || fail "OpenCode session-lock test needs a real ps on PATH"
+  real_git=$(command -v git) || fail "OpenCode session-lock test needs a real git on PATH"
+  fakebin=$(fm_fakebin "$TMP_ROOT/opencode-lock")
+  # mkdir is the atomic claim: exactly one invocation wins it and blocks, every
+  # later one falls straight through to the real ps. This pins a caller mid-
+  # sessionOwnsLock so the reacquired-lock case below forces the real
+  # interleaving rather than waiting for it to happen to occur.
+  cat > "$fakebin/ps" <<SH
+#!/usr/bin/env bash
+if mkdir "$gate" 2>/dev/null; then
+  : > "$entered"
+  while [ ! -e "$release" ]; do sleep 0.02; done
+fi
+exec "$real_ps" "\$@"
+SH
+  chmod +x "$fakebin/ps"
+  # isPrimaryRoot runs exactly two `git rev-parse` probes per beginArm and runs
+  # before anything can block, so counting them counts evaluations.
+  cat > "$fakebin/git" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$gitlog"
+exec "$real_git" "\$@"
+SH
+  chmod +x "$fakebin/git"
+  out=$(PATH="$fakebin:$PATH" PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_GIT_LOG="$gitlog" FM_PS_ENTERED="$entered" FM_PS_RELEASE="$release" FM_WATCH_REARM_RETRY_BASE_MS=60000 FM_WATCH_REARM_RETRY_MAX_MS=60000 node 2>&1 <<'EOF'
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+const client = { session: { promptAsync: async () => {} } };
+await mod.FmPrimaryWatchArm({
+  client,
+  directory: process.env.WORKTREE,
+  worktree: process.env.WORKTREE,
+});
+const coordinator = globalThis.__firstmateOpenCodeWatchArm;
+
+async function waitFor(pred, label) {
+  for (let i = 0; i < 500; i += 1) {
+    if (pred()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
+// Failure-path only: a caller that can never settle would otherwise hang the
+// suite instead of reporting which caller was left waiting.
+function settling(promise, label) {
+  return Promise.race([
+    promise,
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${label} never settled`)), 20000);
+      timer.unref();
+    }),
+  ]);
+}
+
+function evaluations() {
+  if (!existsSync(process.env.FM_GIT_LOG)) return 0;
+  return readFileSync(process.env.FM_GIT_LOG, "utf8")
+    .split(/\n/)
+    .filter((line) => line.includes("rev-parse")).length / 2;
+}
+
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
+const foreign = coordinator.ensureArmed("session-foreign", client);
+await waitFor(() => existsSync(process.env.FM_PS_ENTERED), "the foreign-lock ownership walk to block mid-flight");
+if (existsSync(process.env.FM_ARM_LOG)) {
+  throw new Error("watch arm ran without owning the session lock");
+}
+
+// The foreign-lock check is still pinned inside its `ps` walk, holding a
+// verdict it began computing against the lock above. Reacquire the lock and
+// start a second caller before that verdict resolves, so it must see the new
+// premise at its own turn rather than inherit the stale one.
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const owned = await settling(coordinator.ensureArmed("session-owned", client), "the reacquired-lock arm attempt");
+if (owned === "read-only") {
+  throw new Error("the reacquired-lock caller inherited the in-flight foreign-lock verdict");
+}
+await waitFor(() => existsSync(process.env.FM_ARM_LOG), "the arm to run once the lock matched");
+if (!readFileSync(process.env.FM_ARM_LOG, "utf8").includes("arm")) {
+  throw new Error("the reacquired-lock caller reported success without running the arm");
+}
+
+writeFileSync(process.env.FM_PS_RELEASE, "");
+const foreignStatus = await settling(foreign, "the foreign-lock arm attempt");
+if (foreignStatus !== "read-only") {
+  throw new Error(`expected read-only for the foreign lock, got ${foreignStatus}`);
+}
+if (evaluations() !== 2) {
+  throw new Error(`two callers on different locks must each evaluate their own, got ${evaluations()} evaluations`);
+}
+EOF
+)
+  status=$?
+  : > "$release"
+  expect_code 0 "$status" "OpenCode watch plugin must arm only when this session owns the fleet lock"
+  [ -z "$out" ] || fail "OpenCode session-lock test printed output: $out"
+  pass "OpenCode watcher plugin requires session lock ownership"
+}
+
+# The other half of the same invariant. Every ordinary idle turn produces two
+# callers - the plugin's own session.idle handler and the turn-end guard's
+# coordinator call - and on an unchanged lock they must share one evaluation
+# rather than each walking isPrimaryRoot's git probes and sessionOwnsLock's ps
+# probes. Pinning the first caller inside its ps walk makes the second caller's
+# choice observable: it enters while the first is provably still in flight, so
+# the probe count after both settle says whether it shared or duplicated.
+test_opencode_watch_arm_coalesces_callers_on_an_unchanged_lock() {
+  local plugin repo home log fakebin real_ps real_git gitlog gate entered release out status
+  plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
+  repo="$TMP_ROOT/opencode-coalesce-root"
+  home="$TMP_ROOT/opencode-coalesce-home"
+  log="$TMP_ROOT/opencode-coalesce.log"
+  gitlog="$TMP_ROOT/opencode-coalesce-git.log"
+  gate="$TMP_ROOT/opencode-coalesce-ps-gate"
+  entered="$TMP_ROOT/opencode-coalesce-ps-entered"
+  release="$TMP_ROOT/opencode-coalesce-ps-release"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  git init -q "$repo"
+  : > "$repo/AGENTS.md"
+  : > "$home/state/task.meta"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'arm\n' >> "${FM_ARM_LOG:?}"
+printf 'watcher: healthy pid=1 (beacon 0s)\n'
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  real_ps=$(command -v ps) || fail "OpenCode coalescing test needs a real ps on PATH"
+  real_git=$(command -v git) || fail "OpenCode coalescing test needs a real git on PATH"
+  fakebin=$(fm_fakebin "$TMP_ROOT/opencode-coalesce")
+  cat > "$fakebin/ps" <<SH
+#!/usr/bin/env bash
+if mkdir "$gate" 2>/dev/null; then
+  : > "$entered"
+  while [ ! -e "$release" ]; do sleep 0.02; done
+fi
+exec "$real_ps" "\$@"
+SH
+  chmod +x "$fakebin/ps"
+  cat > "$fakebin/git" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$gitlog"
+exec "$real_git" "\$@"
+SH
+  chmod +x "$fakebin/git"
+  out=$(PATH="$fakebin:$PATH" PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_GIT_LOG="$gitlog" FM_PS_ENTERED="$entered" FM_PS_RELEASE="$release" node 2>&1 <<'EOF'
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+const client = { session: { promptAsync: async () => {} } };
+await mod.FmPrimaryWatchArm({
+  client,
+  directory: process.env.WORKTREE,
+  worktree: process.env.WORKTREE,
+});
+const coordinator = globalThis.__firstmateOpenCodeWatchArm;
+
+async function waitFor(pred, label) {
+  for (let i = 0; i < 500; i += 1) {
+    if (pred()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
+function settling(promise, label) {
+  return Promise.race([
+    promise,
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${label} never settled`)), 20000);
+      timer.unref();
+    }),
+  ]);
+}
+
+function evaluations() {
+  if (!existsSync(process.env.FM_GIT_LOG)) return 0;
+  return readFileSync(process.env.FM_GIT_LOG, "utf8")
+    .split(/\n/)
+    .filter((line) => line.includes("rev-parse")).length / 2;
+}
+
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
+const first = coordinator.ensureArmed("session-first", client);
+await waitFor(() => existsSync(process.env.FM_PS_ENTERED), "the first ownership walk to block mid-flight");
+
+const second = coordinator.ensureArmed("session-second", client);
+writeFileSync(process.env.FM_PS_RELEASE, "");
+const firstStatus = await settling(first, "the first arm attempt");
+const secondStatus = await settling(second, "the second arm attempt");
+
+if (firstStatus !== "read-only" || secondStatus !== "read-only") {
+  throw new Error(`expected both callers to report read-only, got ${firstStatus} and ${secondStatus}`);
+}
+if (existsSync(process.env.FM_ARM_LOG)) {
+  throw new Error("watch arm ran without owning the session lock");
+}
+if (evaluations() !== 1) {
+  throw new Error(`two callers on an unchanged lock must share one evaluation, got ${evaluations()}`);
+}
+EOF
+)
+  status=$?
+  : > "$release"
+  expect_code 0 "$status" "OpenCode watch plugin must share one ownership evaluation between callers on an unchanged lock"
+  [ -z "$out" ] || fail "OpenCode coalescing test printed output: $out"
+  pass "OpenCode watcher plugin coalesces callers that share a lock premise"
+}
+
+# Every other case in this file exports FM_WATCH_ARM_NO_LOGIN_SHELL=1, so this
+# is the only coverage of either branch of that opt-out. The production default
+# is load-bearing: bin/fm-watch-arm.sh and its descendants may only reach node
+# through PATH additions the account's profile makes, so an arm child spawned
+# without the login shell would die at exec on such a machine. A temp HOME whose
+# .profile exports a marker makes "did the arm child inherit the profile"
+# directly observable, and this case owns no readiness window, so paying the
+# profile cost here costs the timed cases nothing.
+test_watch_arm_login_shell_default_reaches_the_arm_child() {
+  local repo home oshome plugin ext log envprefix expected out status mode
+  repo="$TMP_ROOT/login-shell-root"
+  home="$TMP_ROOT/login-shell-home"
+  oshome="$TMP_ROOT/login-shell-os-home"
+  log="$TMP_ROOT/login-shell-arm.log"
+  mkdir -p "$repo/bin" "$home/state" "$home/config" "$oshome"
+  git init -q "$repo"
+  : > "$repo/AGENTS.md"
+  : > "$home/state/task.meta"
+  printf 'export FM_LOGIN_SHELL_MARKER=sourced\n' > "$oshome/.profile"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
+  ext="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'marker=%s\n' "${FM_LOGIN_SHELL_MARKER:-absent}" >> "${FM_ARM_LOG:?}"
+printf 'watcher: healthy pid=1 (beacon 0s)\n'
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  for mode in login plain; do
+    if [ "$mode" = login ]; then
+      envprefix=(env -u FM_WATCH_ARM_NO_LOGIN_SHELL)
+      expected="marker=sourced"
+    else
+      envprefix=(env FM_WATCH_ARM_NO_LOGIN_SHELL=1)
+      expected="marker=absent"
+    fi
+
+    rm -f "$log"
+    out=$("${envprefix[@]}" HOME="$oshome" PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_WATCH_REARM_RETRY_BASE_MS=60000 FM_WATCH_REARM_RETRY_MAX_MS=60000 node 2>&1 <<'EOF'
 import { existsSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -1377,40 +1644,59 @@ const hooks = await mod.FmPrimaryWatchArm({
   directory: process.env.WORKTREE,
   worktree: process.env.WORKTREE,
 });
-const event = { event: { type: "session.idle", properties: { sessionID: "session-test" } } };
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
-await hooks.event(event);
-// The event hook does not await its own arm attempt, and that attempt spends
-// its time in `git`/`ps` subprocesses, so a fixed sleep cannot tell when the
-// foreign-lock decision has actually landed. Drain it through the coordinator
-// handle the plugin itself exposes: ensureArmed joins a launch that is still in
-// flight, so once it resolves no attempt is outstanding and its status IS the
-// denial under test. Flipping the lock before that point let the next event
-// coalesce onto the stale read-only answer and never arm at all.
-const denied = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
-if (denied !== "read-only") {
-  console.error(`expected read-only without the session lock, got ${denied}`);
-  process.exit(1);
-}
-if (existsSync(process.env.FM_ARM_LOG)) {
-  console.error("watch arm ran without owning the session lock");
-  process.exit(1);
-}
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
-await hooks.event(event);
-for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
+await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
+for (let i = 0; i < 500 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 if (!existsSync(process.env.FM_ARM_LOG)) {
-  console.error("watch arm did not run after the session lock matched");
+  console.error("OpenCode watch arm did not run");
   process.exit(1);
 }
 EOF
 )
-  status=$?
-  expect_code 0 "$status" "OpenCode watch plugin must arm only when this session owns the fleet lock" "$out"
-  [ -z "$out" ] || fail "OpenCode session-lock test printed output: $out"
-  pass "OpenCode watcher plugin requires session lock ownership"
+    status=$?
+    expect_code 0 "$status" "OpenCode arm child must start under the $mode shell"
+    [ -z "$out" ] || fail "OpenCode $mode-shell arm test printed output: $out"
+    grep -qx "$expected" "$log" || fail "OpenCode arm child under the $mode shell expected $expected, got: $(cat "$log")"
+
+    rm -f "$log"
+    out=$("${envprefix[@]}" HOME="$oshome" PLUGIN="$ext" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_WATCH_REARM_RETRY_BASE_MS=60000 FM_WATCH_REARM_RETRY_MAX_MS=60000 node --input-type=module 2>&1 <<'EOF'
+import { existsSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+let handler = null;
+const pi = {
+  on() {},
+  registerCommand(name, options) {
+    if (name === "fm-watch-arm-pi") handler = options.handler;
+  },
+  registerTool() {},
+  sendUserMessage: async () => {},
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+if (!handler) {
+  console.error("Pi watch command was not registered");
+  process.exit(1);
+}
+await handler("", { ui: { notify() {} } });
+for (let i = 0; i < 500 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 20));
+}
+if (!existsSync(process.env.FM_ARM_LOG)) {
+  console.error("Pi watch arm did not run");
+  process.exit(1);
+}
+EOF
+)
+    status=$?
+    expect_code 0 "$status" "Pi arm child must start under the $mode shell"
+    [ -z "$out" ] || fail "Pi $mode-shell arm test printed output: $out"
+    grep -qx "$expected" "$log" || fail "Pi arm child under the $mode shell expected $expected, got: $(cat "$log")"
+  done
+  pass "Watcher arm children inherit the login shell by default and skip it on opt-out"
 }
 
 test_opencode_watch_arm_coordinator_respects_primary_scope() {
@@ -2224,6 +2510,8 @@ test_opencode_plugin_package_boundary_is_explicit_esm
 test_opencode_primary_watch_plugin_uses_effective_state_home
 test_opencode_primary_watch_plugin_sources_effective_config
 test_opencode_primary_watch_plugin_requires_session_lock
+test_opencode_watch_arm_coalesces_callers_on_an_unchanged_lock
+test_watch_arm_login_shell_default_reaches_the_arm_child
 test_opencode_watch_arm_coordinator_respects_primary_scope
 test_opencode_primary_watch_plugin_rearms_after_wake
 test_opencode_pre_ready_actionable_close_preserves_its_successor

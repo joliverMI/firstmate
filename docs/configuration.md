@@ -578,6 +578,7 @@ FM_ARM_ATTACH_POLL=0.5  # seconds between checks while fm-watch-arm is attached 
 FM_OPENCODE_ARM_READY_TIMEOUT_MS=12000   # milliseconds the OpenCode primary watcher plugin waits for an arm attempt to report started, healthy, wake, or failure; default 35000 on Windows to stay above the MSYS confirm budget
 FM_PI_ARM_READY_TIMEOUT_MS=12000   # milliseconds the Pi watcher extension waits for a successor arm to report started or attached; default 35000 on Windows to stay above the MSYS confirm budget
 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=1000   # milliseconds Pi/OpenCode wait for an unready successor arm to exit before abandoning retries
+FM_WATCH_ARM_NO_LOGIN_SHELL=1   # test-only: spawn the Pi/OpenCode arm child under bash -c instead of bash -lc, skipping /etc/profile and the account's profile files; leave unset in production so fm-watch-arm.sh inherits PATH additions a profile provides, such as an nvm-managed node
 FM_WATCH_REARM_RETRY_BASE_MS=250   # Pi/OpenCode adapter base delay for continuity restoration retries
 FM_WATCH_REARM_RETRY_MAX_MS=4000   # Pi/OpenCode adapter cap for exponential continuity retry delay
 FM_WATCH_REARM_RETRY_LIMIT=5   # Pi/OpenCode adapter launch-failure retries before surfacing restoration failure
