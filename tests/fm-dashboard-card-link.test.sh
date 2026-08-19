@@ -5,10 +5,11 @@
 # ref/agent identity and advances a not_started card to working;
 # bin/fm-teardown.sh consumes that identity from state/<id>.meta and advances
 # the card to testing once cleanup actually succeeds; bin/fm-backlog-handoff.sh's
-# --card gives a handed-off backlog item the same link, recorded as a
-# `dashboard_card:` body line on the item itself since a handed-off item has no
-# local task metadata to hold it. All three scripts and a real dashboard server
-# are driven only through their public CLIs.
+# --card gives a handed-off backlog item the same link, with the item/card
+# pairing held in the handing-off home's own state/handoff-cards/<secondmate-id>
+# record - never in the backlog item, which the handoff does not own - since a
+# handed-off item has no local task metadata to hold it. All three scripts and a
+# real dashboard server are driven only through their public CLIs.
 set -u
 
 # shellcheck source=tests/secondmate-helpers.sh
