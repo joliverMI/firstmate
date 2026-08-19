@@ -75,6 +75,10 @@
       "target": "docs/verification/supervision.md"
     },
     {
+      "source": "docs/watcher-continuity.md",
+      "target": "docs/arm-readiness-determinism-proof.md"
+    },
+    {
       "source": "docs/wedge-alarm.md",
       "target": "docs/verification/supervision.md"
     },
