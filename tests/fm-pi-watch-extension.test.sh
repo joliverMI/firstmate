@@ -931,9 +931,15 @@ test_pi_session_transition_generation_owner() {
   plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
+# The pid file is the readiness signal every assertion below waits on, so it is
+# written LAST. The arm-log row must already be durable when a waiter sees this
+# child, because the waiters count live arm children the instant the pid file
+# changes: with the writes in the other order, a child preempted between them
+# (routine on a loaded CI runner) is observably started while its row is still
+# missing, and that count reads zero.
 printf 'watcher: started pid=%s\n' "$$"
-printf '%s\n' "$$" > "${FM_CHILD_PID_FILE:?}"
 printf 'arm pid=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+printf '%s\n' "$$" > "${FM_CHILD_PID_FILE:?}"
 trap 'exit 0' TERM INT
 while :; do sleep 0.2; done
 SH
@@ -960,12 +966,20 @@ function makePi() {
 }
 
 function pidAlive(pid) {
+  // An empty read is never a live child: Number("") is 0, and process.kill(0, 0)
+  // probes the whole process group, so it would answer true for nothing.
+  if (!pid) return false;
   try {
     process.kill(Number(pid), 0);
     return true;
   } catch {
     return false;
   }
+}
+
+function childPid() {
+  if (!existsSync(process.env.FM_CHILD_PID_FILE)) return "";
+  return readFileSync(process.env.FM_CHILD_PID_FILE, "utf8").trim();
 }
 
 async function waitFor(pred, label, attempts = 250) {
@@ -1000,8 +1014,9 @@ const first = await startup.getTool().execute("startup", {}, undefined, undefine
 if (!first.details?.ok || !String(first.details.message).includes("started Pi extension arm child")) {
   throw new Error(`startup arm failed: ${JSON.stringify(first.details)}`);
 }
-await waitFor(() => existsSync(process.env.FM_CHILD_PID_FILE), "startup child");
-const startupChild = readFileSync(process.env.FM_CHILD_PID_FILE, "utf8").trim();
+// The truncating write leaves a brief empty file, so wait for a pid, not a path.
+await waitFor(() => childPid() !== "", "startup child");
+const startupChild = childPid();
 if (!pidAlive(startupChild)) throw new Error("startup child was not alive");
 const staleTool = startup.getTool();
 
@@ -1096,7 +1111,7 @@ if (liveArmPids().length !== 0) {
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi session transitions must rearm through an explicit generation owner"
+  expect_code 0 "$status" "Pi session transitions must rearm through an explicit generation owner" "$out"
   [ -z "$out" ] || fail "Pi session-transition generation owner test printed output: $out"
   pass "Pi session transitions use a generation owner across /new /resume /fork, stale callbacks, and quit"
 }
