@@ -594,9 +594,10 @@ SH
 }
 
 test_interruption_before_and_after_raw_commit() {
-  local dir state before_out after_out replay_out empty_out pid rc count i sequence generation
+  local dir state before_out after_out replay_out empty_out parked pid rc count i sequence generation
   dir=$(make_case interruption)
   state="$dir/state"
+  parked="$dir/precommit-parked"
   before_out="$dir/before.out"
   after_out="$dir/after.out"
   replay_out="$dir/replay.out"
@@ -604,14 +605,22 @@ test_interruption_before_and_after_raw_commit() {
   printf 'done: interruption fixture\n' > "$state/task.status"
   append_wake "$state" signal task.status "signal: task" || fail "pre-commit interruption wake append failed"
 
-  FM_STATE_OVERRIDE="$state" FM_WAKE_DRAIN_TEST_DELAY_BEFORE_COMMIT=5 "$DRAIN" > "$before_out" &
+  # Wait for the drain to park in its pre-commit window, not merely for the
+  # queue lock: the lock is taken in the drain's first statement, tens of
+  # milliseconds of recovery-marker and dedup work before the window this case
+  # interrupts, and a TERM delivered inside that work is not reliably handled by
+  # the drain's trap at all - bash can report a syntax error against the trap
+  # and keep running, so the interrupted drain completes and reports success.
+  FM_STATE_OVERRIDE="$state" FM_WAKE_DRAIN_TEST_DELAY_BEFORE_COMMIT=5 \
+    FM_WAKE_DRAIN_TEST_DELAY_MARKER="$parked" "$DRAIN" > "$before_out" &
   pid=$!
   i=0
-  while [ "$i" -lt 100 ] && [ ! -e "$state/.wake-queue.lock" ]; do
+  while [ "$i" -lt 100 ] && [ ! -e "$parked" ]; do
     sleep 0.05
     i=$((i + 1))
   done
-  [ -e "$state/.wake-queue.lock" ] || { kill "$pid" 2>/dev/null || true; fail "pre-commit drain never entered its serialized read boundary"; }
+  [ -e "$parked" ] || { kill "$pid" 2>/dev/null || true; fail "pre-commit drain never reached its pre-commitment window"; }
+  [ -e "$state/.wake-queue.lock" ] || { kill "$pid" 2>/dev/null || true; fail "pre-commit drain left its serialized read boundary"; }
   kill -TERM "$pid" 2>/dev/null || fail "could not interrupt drain before raw commitment"
   set +e
   wait "$pid"

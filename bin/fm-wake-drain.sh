@@ -316,10 +316,23 @@ RECOVERY_MARKER_TOKEN=$FM_RECOVERY_MARKER_TOKEN
 
 RAW_ROWS=$(fm_wake_print_deduped "$FM_WAKE_QUEUE") || exit "$?"
 ACK_THROUGH=$(awk -F '\t' '$2 ~ /^[0-9]+$/ && $2 > max { max=$2 } END { print max + 0 }' "$FM_WAKE_QUEUE") || exit 1
+# Test-only latency seam for proving that an interruption before this raw
+# commitment loses no durable row. FM_WAKE_DRAIN_TEST_DELAY_MARKER names a file
+# to create on entering that window, and it exists because the window is the
+# only place an interrupting test may deliver its signal: the queue lock is held
+# from this drain's first statement onward, so a test that took the lock as its
+# cue would signal somewhere in the recovery-marker and dedup work above, tens
+# of milliseconds earlier - a moment at which bash may fail to run the TERM trap
+# at all (it reports a syntax error against the trap and carries on, and the
+# drain then "succeeds" through an interruption). Parked in this sleep, the
+# handler above is the one defined outcome.
 case "${FM_WAKE_DRAIN_TEST_DELAY_BEFORE_COMMIT:-0}" in
   0) ;;
   ''|*[!0-9]*) ;;
-  *) sleep "$FM_WAKE_DRAIN_TEST_DELAY_BEFORE_COMMIT" ;;
+  *)
+    [ -z "${FM_WAKE_DRAIN_TEST_DELAY_MARKER:-}" ] || : > "$FM_WAKE_DRAIN_TEST_DELAY_MARKER"
+    sleep "$FM_WAKE_DRAIN_TEST_DELAY_BEFORE_COMMIT"
+    ;;
 esac
 if [ -n "$RAW_ROWS" ]; then
   printf '%s\n' "$RAW_ROWS" || exit "$?"

@@ -18,6 +18,7 @@
 #                 "BOOTSTRAP_INFO: nudged fm-<id> with '<message>'",
 #                 "SECONDMATE_LIVENESS: secondmate <id>: skipped: <reason>|respawn failed after <cause>: <reason>",
 #                 "SECONDMATE_HANDOFF: secondmate <id>: pending delivery: <n> item(s)",
+#                 "SECONDMATE_HANDOFF: secondmate <id>: pending card link(s): <n>",
 #                 "FMX: X mode on ..." or "FMX: X mode off ...".
 #          When a RUNNING local secondmate worktree is fast-forwarded to
 #          firstmate's own current default-branch commit, that update is a
@@ -730,23 +731,53 @@ secondmate_liveness_one() {  # <meta> <id>
 }
 
 secondmate_handoff_resume() {
-  [ -d "$DATA/handoff" ] || return 0
+  # Two kinds of pending work exist: an undelivered remote outbox, and a
+  # dashboard card link a handoff of either route staged and could not finish
+  # (bin/fm-backlog-handoff.sh). A home with only local secondmates has the
+  # second without ever having the first, so gating on the outbox directory
+  # alone would skip the resume that exists to complete those links.
+  [ -d "$DATA/handoff" ] || [ -d "$STATE/handoff-cards" ] || return 0
   "$SCRIPT_DIR/fm-backlog-handoff.sh" --resume-pending >/dev/null 2>&1 || true
 }
 
+# The two independent kinds of pending handoff state secondmate_handoff_resume
+# above sweeps, each reported on its own line so a secondmate can owe one
+# without the other. A purely local secondmate never has an outbox at all, and
+# the resume that retries its stranded card links runs unattended with its
+# stderr discarded and is deliberately barred from the fleet audit log, so this
+# marker is the only surface a pair the board will not answer for ever reaches.
+# Both halves only ever READ: retiring a pair stays --resume-pending's job, and
+# each line reports the record's current size rather than a running total, so a
+# session start that changes nothing reports the same thing again.
 secondmate_handoff_detect() {
-  local outbox id count
-  [ -d "$DATA/handoff" ] || return 0
-  for outbox in "$DATA/handoff"/*.outbox.md; do
-    [ -e "$outbox" ] || continue
-    id=$(basename "$outbox" .outbox.md)
+  local outbox record id count
+  if [ -d "$DATA/handoff" ]; then
+    for outbox in "$DATA/handoff"/*.outbox.md; do
+      [ -e "$outbox" ] || continue
+      id=$(basename "$outbox" .outbox.md)
+      case "$id" in ''|*[!A-Za-z0-9._-]*) id=unknown ;; esac
+      if [ ! -f "$outbox" ] || [ -L "$outbox" ]; then
+        echo "SECONDMATE_HANDOFF: secondmate $id: pending delivery: unsafe outbox"
+        continue
+      fi
+      count=$(awk '/^- \[[ x]\] / { count++ } END { print count + 0 }' "$outbox" 2>/dev/null || printf unknown)
+      echo "SECONDMATE_HANDOFF: secondmate $id: pending delivery: $count item(s)"
+    done
+  fi
+  [ -d "$STATE/handoff-cards" ] || return 0
+  for record in "$STATE/handoff-cards"/*; do
+    [ -e "$record" ] || continue
+    id=$(basename "$record")
     case "$id" in ''|*[!A-Za-z0-9._-]*) id=unknown ;; esac
-    if [ ! -f "$outbox" ] || [ -L "$outbox" ]; then
-      echo "SECONDMATE_HANDOFF: secondmate $id: pending delivery: unsafe outbox"
+    if [ ! -f "$record" ] || [ -L "$record" ]; then
+      echo "SECONDMATE_HANDOFF: secondmate $id: pending card link(s): unsafe record"
       continue
     fi
-    count=$(awk '/^- \[[ x]\] / { count++ } END { print count + 0 }' "$outbox" 2>/dev/null || printf unknown)
-    echo "SECONDMATE_HANDOFF: secondmate $id: pending delivery: $count item(s)"
+    # NF rather than a line count: awk counts an unterminated final line as a
+    # record (the hand-edit bin/fm-backlog-handoff.sh anticipates), and a blank
+    # line is not a pending pair.
+    count=$(awk 'NF { count++ } END { print count + 0 }' "$record" 2>/dev/null || printf unknown)
+    [ "$count" = 0 ] || echo "SECONDMATE_HANDOFF: secondmate $id: pending card link(s): $count"
   done
 }
 

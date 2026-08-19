@@ -2900,8 +2900,11 @@ spawn_dashboard_link() {
   fi
 
   if [ "$failed" -eq 0 ]; then
-    if current_status=$("$dash" show "$CARD_ARG" --json 2>/dev/null | jq -r '.status // empty' 2>/dev/null) \
-       && [ "$current_status" = not_started ]; then
+    current_status=$("$dash" show "$CARD_ARG" --json 2>/dev/null | jq -r '.status // empty' 2>/dev/null) || current_status=
+    if [ -z "$current_status" ]; then
+      failed=1
+      echo "warning: dashboard card link failed for $ID -> card $CARD_ARG (status): the board did not answer when this card was read, so it cannot be confirmed past not_started" >&2
+    elif [ "$current_status" = not_started ]; then
       if out=$("$dash" status "$CARD_ARG" working 2>&1); then
         echo "dashboard: linked card $CARD_ARG to $ID (ref=$ref, agent=$ID, status not_started -> working)"
       else
