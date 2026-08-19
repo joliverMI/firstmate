@@ -982,9 +982,9 @@ EOF
   pass "handoff refuses --card with more than one item and moves nothing"
 }
 
-# Regression: the pending record and both ledgers are one tab-delimited
-# "<item-key>\t<card-id>" line per pair, and --card was checked only for being
-# non-empty. A tab in the value split the pair at the wrong place; a newline
+# Regression: the pending record and the superseded ledger are one
+# tab-delimited "<item-key>\t<card-id>" line per pair, and --card was checked
+# only for being non-empty. A tab in the value split the pair at the wrong place; a newline
 # forged a whole second line with no tab at all, whose key and card then parse
 # as the same string. Either bogus pair is guarded, so no arrival can ever
 # confirm and retire it - it re-warns on every later handoff and every resume
@@ -1415,6 +1415,33 @@ test_resume_pending_reports_an_unlinkable_pair_once_per_command_not_once_per_swe
   pass "one command reports an unlinkable pair once, even though --resume-pending sweeps its record twice"
 }
 
+# Regression: the unreadable-card warning was the one report of the three that
+# never routed through the in-memory gate, and it is the one the double sweep
+# actually duplicates. A delivery that lands while the board is down warns once
+# in --resume-pending's outbox pass, then again in its card-record pass, which
+# re-reads the very same record now that the outbox is gone - two identical
+# warnings for one pair out of one command.
+test_resume_pending_reports_an_unreadable_card_once_per_command_not_once_per_sweep() {
+  local card out record
+  card=$(add_card "Unreadable sweep coverage")
+  [ -n "$card" ] || fail "add_card returned no id"
+  record="$REMOTE_PARENT/state/handoff-cards/$REMOTE_SM"
+  stage_unreachable_card_item remote-item-r10 "$card"
+
+  out=$(FM_DASHBOARD_PORT=1 run_remote_handoff --resume-pending)
+  expect_code 0 "$?" "resuming should succeed even with the board unreachable" "$out"
+  assert_grep 'remote-item-r10' "$REMOTE_SM_HOME/data/backlog.md" "resume did not deliver the item"
+  assert_contains "$out" "could not read dashboard card $card" \
+    "the resume never reported that the card could not be read"
+  [ "$(grep -c "could not read dashboard card $card" <<<"$out")" -eq 1 ] \
+    || fail "one command warned about the same unreadable card on each of its two sweeps"
+  [ "$(card_status "$card")" = not_started ] \
+    || fail "a card that could never be read was written to anyway"
+  assert_grep "$(printf 'remote-item-r10\t%s' "$card")" "$record" \
+    "the unreadable pair was dropped instead of staying recorded and retriable"
+  pass "one command warns about an unreadable card once, even though --resume-pending sweeps its record twice"
+}
+
 # The same boundary reached with no --card at all: the run stages nothing on
 # the board of its own, it only completes a link an earlier --card call staged
 # and would otherwise destroy by deleting the delivered outbox.
@@ -1477,6 +1504,7 @@ if command -v tasks-axi >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
   test_card_less_remote_handoff_completes_a_link_its_delivery_lands
   test_resume_pending_links_a_landed_pair_while_a_later_delivery_is_still_stuck
   test_resume_pending_reports_an_unlinkable_pair_once_per_command_not_once_per_sweep
+  test_resume_pending_reports_an_unreadable_card_once_per_command_not_once_per_sweep
 else
   pass "skipped remote-route card coverage - tasks-axi or node not available for the remote fixture"
 fi

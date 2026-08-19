@@ -471,26 +471,32 @@ handoff_card_record_remove_pairs() { # <secondmate-id> <pair>...
 # Pairs this run has already reported on. A plain in-memory set, scoped to
 # this one process and persisted nowhere.
 #
-# Two conditions report through it - a pair the board says names no such card,
-# and a pair a later --card has superseded - and both are facts about a
-# REPORT, not about the pairing, so they were never worth durable state. A
-# ledger on disk has to be written, cleared, and kept honest against the
-# record it describes, and every one of those edges was a place for the two to
-# disagree; nothing it bought was worth more than the warning it suppressed.
+# All three per-pair reports route through it - a pair a later --card has
+# superseded, a pair the board says names no such card, and a pair whose card
+# could not be read at all - and every one of them is a fact about a REPORT,
+# not about the pairing, so none was ever worth durable state. A ledger on
+# disk has to be written, cleared, and kept honest against the record it
+# describes, and every one of those edges was a place for the two to disagree;
+# nothing it bought was worth more than the warning it suppressed.
 #
-# What this still buys is the repeat that happens inside a single command:
-# --resume-pending deliberately sweeps a delivered outbox's record twice (see
-# resume_pending_card_records), so without it one invocation lands the same
-# warning and the same audit-log --fleet finding twice.
+# The mark is keyed by REASON as well as by pair, because the three are not
+# interchangeable and one command can legitimately owe two of them about the
+# same pair. --resume-pending sweeps a delivered outbox's record twice; if the
+# board is down for the first sweep and back for the second, that pair is owed
+# an unreadable-card report and then a genuinely different "no such card" one.
+# A single mark per pair would swallow the second.
+#
+# What this buys is the repeat inside one command: without it, that same
+# double sweep lands each identical warning - and each identical audit-log
+# --fleet finding - twice for a single invocation.
 #
 # The deliberate tradeoff: a LATER, separate invocation reports the same pair
-# again rather than staying silent forever. That is bounded by how often an
-# arrival actually happens, and a repeated warning about a link that really is
-# still pending is honest noise - unlike a durable mark that can outlive, or
-# contradict, the record it was written about.
+# again rather than staying silent forever. A repeated warning about a link
+# that really is still pending is honest noise - unlike a durable mark that
+# can outlive, or contradict, the record it was written about.
 declare -A CARD_PAIR_REPORTED=()
-card_pair_report_once() { # <secondmate-id> <pair>
-  local mark=$1$'\t'$2
+card_pair_report_once() { # <reason> <secondmate-id> <pair>
+  local mark=$1$'\t'$2$'\t'$3
   [ -z "${CARD_PAIR_REPORTED[$mark]:-}" ] || return 1
   CARD_PAIR_REPORTED[$mark]=1
   return 0
@@ -704,7 +710,7 @@ link_delivered_card_pairs() { # <secondmate-id> <unguarded-card|''> <pair>...
     # the operator has already disowned as served, which is the board drift
     # this mechanism exists to remove.
     if handoff_card_superseded_has "$sm_id" "$pair"; then
-      if card_pair_report_once "$sm_id" "$pair"; then
+      if card_pair_report_once superseded "$sm_id" "$pair"; then
         echo "warning: card $card for $key was superseded by a later --card naming the same item, so it is never linked; it stays recorded because it may already carry a half-written link that has to be checked by hand" >&2
       fi
       continue
@@ -717,7 +723,7 @@ link_delivered_card_pairs() { # <secondmate-id> <unguarded-card|''> <pair>...
     # the noise is bounded: report each such pair once, not on every arrival,
     # so an unresolvable id cannot bury the fleet log it is recorded in.
     if [ "$probe" -eq 2 ]; then
-      if card_pair_report_once "$sm_id" "$pair"; then
+      if card_pair_report_once no-such-card "$sm_id" "$pair"; then
         echo "warning: the dashboard host has no card $card, so the pending link for $key cannot be completed; it stays recorded and will be retried on the next arrival" >&2
         "$SCRIPT_DIR/fm-dashboard.sh" audit-log --fleet "handoff item $key to secondmate $sm_id names dashboard card $card, which the dashboard host says it does not have; the link is still pending and will be retried, but check whether the card id is wrong or the board url is stale" --kind error >/dev/null 2>&1 || true
       fi
@@ -732,7 +738,9 @@ link_delivered_card_pairs() { # <secondmate-id> <unguarded-card|''> <pair>...
     # failed link reaches anyway, minus the damage.
     if [ "$card" != "$unguarded" ]; then
       if [ "$probe" -ne 0 ]; then
-        echo "warning: could not read dashboard card $card, so the pending link for $key cannot be checked against whatever may already claim it; nothing was written and it stays recorded for the next arrival to retry" >&2
+        if card_pair_report_once unreadable-card "$sm_id" "$pair"; then
+          echo "warning: could not read dashboard card $card, so the pending link for $key cannot be checked against whatever may already claim it; nothing was written and it stays recorded for the next arrival to retry" >&2
+        fi
         continue
       fi
       if ! card_claim_is_ours "$sm_id" "$key"; then
