@@ -50,9 +50,14 @@ export NODE_NO_WARNINGS=1
 # only reach node through PATH additions a profile makes). The export below
 # therefore holds for every case in this file, so their timed windows measure
 # readiness-detection logic rather than profile sourcing - the one exception is
-# test_watch_arm_login_shell_default_reaches_the_arm_child below, which owns no
-# readiness window and overrides the variable per invocation to exercise BOTH
-# branches, including the production default.
+# test_watch_arm_login_shell_default_reaches_the_arm_child below, which
+# overrides the variable per invocation to exercise BOTH branches, including the
+# production default. That case owns no ADAPTER readiness window (neither
+# adapter awaits arm readiness on the path it drives), but it does own a 10s
+# wait of its own for the arm child to record itself, so its login branch is the
+# one place in this suite that still times an unbounded profile-sourcing cost.
+# That is inherent to what it verifies, not an oversight; see the note on its
+# wait below.
 export FM_WATCH_ARM_NO_LOGIN_SHELL=1
 
 install_pi_watch_extension_fixture() {
@@ -1702,6 +1707,11 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
 const markerLogged = () => existsSync(process.env.FM_ARM_LOG)
   && /^marker=\S+\n/m.test(readFileSync(process.env.FM_ARM_LOG, "utf8"));
+// A bounded wait on an inherently unbounded cost, which this one case cannot
+// avoid: it exists to exercise the real production default rather than the
+// opt-out, so its login branch must pay whatever /etc/profile costs here. The
+// 10s bound sits well above the ~1740ms worst case measured for a loaded
+// `bash -lc` start, but no bound can be a hard guarantee on every machine.
 for (let i = 0; i < 500 && !markerLogged(); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
@@ -1740,6 +1750,11 @@ if (!handler) {
 await handler("", { ui: { notify() {} } });
 const markerLogged = () => existsSync(process.env.FM_ARM_LOG)
   && /^marker=\S+\n/m.test(readFileSync(process.env.FM_ARM_LOG, "utf8"));
+// A bounded wait on an inherently unbounded cost, which this one case cannot
+// avoid: it exists to exercise the real production default rather than the
+// opt-out, so its login branch must pay whatever /etc/profile costs here. The
+// 10s bound sits well above the ~1740ms worst case measured for a loaded
+// `bash -lc` start, but no bound can be a hard guarantee on every machine.
 for (let i = 0; i < 500 && !markerLogged(); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }

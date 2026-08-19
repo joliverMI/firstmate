@@ -6,39 +6,43 @@ By the time this record was written, `main` already carried its own independent 
 
 ## The four originally-failing assertions, and which share a cause
 
-All four reported failures are attributable to cause B, the one confound the pre-change suite actually exposed.
-Cause A is a separate, real production race that this change also fixes; it is listed here because the fix ships in the same change, not because it explains any of the four reported failures.
+Two independent causes, two assertions each.
 
-| Assertion | Cause of the reported failure |
+| Assertion | Cause |
 |---|---|
-| `OpenCode watch plugin must arm only when this session owns the fleet lock` (both reported occurrences) | B - test window racing an unrelated cost |
+| `OpenCode watch plugin must arm only when this session owns the fleet lock` (both reported occurrences) | A - production race in `ensureArm` |
 | `Pi must deliver the actionable wake after bounded hung-successor recovery` | B - test window racing an unrelated cost |
 | `Pi must fall back without overlapping an unretired successor` | B - test window racing an unrelated cost |
 
-**Cause A - production code was genuinely racy, but this is not what the four reported failures were.**
+**Cause A - production code was genuinely racy.**
 `ensureArm` in `.opencode/plugins/fm-primary-watch-arm.js` reused a still-resolving earlier caller's `beginArm()` result unconditionally.
-Every ordinary `session.idle` produces two callers - the plugin's own handler and the turn-end guard's `coordinator.ensureArmed` call - so a caller arriving after the fleet lock was reacquired, while an earlier attempt was still mid-flight, inherited that attempt's `read-only` verdict and never armed.
-That race is reachable in production and is demonstrated directly by the rewritten `test_opencode_primary_watch_plugin_requires_session_lock`, which uses a `ps` shim to pin one caller mid-evaluation and flip the lock underneath it - see the test table below.
+Every ordinary `session.idle` produces two callers - the plugin's own handler and the turn-end guard's `coordinator.ensureArmed` call - so when the fleet lock was reacquired while an earlier attempt was mid-flight, the later caller inherited that attempt's `read-only` verdict and never armed.
+This diagnosis was made against the lock-ownership test as it stood at the time, using `ps`-latency fault injection to hold an attempt inside its ownership walk; the race reproduced deterministically before the `ensureArm` fix and stopped reproducing after it.
 
-What the evidence does *not* support is attributing the two reported failures of the lock assertion to that race.
-Traced against the base suite at `45bd292`, that case wrote the foreign lock, ran `await hooks.event(...)` (caller 1, which sets `launchInFlight` synchronously), then awaited `coordinator.ensureArmed(...)` (caller 2, which joins caller 1).
-Both callers therefore evaluated the *same* foreign lock, so inheriting the in-flight verdict was the correct answer rather than a stale one; and because caller 1's `finally` clears `launchInFlight` in an earlier microtask than caller 2's resumption, the lock flip that followed was always evaluated by a fresh attempt.
-The base test could not construct the interleaving cause A needs - its own comment records that this sequencing was deliberate - so what actually made it flaky was the same cause B confound as the other three: a 5s `existsSync` poll waiting on an arm child started through `bash -lc`.
-Why those two field failures occurred cannot be reconstructed further from the base test's mechanics; cause A stands on the new test, not on them.
+**Why this branch's inherited copy of that test can no longer witness it.**
+The version of the lock test this branch inherited cannot reconstruct that interleaving, for a reason that has nothing to do with the diagnosis.
+At the time of the diagnosis the case slept a fixed 120ms between starting the foreign-lock attempt and flipping the lock, so under load the flip could land while the first attempt was still inside its `git`/`ps` walk - the later caller then coalesced onto the stale `read-only` verdict and never armed, which is exactly the reported failure.
+`882004e` on `main` afterwards replaced that sleep with a direct `coordinator.ensureArmed(...)` await, independently of this work and for its own reasons (a fixed sleep cannot tell when the decision has landed).
+That await drains the in-flight attempt before the flip: both callers now evaluate the *same* foreign lock, and caller 1's `finally` clears `launchInFlight` in an earlier microtask than caller 2's resumption, so the flip is always evaluated by a fresh attempt.
+The consequence is narrow and is only about which artifact can serve as the witness.
+Cause A is real, was demonstrated when it was diagnosed, and is fixed here; what this branch's inherited test can no longer do is re-demonstrate it, which is why the race is instead pinned by a new test built for exactly that purpose - `test_opencode_primary_watch_plugin_requires_session_lock`'s `ps`-shim rewrite, which forces the lock to change while a caller is pinned mid-evaluation.
+None of this reassigns the lock assertion to cause B: its pre-change wait was a 5s budget against a `bash -lc` start measured at ~1150ms and at most ~1740ms, so unlike the two Pi cases below it had ample headroom and cause B is not what was failing it.
 
 **Cause B - the test measured something it did not intend to.**
 Both adapters spawn their arm child through `bash -lc`.
 A login shell sources `/etc/profile` and `/etc/profile.d/*` in addition to the account's own profile files, and the system-wide half is not relocatable via `HOME`.
-That unbounded, machine-specific, load-dependent cost sat inside every bounded window these four assertions depend on, so under contention the window expired before the arm child had recorded itself.
-It takes two shapes here.
-In the two Pi fallback cases it sat inside the tight readiness/retire windows those cases assert on, so the arm child was SIGTERMed before the fixture could append its row.
-In the lock case it sat inside the 5s `existsSync` poll that waits for the arm to run once the lock matches, against a `bash -lc` start measured at ~1150ms and up to 1740ms under contention.
+That unbounded, machine-specific, load-dependent cost sat inside the tight readiness/retire windows these two cases assert on, so under contention the arm child was SIGTERMed before the fixture could record itself.
+
+One residual instance of this shape survives, deliberately, in exactly one case.
+`test_watch_arm_login_shell_default_reaches_the_arm_child` exists to verify that the production default still reaches the arm child, so its `login` branch must pay the real `/etc/profile` cost and then wait a bounded 10s for the marker row - a bounded wait on an unbounded cost, which is the very shape the rest of this change removes.
+It cannot be removed there without defeating what the case verifies; the bound is sized well above the ~1740ms worst case measured above, but it is a headroom argument rather than a guarantee, and it applies to that one case only.
 
 ## Base state (already on `main` before this change)
 
 `main` independently raised `FM_PI_ARM_READY_TIMEOUT_MS` / `FM_OPENCODE_ARM_READY_TIMEOUT_MS` from 250ms to 2000ms and rewrote `test_pi_session_transition_generation_owner`'s fixture to write its arm-log row before the pid-file row that its waiters gate on, both landed independently of this change.
-Neither addresses cause A: `ensureArm` still reused an in-flight attempt's result unconditionally, and its own comment on the timeout raise records a measured worst case of ~1740ms against the new 2000ms budget under contention - narrower headroom, not a removed confound.
-This change does not touch either of those base fixes and does not re-litigate the timeout value; both are kept exactly as `main` has them.
+`882004e` on `main` also replaced the lock test's fixed 120ms sleep with a direct `coordinator.ensureArmed(...)` await, again independently of this change; that is what stops this branch's inherited copy of that case from reconstructing cause A, as described above.
+None of those addresses cause A: `ensureArm` still reused an in-flight attempt's result unconditionally, and its own comment on the timeout raise records a measured worst case of ~1740ms against the new 2000ms budget under contention - narrower headroom, not a removed confound.
+This change does not touch any of those base fixes and does not re-litigate the timeout value; all are kept exactly as `main` has them.
 
 ## What this change adds
 
@@ -66,13 +70,13 @@ This change does not touch either of those base fixes and does not re-litigate t
   These are every async `stdin.end` site in the adapters; `.pi/extensions/lib/fm-operational-input.ts` uses `spawnSync` with `input:` and has no async pipe.
   `test_adapter_surfaces_encoder_exit_instead_of_killing_the_host` in `tests/fm-operational-input.test.sh` pins the shared encoder path: an encoder that exits before reading a body larger than the pipe buffer must fail that one call and leave the host session alive.
 
-Two regression tests were added inside the arm-readiness suite itself; the existing lock test was rewritten so that it forces cause A deterministically, which its previous sequencing could not do at all.
+Two regression tests were added inside the arm-readiness suite itself; the existing lock test was rewritten so that it forces cause A deterministically, which the sequencing this branch inherited could not do.
 
 | Test | Pins |
 |---|---|
 | `test_opencode_primary_watch_plugin_requires_session_lock` (rewritten) | Cause A. A `ps` shim blocks the first lock-ownership walk mid-flight, so the stale-verdict race is forced deterministically rather than waited for. Also asserts two distinct lock premises produce two evaluations. Fails against the pre-change `ensureArm`: that version takes the unconditional in-flight-reuse branch, so the reacquired-lock caller blocks on the foreign attempt, which is still pinned inside the gated `ps` shim - the test releases that gate only after awaiting the owned caller - and the case fails on the 20s `settling` guard rejecting with "the reacquired-lock arm attempt never settled" rather than by observing the inherited `read-only` verdict directly. Also fails against a rejected fully-serialized variant (deadlocks); passes against the shipped premise-validated coalescing. |
 | `test_opencode_watch_arm_coalesces_callers_on_an_unchanged_lock` (new) | The other half of cause A: two callers on an unchanged lock must share exactly one evaluation. Unconditional coalescing (the pre-change behavior) already passes this test; it instead guards against the rejected serialized variant, which fails it with two evaluations. |
-| `test_watch_arm_login_shell_default_reaches_the_arm_child` (new) | Both branches of the `FM_WATCH_ARM_NO_LOGIN_SHELL` opt-out, for both adapters, via a temp `HOME` whose `.profile` exports a marker the arm child either does or does not observe. |
+| `test_watch_arm_login_shell_default_reaches_the_arm_child` (new) | Both branches of the `FM_WATCH_ARM_NO_LOGIN_SHELL` opt-out, for both adapters, via a temp `HOME` whose `.profile` exports a marker the arm child either does or does not observe. Its `login` branch is the one bounded-wait-on-unbounded-cost this change knowingly keeps - see the residual note under cause B. |
 
 ## Verification
 
