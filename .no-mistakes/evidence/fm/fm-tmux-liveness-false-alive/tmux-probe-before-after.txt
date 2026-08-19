@@ -1,0 +1,27 @@
+firstmate tmux endpoint liveness probe - real tmux 3.4, probe run from inside a live tmux pane
+
+live server inventory:
+  session=alphabet window_index=1 window=win
+  session=remote-backup window_index=1 window=main
+  session=sess window_index=1 window=fm-alpha-2
+  session=sess window_index=2 window=fm-release-1.2
+  session=sess window_index=3 window=driver
+
+TARGET PROBED                      WHAT IT IS               EXPECT   BEFORE   AFTER
+-------------------------------------------------------------------------------------------
+nosuch:nosuchwindow                does not exist           dead     alive    dead     ok
+remote:main                        session-name prefix      dead     alive    dead     ok
+sess:fm-alpha                      window-name prefix       dead     alive    dead     ok
+sess:fm-release-1                  dotted pane-split        dead     alive    dead     ok
+sess:fm-release-1.2                live dotted window       alive    alive    alive    ok
+sess:fm-alpha-2                    live session:window      alive    alive    alive    ok
+sess:1                             live window INDEX        alive    alive    alive    ok
+sess:99                            missing window INDEX     dead     alive    dead     ok
+alpha                              bare session prefix      dead     alive    dead     ok
+alphabet                           live bare session        alive    alive    alive    ok
+sess:fm-alpha-2.1                  live window.pane         alive    alive    alive    ok
+sess:1.2                           live windowIdx.pane      alive    alive    alive    ok
+sess:fm-alpha-2.9                  missing pane             dead     alive    dead     ok
+
+BEFORE = base commit 3c8f796 (display-message -p -t <target>)
+AFTER  = target commit e382d0c (exact-pinned resolver)

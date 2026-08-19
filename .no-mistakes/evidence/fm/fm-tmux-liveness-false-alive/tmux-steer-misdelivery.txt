@@ -1,0 +1,25 @@
+Steering a crew whose tmux window is gone, while a prefix-colliding sibling is live (real tmux 3.4)
+Path exercised: fm_backend_tmux_send_text_submit, the primitive every ordinary steer goes through.
+
+=== BEFORE (base 3c8f796) ===
+live windows after fm-alpha was killed: home runner fm-alpha-2 
+$ fm_backend_tmux_send_text_submit "sess:fm-alpha" "echo STEER-FOR-ALPHA" 2 0.2 0.3
+  exit=0  output=unknown
+
+contents of the LIVE sibling pane sess:fm-alpha-2 afterwards:
+  | alpha-2$ echo STEER-FOR-ALPHA
+  | STEER-FOR-ALPHA
+  | alpha-2$
+
+  VERDICT: the steer for the dead crew LANDED IN THE WRONG CREW.
+
+=== AFTER  (target e382d0c) ===
+live windows after fm-alpha was killed: home runner fm-alpha-2 
+$ fm_backend_tmux_send_text_submit "sess:fm-alpha" "echo STEER-FOR-ALPHA" 2 0.2 0.3
+  exit=1  output=error: refusing to send text: tmux target 'sess:fm-alpha' does not resolve to exactly one live endpoint
+target-unresolved
+
+contents of the LIVE sibling pane sess:fm-alpha-2 afterwards:
+  | alpha-2$
+
+  VERDICT: the live sibling never received the steer.

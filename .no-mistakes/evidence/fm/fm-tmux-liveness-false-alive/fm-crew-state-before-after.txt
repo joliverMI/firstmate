@@ -1,0 +1,39 @@
+fm-crew-state.sh - the line firstmate reads every heartbeat - against a REAL tmux server (tmux 3.4)
+
+live windows on the tmux server:
+  sess:fm-alpha-2
+
+recorded task endpoints:
+  task-a  window=sess:fm-alpha      DEAD  (its window is gone; only the longer sibling sess:fm-alpha-2 is live)
+  task-b  window=sess:fm-alpha-2    LIVE
+  mate    window=remote:mate        secondmate on remote host "homelab" (not on this server at all)
+
+--- BEFORE (base 3c8f796) ---
+$ fm-crew-state.sh task-a
+  state: unknown · source: pane · harness state unavailable (unknown missing)
+$ fm-crew-state.sh task-b
+  state: unknown · source: pane · harness state unavailable (unknown missing)
+$ fm-crew-state.sh mate
+  state: working · source: status-log · reconciling backlog
+
+--- AFTER  (target e382d0c) ---
+$ fm-crew-state.sh task-a
+  state: unknown · source: none · backend target gone: sess:fm-alpha
+$ fm-crew-state.sh task-b
+  state: unknown · source: pane · harness state unavailable (unknown missing)
+$ fm-crew-state.sh mate
+  state: working · source: status-log · reconciling backlog
+
+--- why the remote mate needs its own skip, not just an exact probe ---
+The pre-fix probe answered "alive" for EVERY target above, including remote:mate
+(no session named "remote" exists on this server):
+$ tmux display-message -p -t remote:mate "#{pane_id}"; echo exit=$?
+  
+  exit=0 (printed nothing, still succeeded)
+
+The fixed probe answers correctly - the remote endpoint is NOT on this server:
+$ fm_backend_target_exists tmux remote:mate
+  dead
+
+So fm-crew-state.sh must skip the local probe for a remote_host record, which is why
+"mate" above still reports "state: working - source: status-log" after the fix.

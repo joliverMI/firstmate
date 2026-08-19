@@ -1,0 +1,20 @@
+fm-session-start.sh fleet digest - endpoint lines, real tmux 3.4 server
+
+live windows: sess:fm-alpha-2 
+records:
+  task-a  window=sess:fm-alpha     DEAD (its window is gone; only the longer sibling is live)
+  task-b  window=sess:fm-alpha-2   LIVE
+  mate    window=remote:mate       secondmate on remote host "homelab"
+
+--- BEFORE (base 3c8f796) ---
+  endpoint: alive (backend=tmux window=remote:mate)
+  endpoint: alive (backend=tmux window=sess:fm-alpha)
+  endpoint: alive (backend=tmux window=sess:fm-alpha-2)
+
+--- AFTER  (target e382d0c) ---
+  endpoint: unknown (remote homelab; not checked from here, window=remote:mate)
+  endpoint: dead (backend=tmux window=sess:fm-alpha)
+  endpoint: alive (backend=tmux window=sess:fm-alpha-2)
+
+Before the fix the digest called every recorded endpoint alive, including one whose
+window no longer exists and one that lives on another machine entirely.

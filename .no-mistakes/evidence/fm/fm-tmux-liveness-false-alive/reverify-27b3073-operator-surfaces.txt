@@ -1,0 +1,80 @@
+==============================================================================
+Why the old probe was untrustworthy - raw tmux 3.4, no firstmate code involved
+==============================================================================
+Live server: session 'fm' with windows [shell, fm-designer]. 'fm-design' does
+NOT exist. Session 'remote' does NOT exist.
+
+$ tmux list-windows -t fm -F "#{window_name}#{window_active} pane=#{pane_id}"
+    shell pane=%0
+    fm-designer pane=%1
+
+The old existence probe was: tmux display-message -p -t <target> "#{pane_id}"
+trusting its EXIT STATUS alone. Every target below exits 0:
+
+    display-message -t fm:fm-designer   -> rc=0  pane=%1
+    display-message -t fm:fm-design     -> rc=0  pane=%1
+    display-message -t remote:mate-1    -> rc=0  pane=<empty>
+    display-message -t nosuch:nosuch    -> rc=0  pane=<empty>
+
+  fm:fm-design does not exist, yet it answers with %1 - the LIVE sibling
+  fm-designer's pane, because tmux resolves a window component by PREFIX.
+  nosuch:nosuch and remote:mate-1 do not exist either, yet still exit 0.
+
+==============================================================================
+Operator surface 1: the session-start briefing's per-task endpoint verdicts
+==============================================================================
+
+### BEFORE (base 3c8f796, pre-fix)
+$ tmux list-windows -t fm -F '#{window_name}'   # ground truth
+  shell
+  fm-designer
+$ fm-session-start.sh    (endpoint verdicts from the session briefing)
+  kind=ship
+  endpoint: alive (backend=tmux window=fm:fm-designer)
+  --
+  kind=ship
+  endpoint: alive (backend=tmux window=fm:fm-design)
+  --
+  remote_host=build-box
+  endpoint: alive (backend=tmux window=remote:mate-1)
+
+### AFTER (target 27b3073, fixed)
+$ tmux list-windows -t fm -F '#{window_name}'   # ground truth
+  shell
+  fm-designer
+$ fm-session-start.sh    (endpoint verdicts from the session briefing)
+  kind=ship
+  endpoint: alive (backend=tmux window=fm:fm-designer)
+  --
+  kind=ship
+  endpoint: dead (backend=tmux window=fm:fm-design)
+  --
+  remote_host=build-box
+  endpoint: unknown (remote build-box; not checked from here, window=remote:mate-1)
+
+==============================================================================
+Operator surface 2: fm-crew-state.sh, read every heartbeat per crew
+==============================================================================
+
+### BEFORE (base 3c8f796, pre-fix)
+$ tmux -L fm-liveness-demo-3460850-fm-tmux-base-3114565 list-windows -t fm -F '#{window_name}'   # what is actually alive
+  shell
+  fm-designer
+$ cat state/design.meta
+  window=fm:fm-design
+  worktree=/tmp/fm-liveness-demo.nztvcE/wt
+  kind=secondmate
+$ fm-crew-state.sh design      # firstmate's per-heartbeat read of crew 'design'
+  state: working · source: status-log · drafting the layout
+
+### AFTER (target 27b3073, fixed)
+$ tmux -L fm-liveness-demo-3461358-01M0C2STTHEH7G6XFXH93HVHB0 list-windows -t fm -F '#{window_name}'   # what is actually alive
+  shell
+  fm-designer
+$ cat state/design.meta
+  window=fm:fm-design
+  worktree=/tmp/fm-liveness-demo.v5MWur/wt
+  kind=secondmate
+$ fm-crew-state.sh design      # firstmate's per-heartbeat read of crew 'design'
+  state: unknown · source: none · backend target gone: fm:fm-design
+

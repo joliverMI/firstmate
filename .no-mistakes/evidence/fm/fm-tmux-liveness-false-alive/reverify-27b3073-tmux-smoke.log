@@ -1,0 +1,55 @@
+FM_TEST_BEGIN 2026-08-19T06:23:57Z tests/fm-backend-tmux-smoke.test.sh family=backend-dispatch expected_gate_skip=none
+@1
+ok - real tmux: fm_backend_tmux_create_task creates a window and refuses a duplicate
+ok - real tmux: fm_backend_tmux_send_text_line sends literal text and submits with Enter
+ok - real tmux: fm_backend_tmux_send_literal + fm_backend_tmux_send_key Enter submit as two separate steps
+ok - real tmux: fm_backend_tmux_capture's -S -N bound trims old history for a small window and reaches it for a large one
+ok - real tmux: fm_backend_tmux_resolve_bare_selector (list-live) finds the created window by name
+ok - real tmux: fm_backend_tmux_resolve_bare_selector fails for a window that does not exist
+ok - real tmux: fm_backend_target_exists correctly reports a nonexistent target as not-existing even when run from inside a live tmux client
+ok - real tmux: fm_backend_target_exists rejects a session name that is only a prefix of a live session
+ok - real tmux: fm_backend_target_exists rejects a window name that is only a prefix of a live window
+ok - real tmux: fm_backend_target_exists still reports the exact live session:window as existing
+@2
+ok - real tmux: fm_backend_target_exists resolves a live window name containing a dot
+ok - real tmux: a dotted window name is matched byte-exactly, not by its pane-split prefix
+ok - real tmux: fm_backend_target_exists rejects a nonexistent dotted window name
+ok - real tmux: fm_backend_target_exists resolves a pane-qualified session:window.pane target
+ok - real tmux: a pane-qualified target also accepts a %N pane id after the dot
+ok - real tmux: fm_backend_target_exists rejects a pane-qualified target whose pane does not exist
+ok - real tmux: a pane-qualified target still requires an exact session name
+ok - real tmux: fm_backend_target_exists resolves a pane qualified by window INDEX, not just window name
+ok - real tmux: a window-INDEX-qualified target also accepts a %N pane id after the dot
+ok - real tmux: a window-INDEX-qualified target still rejects a pane that does not exist
+ok - real tmux: a window-INDEX-qualified target still rejects a window index that does not exist
+ok - real tmux: the pane-qualified lookup is scoped to the target session, not a window that shares its name
+ok - real tmux: a live pane still resolves while a same-named decoy window exists elsewhere
+ok - real tmux: an exact window name wins over the pane-qualified reading of the same target string
+ok - real tmux: fm_backend_target_exists accepts an @N window id for a live window
+ok - real tmux: fm_backend_target_exists rejects a nonexistent @N window id
+ok - real tmux: fm_backend_target_exists accepts a $N session id for a live session
+ok - real tmux: fm_backend_target_exists rejects a nonexistent $N session id
+ok - real tmux: fm_backend_target_exists accepts a bare session name for a live session
+ok - real tmux: a bare session name is matched exactly, never by prefix
+ok - real tmux: fm_backend_target_exists rejects a nonexistent bare session name
+ok - real tmux: fm_backend_target_exists accepts a bare window name for a live window, searched across sessions
+ok - real tmux: a bare window name is matched exactly, never by prefix
+ok - real tmux: fm_backend_target_exists rejects a nonexistent bare window name
+ok - real tmux: fm_backend_target_exists resolves a legacy session:<window-index> target
+ok - real tmux: a session:<window-index> target still requires an exact session name
+ok - real tmux: fm_backend_target_exists rejects a nonexistent window index
+ok - real tmux: fm_backend_target_exists accepts a bare %N pane id for a live pane
+ok - real tmux: fm_backend_target_exists rejects a nonexistent pane id
+ok - real tmux: fm_backend_tmux_send_key refuses a target that does not resolve exactly
+ok - real tmux: a key addressed to a destroyed prefix-colliding target never lands in the live sibling's pane
+ok - real tmux: fm_backend_tmux_send_text_submit refuses a target that does not resolve exactly, and never reports it delivered
+ok - real tmux: fm_backend_tmux_send_text_submit still delivers to an exactly resolvable session:window target
+ok - real tmux: a message addressed to a destroyed prefix-colliding target never lands in the live sibling's pane
+ok - real tmux: a window NAME containing a dot receives its own text, not the sibling pane the target string also reads as
+ok - real tmux: an unambiguous bare window name still resolves
+ok - real tmux: a bare window name live in two sessions is refused rather than resolved to either one
+ok - real tmux: kill removes the window and the readable session inventory authoritatively classifies it missing
+FM_TEST_END 2026-08-19T06:23:59Z tests/fm-backend-tmux-smoke.test.sh exit=0 duration_ms=1542 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=1571
+FM_TEST_SUMMARY_FAMILY family=backend-dispatch count=1 duration_ms=1542 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-backend-tmux-smoke.test.sh duration_ms=1542
