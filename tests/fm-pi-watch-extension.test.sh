@@ -36,9 +36,15 @@ export NODE_NO_WARNINGS=1
 # run yet, and the row it should have recorded was lost - which is a lost
 # FIXTURE observation, not a behaviour change: the extension still made every
 # bounded attempt and still delivered the typed restoration failure. That is
-# what made these cases fail intermittently on CI runners. The budget must stay
-# well above a loaded login-shell start; the cases are otherwise unchanged, and
-# an arm that IS ready still settles immediately rather than waiting it out.
+# what made these cases fail intermittently on CI runners. The export below
+# removes that cost from this suite entirely, so the budget no longer has to
+# cover a login-shell start at all - it only has to cover the extension's own
+# readiness-detection logic, and main's 2000ms is generous headroom for that
+# rather than a figure this suite still depends on. This change neither raises
+# nor lowers it. The four cases are also no longer left to that budget alone:
+# each now waits on the observable arm-row count, then on a bounded wait for the
+# wake prompt, then re-reads the log after a settle delay. An arm that IS ready
+# still settles immediately rather than waiting the budget out.
 
 # That login-shell cost is real, but it is also the ONLY unbounded part of the
 # budget: /etc/profile and /etc/profile.d run whatever a given machine's
