@@ -87,13 +87,17 @@ Only a proven empty composer is a positive delivery acknowledgement.
 Text left in established structure remains `pending`, text in ambiguous structure remains unproven, and unreadable or unsafe state remains unknown.
 `fm-send.sh` reports every unconfirmed verdict as a failure instead of retyping or assuming delivery.
 
-Input is delivered only to an exactly resolved endpoint.
+Crew messaging is delivered only to an exactly resolved endpoint.
 tmux resolves a bare `session:window` target by prefix, so the target of a destroyed window is answered by any live window whose name merely extends it: with `sess:fm-1` gone and `sess:fm-10` live, an unpinned `send-keys -t sess:fm-1` delivers into `fm-10`'s pane, and prefix-colliding task ids are routine.
-Both input-delivering primitives - the named-key path and the type-and-submit text path - therefore verify the target through the same exact-match resolution `fm_backend_target_exists` uses, then address the send with tmux's `=` pin on both components so no prefix fallback remains between the check and the send.
-A target that does not resolve to exactly one live endpoint is refused: nothing is sent, the call returns nonzero, and the text path reports `target-unresolved` rather than a verdict a caller could read as delivered.
-A window NAME containing a dot remains the disclosed exception, unchanged by this: tmux splits the last `.` off as a pane specifier before matching the name, so such a window is unreachable through both the pinned and the raw form, and a sibling window without the dotted suffix is addressed instead when one exists.
-The read-only siblings `fm_backend_tmux_agent_state` and `fm_backend_tmux_kill` still resolve their own targets, and converging every one of these helpers onto a single resolver that addresses a resolved pane id is tracked in `fm-tmux-agent-state-session-prefix-match`.
-`tests/fm-backend-tmux-smoke.test.sh` asserts both refusals, that the live decoy pane receives neither the keystroke nor the message, and that an exactly resolvable target still delivers, against a real tmux server.
+The two crew-messaging primitives - the named-key path (`fm_backend_tmux_send_key`) and the type-and-submit text path (`fm_backend_tmux_send_text_submit`) - therefore address the send with the target that `fm_backend_tmux_exact_target` resolved, the same function `fm_backend_target_exists` answers with.
+Sharing one resolution is the point: while the send re-derived its own `=$session:=$window` address, a dotted window name that the probe had matched in the session inventory still sent into a sibling window's pane, because tmux splits a trailing `.` off as a pane specifier before matching the name.
+The resolver answers each shape with the address it verified - a `session:window` pair with the `=`-pinned string it probed, a dotted or pane-qualified target and a bare name with the `@N`, `%N` or `$N` id read from the inventory listing that matched - so no shape is addressable only by a name tmux cannot express.
+A target that does not resolve is refused: nothing is sent, the call returns nonzero, and the text path reports `target-unresolved` rather than a verdict a caller could read as delivered.
+
+Two input-delivering primitives in the same adapter are NOT gated and still send unpinned: `fm_backend_tmux_send_text_line` and `fm_backend_tmux_send_literal`, both called only by `fm-spawn.sh` to type setup commands and the harness launch command into a pane it created earlier in the same run.
+Two more helpers resolve their own targets and are deferred to `fm-tmux-agent-state-session-prefix-match`: `fm_backend_tmux_kill`, which is destructive and can silently destroy a *different* live window when given a dotted window name, and `fm_backend_tmux_agent_state`, which is read-only and resolves its session component by unpinned prefix match.
+That follow-up is a single shared resolver used by every one of these primitives - probe, keys, text, line, literal, kill, agent-state.
+`tests/fm-backend-tmux-smoke.test.sh` asserts both refusals, that the live decoy pane receives neither the keystroke nor the message, that a dotted window name receives its own text rather than a sibling's pane, and that an exactly resolvable target still delivers, against a real tmux server.
 
 OpenCode 1.18.4 has one busy-queue exception.
 While OpenCode is mid-turn, Enter queues the message but leaves its text visible until the turn completes.

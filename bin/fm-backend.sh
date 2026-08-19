@@ -899,58 +899,129 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
 # `=` pin is ignored in the bare form, so it is resolved against the exact
 # session inventory instead. Only empty, malformed, or 3+ colon shapes remain
 # a hard negative.
+# fm_backend_tmux_exact_target: the SINGLE owner of tmux target resolution for
+# this file's probe and for the send primitives in bin/backends/tmux.sh. It
+# prints an exactly addressable tmux target for <target>, or returns nonzero
+# when nothing resolves. Every arm prints the very address it just verified -
+# an id read out of the same inventory listing that proved the endpoint exists,
+# or the same `=`-pinned string the probe ran - so a caller that sends to this
+# function's output cannot address a different endpoint than the one the probe
+# answered for. Deriving the send address separately is what made the two
+# disagree before: the probe matched a dotted window NAME in the session
+# inventory while a re-derived `=$session:=$window` sent to a sibling window's
+# pane, because tmux splits the trailing `.` off as a pane specifier before
+# matching the name (verified on tmux 3.4, `tmux -f /dev/null`: with live
+# windows `fm-1.2` and `fm-1`, `send-keys -t '=s:=fm-1.2'` landed in fm-1's
+# pane 2). Resolving that reading to the window's own `@N` id addresses the
+# window tmux cannot name.
+#
+# The colon-bearing shapes are matched BEFORE the bare-id fast path so that a
+# compound target carrying a session id (`$0:fm-alpha`) is pinned like any
+# other `session:window` pair instead of being handed to tmux unpinned by the
+# id arm; only a colon-free `%N`/`@N`/`$N` is an id, and tmux never
+# prefix-matches those.
+fm_backend_tmux_exact_target() {  # <target> -> prints an exactly addressable target
+  local target=$1 session window pane base want listing line id rest pane_field window_field
+  case "$target" in
+    *:*:*|'':*|*:'')
+      return 1
+      ;;
+    *:*.*)
+      session=${target%%:*}
+      window=${target#*:}
+      listing=$(LC_ALL=C tmux list-windows -t "=$session" -F '#{window_id} #{window_name}' 2>/dev/null) \
+        || return 1
+      while IFS= read -r line; do
+        id=${line%% *}
+        rest=${line#* }
+        if [ -n "$id" ] && [ "$rest" = "$window" ]; then
+          printf '%s' "$id"
+          return 0
+        fi
+      done <<EOF
+$listing
+EOF
+      pane=${window##*.}
+      base=${window%.*}
+      want=$pane.$base
+      case "$pane" in
+        %*) pane_field='#{pane_id}' ;;
+        *)  pane_field='#{pane_index}' ;;
+      esac
+      for window_field in '#{window_name}' '#{window_index}'; do
+        listing=$(LC_ALL=C tmux list-panes -s -t "=$session:" -F "#{pane_id} $pane_field.$window_field" 2>/dev/null) \
+          || continue
+        while IFS= read -r line; do
+          id=${line%% *}
+          rest=${line#* }
+          if [ -n "$id" ] && [ "$rest" = "$want" ]; then
+            printf '%s' "$id"
+            return 0
+          fi
+        done <<EOF
+$listing
+EOF
+      done
+      return 1
+      ;;
+    *:*)
+      session=${target%%:*}
+      window=${target#*:}
+      tmux list-panes -t "=$session:=$window" >/dev/null 2>&1 || return 1
+      printf '=%s:=%s' "$session" "$window"
+      ;;
+    %*|@*|'$'*)
+      tmux list-panes -t "$target" >/dev/null 2>&1 || return 1
+      printf '%s' "$target"
+      ;;
+    *)
+      # A bare, colon-less string is a legitimate tmux target too: tmux
+      # resolves it against EITHER a session name or a window name in ANY
+      # session. The `=` pin does NOT make this exact for a bare target
+      # the way it does for the session component of a session:window
+      # target - verified live that `list-panes -t "=alpha"` still exits 0
+      # when only session `alphabet` is live, even though the equivalent
+      # `=alpha:=win` two-component form correctly refuses that same
+      # prefix. So a bare target is answered from exact inventory instead:
+      # an exact session name, or an exact window name in any session (the
+      # same live listing fm_backend_tmux_resolve_bare_selector already
+      # uses for bare selectors). A session-only check here (the prior
+      # form) silently misreported a live bare WINDOW-name target as dead.
+      # The id carried on the matching inventory line is what is printed,
+      # because the bare NAME is not an exact address even once it is known
+      # to exist.
+      listing=$(LC_ALL=C tmux list-sessions -F '#{session_id} #{session_name}' 2>/dev/null)
+      while IFS= read -r line; do
+        id=${line%% *}
+        rest=${line#* }
+        if [ -n "$id" ] && [ "$rest" = "$target" ]; then
+          printf '%s' "$id"
+          return 0
+        fi
+      done <<EOF
+$listing
+EOF
+      listing=$(LC_ALL=C tmux list-windows -a -F '#{window_id} #{window_name}' 2>/dev/null)
+      while IFS= read -r line; do
+        id=${line%% *}
+        rest=${line#* }
+        if [ -n "$id" ] && [ "$rest" = "$target" ]; then
+          printf '%s' "$id"
+          return 0
+        fi
+      done <<EOF
+$listing
+EOF
+      return 1
+      ;;
+  esac
+}
+
 fm_backend_target_exists() {  # <backend> <target> [expected-label]
-  local backend=$1 target=$2 expected_label=${3:-} session pane window names pane_field base want window_field
+  local backend=$1 target=$2 expected_label=${3:-} session pane
   case "$backend" in
     tmux)
-      case "$target" in
-        %*|@*|'$'*)
-          tmux list-panes -t "$target" >/dev/null 2>&1
-          ;;
-        *:*:*|'':*|*:'')
-          return 1
-          ;;
-        *:*.*)
-          session=${target%%:*}
-          window=${target#*:}
-          names=$(LC_ALL=C tmux list-windows -t "=$session" -F '#{window_name}' 2>/dev/null) \
-            || return 1
-          printf '%s\n' "$names" | grep -Fqx "$window" && return 0
-          pane=${window##*.}
-          base=${window%.*}
-          want=$pane.$base
-          case "$pane" in
-            %*) pane_field='#{pane_id}' ;;
-            *)  pane_field='#{pane_index}' ;;
-          esac
-          for window_field in '#{window_name}' '#{window_index}'; do
-            LC_ALL=C tmux list-panes -s -t "=$session:" -F "$pane_field.$window_field" 2>/dev/null \
-              | grep -Fqx "$want" && return 0
-          done
-          return 1
-          ;;
-        *:*)
-          session=${target%%:*}
-          window=${target#*:}
-          tmux list-panes -t "=$session:=$window" >/dev/null 2>&1
-          ;;
-        *)
-          # A bare, colon-less string is a legitimate tmux target too: tmux
-          # resolves it against EITHER a session name or a window name in ANY
-          # session. The `=` pin does NOT make this exact for a bare target
-          # the way it does for the session component of a session:window
-          # target - verified live that `list-panes -t "=alpha"` still exits 0
-          # when only session `alphabet` is live, even though the equivalent
-          # `=alpha:=win` two-component form correctly refuses that same
-          # prefix. So a bare target is answered from exact inventory instead:
-          # an exact session name, or an exact window name in any session (the
-          # same live listing fm_backend_tmux_resolve_bare_selector already
-          # uses for bare selectors). A session-only check here (the prior
-          # form) silently misreported a live bare WINDOW-name target as dead.
-          LC_ALL=C tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -Fqx "$target" && return 0
-          LC_ALL=C tmux list-windows -a -F '#{window_name}' 2>/dev/null | grep -Fqx "$target"
-          ;;
-      esac
+      fm_backend_tmux_exact_target "$target" >/dev/null
       ;;
     herdr)
       fm_backend_source herdr || return 1

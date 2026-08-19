@@ -602,6 +602,48 @@ pass "real tmux: a message addressed to a destroyed prefix-colliding target neve
 
 kill_window_id "$text_decoy_wid"
 
+# --- a dotted window NAME is delivered to, not merely answered for -----------
+# The probe and the send used to resolve this shape by two different
+# implementations. The probe matched the dotted string against the session's
+# window-name inventory and answered alive; the send re-derived
+# `=$session:=$window`, which tmux resolves by splitting the trailing `.` off
+# as a PANE specifier before matching the name - so the message went into the
+# sibling window's pane of that index instead. A gate that answers one way
+# while the send resolves another is worse than no gate, because it reads as
+# protection while still misdelivering.
+# The fixture is the failing shape itself: a live window named `<sibling>.<n>`
+# beside a live sibling `<sibling>` that really does own pane index <n>, so
+# both readings of the target string are live and only the correct one may
+# receive the text. The pane index is read from the sibling rather than
+# hardcoded, because `pane-base-index` decides whether panes start at 0 or 1.
+DOT_SIBLING="fm-dotsib"
+dot_sib_wid=$(fm_backend_tmux_create_task "$SESSION" "$DOT_SIBLING" "$HOME") \
+  || fail "could not create the dotted-name sibling window"
+tmux split-window -t "$dot_sib_wid" || fail "could not split a second pane in the dotted-name sibling"
+dot_pane_idx=$(tmux list-panes -t "$dot_sib_wid" -F '#{pane_index}' | tail -1)
+[ -n "$dot_pane_idx" ] || fail "could not read the sibling's pane index"
+DOT_WINDOW="$DOT_SIBLING.$dot_pane_idx"
+dot_wid=$(fm_backend_tmux_create_task "$SESSION" "$DOT_WINDOW" "$HOME") \
+  || fail "could not create a live window whose name collides with a pane-qualified target"
+
+fm_backend_target_exists tmux "$SESSION:$DOT_WINDOW" \
+  || fail "fm_backend_target_exists reported the live dotted-name window '$SESSION:$DOT_WINDOW' as dead"
+
+fm_backend_tmux_send_text_submit "$SESSION:$DOT_WINDOW" "dotted-target-marker" 1 0.1 0.1 >/dev/null \
+  || fail "fm_backend_tmux_send_text_submit refused the live dotted-name window '$SESSION:$DOT_WINDOW'"
+wait_for_capture_text "$dot_wid" "dotted-target-marker" \
+  || fail "text addressed to the live dotted-name window '$SESSION:$DOT_WINDOW' never reached it"
+for dot_pane in $(tmux list-panes -t "$dot_sib_wid" -F '#{pane_id}'); do
+  case "$(fm_backend_tmux_capture "$dot_pane" 200)" in
+    *dotted-target-marker*)
+      fail "text addressed to the window named '$DOT_WINDOW' landed in sibling window '$DOT_SIBLING' pane $dot_pane" ;;
+  esac
+done
+pass "real tmux: a window NAME containing a dot receives its own text, not the sibling pane the target string also reads as"
+
+kill_window_id "$dot_wid"
+kill_window_id "$dot_sib_wid"
+
 # --- kill and recovery-grade missing-window classification ------------------
 
 fm_backend_tmux_kill "$TARGET"
