@@ -167,7 +167,7 @@ else
   if [ "$CARD_SET" -eq 1 ]; then
     case "$CARD_ARG" in
       *[$'\t\n']*)
-        echo "error: --card value must not contain a tab or newline; the pending card record and its ledgers hold one tab-delimited <item-key>\\t<card-id> line per pair, and either character would silently corrupt that state" >&2
+        echo "error: --card value must not contain a tab or newline; the pending card record and the superseded ledger hold one tab-delimited <item-key>\\t<card-id> line per pair, and either character would silently corrupt that state" >&2
         exit 1
         ;;
     esac
@@ -407,16 +407,13 @@ handoff_card_record_put() { # <secondmate-id> <item-key> <card-id>
     for pending in "${displaced[@]}"; do
       printf 'warning: %s still has an unresolved dashboard card pairing to %s; keeping it alongside the newly named card %s rather than dropping a link that may already be half-written on the board, but it will never be linked again - check %s by hand.\n' \
         "$key" "${pending#*$'\t'}" "$card" "${pending#*$'\t'}" >&2
-      handoff_card_ledger_add superseded "$id" "$pending" \
+      handoff_card_superseded_add "$id" "$pending" \
         || printf 'warning: could not mark %s as superseded for %s; it may be linked by a later sweep\n' \
              "${pending#*$'\t'}" "$key" >&2
     done
   fi
   revived=$(printf '%s\t%s' "$key" "$card")
-  if handoff_card_ledger_has superseded "$id" "$revived"; then
-    handoff_card_ledger_forget superseded "$id" "$revived" || true
-    handoff_card_ledger_forget warnings "$id" "$revived" || true
-  fi
+  handoff_card_superseded_forget "$id" "$revived" || true
   return 0
 }
 
@@ -429,9 +426,11 @@ handoff_card_record_pairs() { # <secondmate-id>
 
 # Rewrite one of this mechanism's line-per-entry state files without exactly
 # the named lines, leaving every other line untouched. Sole owner of the
-# filter, shared by the durable pair record and the once-per-pair warning
-# ledger below so the two can never drift apart on what "this exact entry"
-# means.
+# filter, shared by the durable pair record and the superseded ledger below so
+# the two can never drift apart on what "this exact entry" means. Every write
+# it makes is checked: a rewrite that cannot be completed leaves the original
+# file exactly as it was and says so, rather than reporting a removal that did
+# not happen.
 handoff_card_lines_remove() { # <file> <line>...
   local file=$1 tmp line keep drop
   shift
@@ -451,7 +450,7 @@ handoff_card_lines_remove() { # <file> <line>...
   if [ -s "$tmp" ]; then
     mv -f -- "$tmp" "$file" || { rm -f "$tmp"; return 1; }
   else
-    rm -f -- "$tmp" "$file"
+    rm -f -- "$tmp" "$file" || return 1
   fi
   return 0
 }
@@ -469,69 +468,78 @@ handoff_card_record_remove_pairs() { # <secondmate-id> <pair>...
   handoff_card_lines_remove "$record" "$@"
 }
 
-# Two side ledgers, each a plain "<key>\t<card>" line per pair, kept beside
-# the durable record because neither is part of the pairing itself:
+# Pairs this run has already reported on. A plain in-memory set, scoped to
+# this one process and persisted nowhere.
 #
-#   warnings   - pairs already reported as unlinkable. A pair the board
-#                answers about but cannot link (it says the card id does not
-#                exist) is kept and retried like any other failure, because a
-#                404 only proves some host answered, never that the host
-#                answering was the board: a stale config/dashboard-url
-#                pointing at a machine that still serves HTTP 404s every card
-#                alike, and honouring that as a verdict would silently
-#                discard every pending link at once. What is bounded instead
-#                is the NOISE - each pair is warned about (and recorded to
-#                the fleet log) exactly once rather than on every arrival.
-#                The superseded report below bounds its own noise through
-#                this same ledger, so one entry can stand for either reason.
-#   superseded - pairs a later --card naming the same item has replaced. They
-#                stay in the record because they may already carry a
-#                half-written link somebody has to unpick, but they must
-#                never be written to again: linking one would mark a card the
-#                operator has already disowned as served. Naming that same
-#                card again clears the mark, so the decision is reversible
-#                from the CLI alone.
+# Two conditions report through it - a pair the board says names no such card,
+# and a pair a later --card has superseded - and both are facts about a
+# REPORT, not about the pairing, so they were never worth durable state. A
+# ledger on disk has to be written, cleared, and kept honest against the
+# record it describes, and every one of those edges was a place for the two to
+# disagree; nothing it bought was worth more than the warning it suppressed.
 #
-# Reviving a pair the operator had already disowned clears it from BOTH
-# ledgers, because its only report so far was ABOUT the supersession that no
-# longer holds; leaving that entry behind would let a mark written for the
-# card's disowned past silently swallow the one report a genuine failure on it
-# is owed. An ordinary idempotent re-record - the same --card named twice for
-# the same item, which is an expected way to run this command - clears
-# neither: nothing about that pair changed, so a "no such card" already
-# reported for it is still true and must not be reported a second time.
+# What this still buys is the repeat that happens inside a single command:
+# --resume-pending deliberately sweeps a delivered outbox's record twice (see
+# resume_pending_card_records), so without it one invocation lands the same
+# warning and the same audit-log --fleet finding twice.
 #
-# Both are advisory: losing the warnings ledger costs a duplicate warning,
-# and losing the superseded ledger costs a disowned card being linked once,
-# which the operator's own re-naming warning already flagged. Entries are
-# dropped as soon as their pair is retired.
-handoff_card_ledger_file() { # <ledger> <secondmate-id>
-  local ledger=$1 id=$2
-  case "$id" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
-  printf '%s\n' "$STATE/handoff-card-$ledger/$id"
+# The deliberate tradeoff: a LATER, separate invocation reports the same pair
+# again rather than staying silent forever. That is bounded by how often an
+# arrival actually happens, and a repeated warning about a link that really is
+# still pending is honest noise - unlike a durable mark that can outlive, or
+# contradict, the record it was written about.
+declare -A CARD_PAIR_REPORTED=()
+card_pair_report_once() { # <secondmate-id> <pair>
+  local mark=$1$'\t'$2
+  [ -z "${CARD_PAIR_REPORTED[$mark]:-}" ] || return 1
+  CARD_PAIR_REPORTED[$mark]=1
+  return 0
 }
 
-handoff_card_ledger_has() { # <ledger> <secondmate-id> <pair>
-  local ledger=$1 id=$2 pair=$3 file
-  file=$(handoff_card_ledger_file "$ledger" "$id") || return 1
+# The one durable side ledger, a plain "<key>\t<card>" line per pair: pairs a
+# later --card naming the same item has replaced. This is not noise
+# suppression and cannot be held in memory - it is the standing decision that
+# a card the operator has disowned must never be written to again, on this
+# arrival or any later one. They stay in the record because they may already
+# carry a half-written link somebody has to unpick; linking one anyway would
+# mark a disowned card as served under an agent that is not serving it, which
+# is the board drift this whole mechanism exists to remove.
+#
+# It holds exactly one kind of entry for exactly one reason, so nothing can
+# write a mark here that another reader will take to mean something else. An
+# entry is dropped when the operator names that same card again for that item
+# - so the decision is reversible from the CLI alone, and a --card typo in the
+# correction costs nothing - or when its pair is retired outright.
+#
+# Advisory: losing it costs a disowned card being linked once, which the
+# operator's own re-naming warning already flagged on stderr.
+handoff_card_superseded_file() { # <secondmate-id>
+  local id=$1
+  case "$id" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  printf '%s\n' "$STATE/handoff-card-superseded/$id"
+}
+
+handoff_card_superseded_has() { # <secondmate-id> <pair>
+  local id=$1 pair=$2 file
+  file=$(handoff_card_superseded_file "$id") || return 1
   [ -f "$file" ] && [ ! -L "$file" ] || return 1
   grep -Fqx -- "$pair" "$file" 2>/dev/null
 }
 
-handoff_card_ledger_add() { # <ledger> <secondmate-id> <pair>
-  local ledger=$1 id=$2 pair=$3 file
-  if handoff_card_ledger_has "$ledger" "$id" "$pair"; then return 0; fi
-  file=$(handoff_card_ledger_file "$ledger" "$id") || return 1
+handoff_card_superseded_add() { # <secondmate-id> <pair>
+  local id=$1 pair=$2 file
+  if handoff_card_superseded_has "$id" "$pair"; then return 0; fi
+  file=$(handoff_card_superseded_file "$id") || return 1
   mkdir -p "$(dirname "$file")" || return 1
   ( umask 077; printf '%s\n' "$pair" >> "$file" ) || return 1
   return 0
 }
 
-handoff_card_ledger_forget() { # <ledger> <secondmate-id> <pair>...
-  local ledger=$1 id=$2 file
-  shift 2
+handoff_card_superseded_forget() { # <secondmate-id> <pair>...
+  local id=$1 file
+  shift
   [ "$#" -gt 0 ] || return 0
-  file=$(handoff_card_ledger_file "$ledger" "$id") || return 1
+  file=$(handoff_card_superseded_file "$id") || return 1
   handoff_card_lines_remove "$file" "$@"
 }
 
@@ -695,11 +703,9 @@ link_delivered_card_pairs() { # <secondmate-id> <unguarded-card|''> <pair>...
     # at) but it is never written to again: linking it too would mark a card
     # the operator has already disowned as served, which is the board drift
     # this mechanism exists to remove.
-    if handoff_card_ledger_has superseded "$sm_id" "$pair"; then
-      if ! handoff_card_ledger_has warnings "$sm_id" "$pair"; then
-        echo "warning: card $card for $key was superseded by a later --card naming the same item, so it is never linked; it stays recorded because it may already carry a half-written link that has to be checked by hand, and this is the only time it will be reported" >&2
-        handoff_card_ledger_add warnings "$sm_id" "$pair" \
-          || echo "warning: could not record that the superseded card $card was already reported for $key; it may be reported again on the next arrival" >&2
+    if handoff_card_superseded_has "$sm_id" "$pair"; then
+      if card_pair_report_once "$sm_id" "$pair"; then
+        echo "warning: card $card for $key was superseded by a later --card naming the same item, so it is never linked; it stays recorded because it may already carry a half-written link that has to be checked by hand" >&2
       fi
       continue
     fi
@@ -711,11 +717,9 @@ link_delivered_card_pairs() { # <secondmate-id> <unguarded-card|''> <pair>...
     # the noise is bounded: report each such pair once, not on every arrival,
     # so an unresolvable id cannot bury the fleet log it is recorded in.
     if [ "$probe" -eq 2 ]; then
-      if ! handoff_card_ledger_has warnings "$sm_id" "$pair"; then
-        echo "warning: the dashboard host has no card $card, so the pending link for $key cannot be completed; it stays recorded and will be retried on the next arrival, but this is the only time it will be reported" >&2
+      if card_pair_report_once "$sm_id" "$pair"; then
+        echo "warning: the dashboard host has no card $card, so the pending link for $key cannot be completed; it stays recorded and will be retried on the next arrival" >&2
         "$SCRIPT_DIR/fm-dashboard.sh" audit-log --fleet "handoff item $key to secondmate $sm_id names dashboard card $card, which the dashboard host says it does not have; the link is still pending and will be retried, but check whether the card id is wrong or the board url is stale" --kind error >/dev/null 2>&1 || true
-        handoff_card_ledger_add warnings "$sm_id" "$pair" \
-          || echo "warning: could not record that card $card was already reported for $key; it may be reported again on the next arrival" >&2
       fi
       continue
     fi
@@ -785,8 +789,7 @@ consume_handoff_card_record() { # <secondmate-id> <unguarded-card|''> [<undelive
   if [ "${#RETIRABLE_CARD_PAIRS[@]}" -gt 0 ]; then
     handoff_card_record_remove_pairs "$id" "${RETIRABLE_CARD_PAIRS[@]}" \
       || echo "warning: could not retire ${#RETIRABLE_CARD_PAIRS[@]} confirmed card pairing(s) for $id; the next arrival will re-check them against the board" >&2
-    handoff_card_ledger_forget warnings "$id" "${RETIRABLE_CARD_PAIRS[@]}" || true
-    handoff_card_ledger_forget superseded "$id" "${RETIRABLE_CARD_PAIRS[@]}" || true
+    handoff_card_superseded_forget "$id" "${RETIRABLE_CARD_PAIRS[@]}" || true
   fi
   return 0
 }
@@ -1095,11 +1098,12 @@ resume_pending_card_record() { # <secondmate-id>
 # Known and accepted: a record the outbox pass above already swept - a
 # delivery that completed while the board would not answer - is read a second
 # time here in the same command. The pairs it re-reads are exactly the ones
-# still owed a link, so the retry is correct, merely redundant: against a board
-# that is down it costs one repeated warning per pair and one more bounded
-# attempt. Cheaper than tracking swept ids across two passes that must stay
-# independently correct, since either pass alone has to be able to complete a
-# link the other never reaches.
+# still owed a link, so the retry is correct, merely redundant: it costs one
+# more bounded attempt per pair. Cheaper than tracking swept ids across two
+# passes that must stay independently correct, since either pass alone has to
+# be able to complete a link the other never reaches. This double sweep is
+# what CARD_PAIR_REPORTED exists for: the report a pair is owed is owed once
+# per command, not once per pass.
 resume_pending_card_records() {
   local record id failed=0
   [ -d "$STATE/handoff-cards" ] || return 0

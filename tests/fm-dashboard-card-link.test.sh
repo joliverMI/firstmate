@@ -718,13 +718,12 @@ EOF
 
 # A host that answers "no such card" has NOT proved it is the board - a stale
 # dashboard url pointing at a machine that still serves HTTP 404s every card
-# alike - so the pending record survives it exactly like an unreachable board,
-# and only the noise is bounded: reported once, not on every arrival, because
-# an unbounded stream of identical findings trains the auditor's reader to
-# ignore the log. "Every arrival" includes re-running the identical handoff
-# command, which this mechanism documents as an expected way to use it: nothing
-# about the pair changed, so the report it already has is still true.
-test_handoff_keeps_but_reports_once_a_pair_the_host_says_names_no_such_card() {
+# alike - so the pending record survives it exactly like an unreachable board.
+# The report is bounded per command, not forever: an arrival that finds the
+# link still owed says so again, deliberately. Suppressing that across runs
+# once meant a durable ledger that had to stay honest against the record it
+# described, and a stale mark there silenced reports that were still true.
+test_handoff_keeps_and_retries_a_pair_the_host_says_names_no_such_card() {
   local home sub id card out record findings
   home="$TMP_ROOT/handoff-nocard-id-main"
   sub="$TMP_ROOT/handoff-nocard-id-sub"
@@ -734,7 +733,6 @@ test_handoff_keeps_but_reports_once_a_pair_the_host_says_names_no_such_card() {
 ## Queued
 - [ ] handoff-item-d1 - names a card that does not exist (repo: alpha)
 - [ ] handoff-item-d2 - a later unrelated handoff (repo: alpha)
-- [ ] handoff-item-d3 - a third unrelated handoff (repo: alpha)
 
 ## Done
 EOF
@@ -748,31 +746,23 @@ EOF
   assert_grep 'handoff-item-d1' "$sub/data/backlog.md" "the item did not land"
   assert_grep "$(printf 'handoff-item-d1\t%s' "$card")" "$record" \
     "a card the host merely says it does not have must stay recorded, like any other failed link"
+  [ "$(grep -c "has no card $card" <<<"$out")" -eq 1 ] \
+    || fail "one handoff reported the same unlinkable pair more than once"
 
   findings=$("$DASH" audit-status --json | jq --arg c "$card" '[.log[] | select(.text | contains($c))] | length')
   [ "$findings" = 1 ] \
     || fail "expected exactly one fleet audit-log finding for the unlinkable card, got $findings"
 
-  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-d1 --card "$card" 2>&1)
-  expect_code 0 "$?" "re-running the identical handoff command should still succeed" "$out"
-  assert_not_contains "$out" "has no card $card" \
-    "an idempotent re-run of the same --card re-reported a pair whose report is still accurate"
-  findings=$("$DASH" audit-status --json | jq --arg c "$card" '[.log[] | select(.text | contains($c))] | length')
-  [ "$findings" = 1 ] \
-    || fail "an idempotent re-run appended another identical audit-log finding ($findings total)"
-
   out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-d2 2>&1)
   expect_code 0 "$?" "the next ordinary handoff should succeed" "$out"
-  assert_not_contains "$out" "$card" "an already-reported unlinkable link re-warned on the next handoff"
-  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-d3 2>&1)
-  expect_code 0 "$?" "a third handoff should succeed" "$out"
-  assert_not_contains "$out" "$card" "an already-reported unlinkable link re-warned again"
+  assert_contains "$out" "has no card $card" \
+    "a later arrival stayed silent about a link that is still genuinely owed"
   findings=$("$DASH" audit-status --json | jq --arg c "$card" '[.log[] | select(.text | contains($c))] | length')
-  [ "$findings" = 1 ] \
-    || fail "the unlinkable link appended another audit-log finding on a later handoff ($findings total)"
+  [ "$findings" = 2 ] \
+    || fail "a second arrival should report the still-pending pair once more, got $findings findings total"
   assert_grep "$(printf 'handoff-item-d1\t%s' "$card")" "$record" \
     "the pending pair was dropped by a later arrival instead of staying retriable"
-  pass "an unlinkable card id stays recorded and retriable, but is reported exactly once"
+  pass "an unlinkable card id stays recorded and retriable, reported once per command that sweeps it"
 }
 
 # Regression: the status advance used to re-read the card through a second
@@ -874,71 +864,11 @@ EOF
     || fail "a card the operator already disowned had an agent written to it"
   [ "$(card_status "$first")" = not_started ] \
     || fail "a card the operator already disowned was advanced as if it were being served"
-  assert_not_contains "$out" "was superseded by a later --card" \
-    "the superseded card was re-reported on a later arrival instead of once"
+  assert_contains "$out" "was superseded by a later --card" \
+    "the disowned pair stopped being reported while it is still sitting in the record"
   assert_grep "$(printf 'handoff-item-f1\t%s' "$first")" "$record" \
     "the superseded pair should stay recorded as the reminder to check that card by hand"
-  pass "only the newest card recorded for an item is linked; the superseded one is reported once and never written"
-}
-
-# Regression: the once-per-pair report ledger is shared by two conditions -
-# "superseded by a later --card" and "the host has no such card" - so a pair
-# reported for the first reason and then revived by naming it again carried a
-# mark that was no longer true. The revived pair's own first genuine failure
-# was then swallowed as an already-reported one: no warning, no fleet finding,
-# and a link left pending in complete silence, which is the exact failure the
-# record exists to make impossible. Reviving a pair has to clear its reporting
-# history, not just its superseded mark.
-test_reviving_a_superseded_card_restores_its_owed_failure_report() {
-  local home sub id missing second out record findings
-  home="$TMP_ROOT/handoff-revive-main"
-  sub="$TMP_ROOT/handoff-revive-sub"
-  id=handoff-revive-sm
-  setup_handoff_homes "$home" "$sub" "$id"
-  cat > "$home/data/backlog.md" <<'EOF'
-## Queued
-- [ ] handoff-item-g1 - named a card the board does not have (repo: alpha)
-- [ ] handoff-item-g2 - a later handoff that sweeps with the board up (repo: alpha)
-- [ ] handoff-item-g3 - a third handoff that sweeps again (repo: alpha)
-
-## Done
-EOF
-  missing=does-not-exist-revive-zzzz
-  second=$(add_card "Revived card coverage")
-  [ -n "$second" ] || fail "add_card returned no id"
-  record="$home/state/handoff-cards/$id"
-
-  out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-g1 --card "$missing" 2>&1)
-  expect_code 0 "$?" "handoff must not fail just because the dashboard is unreachable" "$out"
-
-  out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-g1 --card "$second" 2>&1)
-  expect_code 0 "$?" "re-naming the card should still succeed" "$out"
-  assert_contains "$out" "was superseded by a later --card" \
-    "setup: the first card was never reported as superseded, so nothing marked it as reported"
-
-  out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-g1 --card "$missing" 2>&1)
-  expect_code 0 "$?" "naming the earlier card again should still succeed" "$out"
-  assert_grep "$(printf 'handoff-item-g1\t%s' "$missing")" "$record" \
-    "the revived card was not recorded"
-
-  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-g2 2>&1)
-  expect_code 0 "$?" "the next ordinary handoff should succeed" "$out"
-  assert_contains "$out" "has no card $missing" \
-    "a revived card's first unlinkable answer was swallowed by a report belonging to its superseded past"
-  findings=$("$DASH" audit-status --json | jq --arg c "$missing" '[.log[] | select(.text | contains($c))] | length')
-  [ "$findings" = 1 ] \
-    || fail "expected exactly one fleet audit-log finding for the revived unlinkable card, got $findings"
-  assert_grep "$(printf 'handoff-item-g1\t%s' "$missing")" "$record" \
-    "the revived pair was retired instead of staying retriable"
-
-  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-g3 2>&1)
-  expect_code 0 "$?" "a third handoff should succeed" "$out"
-  assert_not_contains "$out" "has no card $missing" \
-    "the revived card was re-reported on every later arrival instead of once"
-  findings=$("$DASH" audit-status --json | jq --arg c "$missing" '[.log[] | select(.text | contains($c))] | length')
-  [ "$findings" = 1 ] \
-    || fail "the revived unlinkable link appended another audit-log finding ($findings total)"
-  pass "reviving a superseded card clears its stale report mark, so its own failure is still reported exactly once"
+  pass "only the newest card recorded for an item is linked; the superseded one is reported but never written"
 }
 
 # Regression: the ownership guard was gated on a successful card read, so a
@@ -1457,6 +1387,34 @@ test_resume_pending_links_a_landed_pair_while_a_later_delivery_is_still_stuck() 
   pass "--resume-pending links a pair whose delivery landed even while a later delivery to the same secondmate is stuck"
 }
 
+# The one repeat a single command really can produce. --resume-pending sweeps a
+# delivered outbox's record in its outbox pass and then reads that same record
+# again in its card-record pass - both deliberate, since either pass alone has
+# to be able to finish a link the other never reaches. A pair the host says it
+# does not have is owed its report once per command, not once per pass: two
+# identical fleet findings out of one invocation is exactly the log-burying the
+# bound exists to prevent, and it is the only repeat left now that the report
+# is remembered in memory for the life of the process rather than on disk.
+test_resume_pending_reports_an_unlinkable_pair_once_per_command_not_once_per_sweep() {
+  local card out findings record
+  card=does-not-exist-resume-zzzz
+  record="$REMOTE_PARENT/state/handoff-cards/$REMOTE_SM"
+  stage_unreachable_card_item remote-item-r9 "$card"
+
+  out=$(run_remote_handoff --resume-pending)
+  expect_code 0 "$?" "resuming the pending outbox should succeed" "$out"
+  assert_grep 'remote-item-r9' "$REMOTE_SM_HOME/data/backlog.md" "resume did not deliver the item"
+  assert_contains "$out" "has no card $card" "the resume never reported the unlinkable pair at all"
+  [ "$(grep -c "has no card $card" <<<"$out")" -eq 1 ] \
+    || fail "one command reported the same unlinkable pair on each of its two sweeps"
+  findings=$("$DASH" audit-status --json | jq --arg c "$card" '[.log[] | select(.text | contains($c))] | length')
+  [ "$findings" = 1 ] \
+    || fail "one --resume-pending command left $findings fleet findings for one unlinkable pair"
+  assert_grep "$(printf 'remote-item-r9\t%s' "$card")" "$record" \
+    "the unlinkable pair was dropped instead of staying recorded and retriable"
+  pass "one command reports an unlinkable pair once, even though --resume-pending sweeps its record twice"
+}
+
 # The same boundary reached with no --card at all: the run stages nothing on
 # the board of its own, it only completes a link an earlier --card call staged
 # and would otherwise destroy by deleting the delivered outbox.
@@ -1497,11 +1455,10 @@ if command -v tasks-axi >/dev/null 2>&1; then
   test_handoff_card_record_survives_a_failed_link_and_completes_on_the_next_handoff
   test_resume_pending_completes_a_stranded_local_card_link
   test_handoff_finishes_its_own_half_written_card_link
-  test_handoff_keeps_but_reports_once_a_pair_the_host_says_names_no_such_card
+  test_handoff_keeps_and_retries_a_pair_the_host_says_names_no_such_card
   test_handoff_never_confirms_a_link_whose_card_state_it_could_not_read
   test_handoff_never_writes_a_guarded_card_it_could_not_read
   test_handoff_supersedes_rather_than_also_linking_a_corrected_card
-  test_reviving_a_superseded_card_restores_its_owed_failure_report
   test_handoff_record_bookkeeping_failure_never_fails_the_handoff
   test_handoff_refuses_card_with_more_than_one_item
   test_handoff_refuses_a_card_id_that_would_corrupt_the_pending_record
@@ -1519,6 +1476,7 @@ if command -v tasks-axi >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
   test_remote_handoff_links_every_card_its_delivery_lands
   test_card_less_remote_handoff_completes_a_link_its_delivery_lands
   test_resume_pending_links_a_landed_pair_while_a_later_delivery_is_still_stuck
+  test_resume_pending_reports_an_unlinkable_pair_once_per_command_not_once_per_sweep
 else
   pass "skipped remote-route card coverage - tasks-axi or node not available for the remote fixture"
 fi
