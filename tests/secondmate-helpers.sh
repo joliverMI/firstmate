@@ -36,6 +36,17 @@ case "${1:-}" in
     fi
     exit 0
     ;;
+  list-panes)
+    # fm_backend_tmux_exact_target (bin/fm-backend.sh) resolves every send
+    # target through list-panes now, so a fake that answers has-session,
+    # new-window and send-keys but not list-panes would refuse every send.
+    # This fake models a tmux world in which the addressed window is live -
+    # the same world its unconditional has-session/new-window/send-keys
+    # already model - so it answers a pane for any target. Which window a
+    # send CHOOSES is asserted from FM_FAKE_TMUX_LOG, not from here.
+    printf '1: [1x1] [history 0/0, 0 bytes] %%1\n'
+    exit 0
+    ;;
   display-message)
     case "$*" in
       *'#{cursor_y}'*) printf '0\n' ;;
