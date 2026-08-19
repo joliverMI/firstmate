@@ -5,11 +5,12 @@
 # First, always warn if the firstmate primary checkout (FM_ROOT) is on a named
 # non-default branch, because that means firstmate-on-itself work landed in the
 # primary instead of an isolated worktree.
-# Then, if a task is in flight (a state/<id>.meta exists) or X-mode relay
-# polling is active (state/x-watch.check.sh exists) and supervision is not
-# healthy, prints a loud, clearly delimited banner so the agent cannot skim past
-# it in the tool output of whatever it was doing - the one channel every harness
-# has. Supervision health is MODEL-AWARE (fm_watcher_supervision_verdict in
+# Then, if the home still needs supervision (fm_supervision_status in
+# bin/fm-supervision-lib.sh, whose input list docs/turnend-guard.md's "Guard
+# predicates" section owns) and supervision is not healthy, prints a loud,
+# clearly delimited banner so the agent cannot skim past it in the tool output
+# of whatever it was doing - the one channel every harness has.
+# Supervision health is MODEL-AWARE (fm_watcher_supervision_verdict in
 # bin/fm-wake-lib.sh): under the Claude Stop auto-arm model the watcher runs only
 # between turns, so mid-turn a fresh beacon with no live watcher is healthy and
 # only a stale beacon (beyond FM_GUARD_GRACE) is a genuine lapse; under the Pi
@@ -150,10 +151,12 @@ fi
 
 # Compute supervision need and watcher-beacon freshness via the shared
 # grace-based predicate (bin/fm-supervision-lib.sh). Act when work, an event
-# source, or an X-mode relay poll needs supervision.
+# source, a registered custom check, or an X-mode relay poll needs
+# supervision.
 fm_supervision_status "$STATE" "$GRACE"
 in_flight=$FM_SUP_IN_FLIGHT
 sources=$FM_SUP_SOURCES
+checks=$FM_SUP_CHECKS
 needed=$FM_SUP_NEEDED
 beacon_desc=$FM_SUP_BEACON_DESC
 fm_watcher_supervision_verdict "$STATE" "$WATCH" "$GRACE" "$FM_HOME" "$FM_ROOT"
@@ -161,17 +164,17 @@ watcher_healthy=$FM_WATCHER_VERDICT_OK
 watcher_down_reason=$FM_WATCHER_VERDICT_REASON
 if [ "$needed" = false ]; then
   # Leave the unhealthy state (nothing riding on the watcher): clear so a later
-  # work or X-mode need + stale combination is a fresh episode even if the
-  # beacon is still absent with the same key string.
+  # supervision need + stale combination is a fresh episode even if the beacon
+  # is still absent with the same key string.
   [ "$READ_ONLY" -eq 1 ] || fm_guard_clear_stale_banner
   exit 0
 fi
 
 [ -s "$FM_WAKE_QUEUE" ] && queue_pending=true
 
-# No fresh watcher with tasks in flight is the dangerous state: emit a prominent,
-# bordered banner FIRST so it reads as an alarm, not a buried stderr line. Later
-# calls in the same episode get a one-line reminder only.
+# No fresh watcher while this home needs supervision is the dangerous state:
+# emit a prominent, bordered banner FIRST so it reads as an alarm, not a buried
+# stderr line. Later calls in the same episode get a one-line reminder only.
 if [ "$watcher_healthy" = false ]; then
   episode_key=$(fm_guard_stale_episode_key "$watcher_down_reason")
   episode_key=${episode_key%$'\n'}
@@ -207,6 +210,8 @@ if [ "$watcher_healthy" = false ]; then
         printf '●  %s task(s) in flight, but %s.\n' "$in_flight" "$watcher_cause"
       elif [ "$sources" -gt 0 ]; then
         printf '●  %s process-event source(s) registered, but %s.\n' "$sources" "$watcher_cause"
+      elif [ "$checks" -gt 0 ]; then
+        printf '●  %s custom check(s) registered, but %s.\n' "$checks" "$watcher_cause"
       else
         printf '●  X-mode relay polling needs supervision, but %s.\n' "$watcher_cause"
       fi

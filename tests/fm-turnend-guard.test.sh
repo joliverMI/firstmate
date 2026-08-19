@@ -98,6 +98,24 @@ test_predicate_source_needs_supervision() {
   pass "fm_supervision_unhealthy: source-only home needs supervision"
 }
 
+test_predicate_registered_check_needs_supervision() {
+  local home="$TMP_ROOT/pred-check" state="$TMP_ROOT/pred-check/state"
+  mkdir -p "$state"
+  cat > "$state/audit.check.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod 0700 "$state/audit.check.sh"
+  FM_HOME="$home" "$ROOT/bin/fm-check-register.sh" audit >/dev/null \
+    || fail "could not register the custom check under test"
+  fm_supervision_needed "$state" 300 \
+    || fail "a home with only a trust-registered check and no task record did not report supervision as needed"
+  [ "$FM_SUP_IN_FLIGHT" -eq 0 ] || fail "a registered check must not count as an in-flight task"
+  [ "$FM_SUP_CHECKS" -eq 1 ] || fail "expected one trust-registered check, got $FM_SUP_CHECKS"
+  fm_supervision_unhealthy "$state" 300 || fail "check-only home with no beacon must be unhealthy"
+  pass "fm_supervision_needed: a trust-registered check with no task record needs supervision"
+}
+
 # --- HOOK: bin/fm-turnend-guard.sh ------------------------------------------
 #
 # Each scenario gets its own directory carrying a copy of the two guard scripts
@@ -248,6 +266,23 @@ test_hook_blocks_source_only_home() {
   expect_code 2 "$status" "non-Claude hook must block when a source-only home has no watcher"
   assert_contains "$out" "1 process-event source(s) registered" "block reason must identify the source-only supervision need"
   pass "fm-turnend-guard: non-Claude path blocks a source-only home"
+}
+
+# Regression for the fleet-auditor outage: a home whose only duty is a
+# trust-registered custom check has no state/*.meta record, so the guard used to
+# let the turn end blind. It must block and name the check as the need.
+test_hook_blocks_registered_check_only_home() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-check-only")
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$dir/state/audit.check.sh"
+  chmod 0700 "$dir/state/audit.check.sh"
+  FM_HOME="$dir" "$ROOT/bin/fm-check-register.sh" audit >/dev/null \
+    || fail "could not register the custom check under test"
+  out=$(run_hook "$dir" false); status=$?
+  expect_code 2 "$status" "hook must block when a check-only home has no watcher"
+  assert_contains "$out" "1 custom check(s) registered" "block reason must identify the registered-check supervision need"
+  assert_contains "$out" "$REQUIRED_REASON" "block reason must contain the exact required instruction"
+  pass "fm-turnend-guard: non-Claude path blocks a registered-check-only home"
 }
 
 test_hook_blocks_when_dead_lock_has_fresh_beacon() {
@@ -1608,9 +1643,11 @@ test_predicate_healthy_fresh_beacon
 test_predicate_queue_pending_flag
 test_predicate_x_mode_needs_supervision
 test_predicate_source_needs_supervision
+test_predicate_registered_check_needs_supervision
 test_hook_silent_when_no_work_in_flight
 test_hook_blocks_when_fresh_beacon_has_no_live_lock
 test_hook_blocks_source_only_home
+test_hook_blocks_registered_check_only_home
 test_hook_blocks_when_dead_lock_has_fresh_beacon
 test_hook_silent_with_live_lock_and_fresh_beacon
 test_hook_non_claude_health_ignores_claude_budget_contention
