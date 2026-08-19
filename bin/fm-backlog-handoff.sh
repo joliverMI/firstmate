@@ -378,6 +378,7 @@ handoff_card_record() { # <secondmate-id>
 # last card a --card actually named is always the one that gets linked.
 handoff_card_record_put() { # <secondmate-id> <item-key> <card-id>
   local id=$1 key=$2 card=$3 record tmp pending revived
+  local -a displaced=()
   record=$(handoff_card_record "$id") || return 1
   mkdir -p "$(dirname "$record")" || return 1
   tmp=$(umask 077; mktemp "$(dirname "$record")/.card.XXXXXX") || return 1
@@ -387,18 +388,25 @@ handoff_card_record_put() { # <secondmate-id> <item-key> <card-id>
     while IFS= read -r pending; do
       [ -n "$pending" ] || continue
       [ "${pending%%$'\t'*}" = "$key" ] || continue
+      displaced+=("$pending")
+    done < "$tmp"
+  fi
+  printf '%s\t%s\n' "$key" "$card" >> "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f -- "$tmp" "$record" || { rm -f "$tmp"; return 1; }
+  if [ "${#displaced[@]}" -gt 0 ]; then
+    for pending in "${displaced[@]}"; do
       printf 'warning: %s still has an unresolved dashboard card pairing to %s; keeping it alongside the newly named card %s rather than dropping a link that may already be half-written on the board, but it will never be linked again - check %s by hand.\n' \
         "$key" "${pending#*$'\t'}" "$card" "${pending#*$'\t'}" >&2
       handoff_card_ledger_add superseded "$id" "$pending" \
         || printf 'warning: could not mark %s as superseded for %s; it may be linked by a later sweep\n' \
              "${pending#*$'\t'}" "$key" >&2
-    done < "$tmp"
+    done
   fi
-  printf '%s\t%s\n' "$key" "$card" >> "$tmp" || { rm -f "$tmp"; return 1; }
-  mv -f -- "$tmp" "$record" || { rm -f "$tmp"; return 1; }
   revived=$(printf '%s\t%s' "$key" "$card")
-  handoff_card_ledger_forget superseded "$id" "$revived" || true
-  handoff_card_ledger_forget warnings "$id" "$revived" || true
+  if handoff_card_ledger_has superseded "$id" "$revived"; then
+    handoff_card_ledger_forget superseded "$id" "$revived" || true
+    handoff_card_ledger_forget warnings "$id" "$revived" || true
+  fi
   return 0
 }
 
@@ -474,10 +482,14 @@ handoff_card_record_remove_pairs() { # <secondmate-id> <pair>...
 #                card again clears the mark, so the decision is reversible
 #                from the CLI alone.
 #
-# Naming a pair again clears it from BOTH ledgers, not just superseded: a
-# revived pair has no reporting history left that is still true, and leaving
-# its warnings entry behind would let a mark written for the card's superseded
-# past silently swallow the one report a genuine failure on it is owed.
+# Reviving a pair the operator had already disowned clears it from BOTH
+# ledgers, because its only report so far was ABOUT the supersession that no
+# longer holds; leaving that entry behind would let a mark written for the
+# card's disowned past silently swallow the one report a genuine failure on it
+# is owed. An ordinary idempotent re-record - the same --card named twice for
+# the same item, which is an expected way to run this command - clears
+# neither: nothing about that pair changed, so a "no such card" already
+# reported for it is still true and must not be reported a second time.
 #
 # Both are advisory: losing the warnings ledger costs a duplicate warning,
 # and losing the superseded ledger costs a disowned card being linked once,

@@ -321,6 +321,48 @@ EOF
   pass "spawn --card with an unknown card id warns and leaves a fleet-visible finding, not a silent drop"
 }
 
+# Regression, the spawn-side twin of the handoff bug below: the status read
+# confirmed a link whose card state it never actually read. The show|jq
+# pipeline's exit status is jq's, not the board's, so a failed GET left
+# current_status empty, the not_started test was merely false, and control fell
+# through to the branch that prints the link as confirmed - no advance, no
+# warning, and no fleet finding, on a card still frozen at not_started with
+# nothing left to say so. Driven by the same real proxy: every write reaches
+# the real board, every card read fails.
+test_spawn_never_confirms_a_link_whose_card_state_it_could_not_read() {
+  local rec home proj wt fakebin id card out home_name status_json
+  id=spawn-blindstatus-a5
+  rec=$(make_spawn_case spawn-blindstatus "$id")
+  IFS='|' read -r home proj wt fakebin <<EOF
+$rec
+EOF
+  card=$(add_card "Spawn blind status coverage")
+  [ -n "$card" ] || fail "add_card returned no id"
+
+  start_card_read_failing_proxy spawnblindstatus
+  out=$(FM_DASHBOARD_URL="http://127.0.0.1:$CARD_READ_FAIL_PORT" \
+    run_spawn "$home" "$proj" "$fakebin" "$id" --card "$card")
+  expect_code 0 "$?" "spawn must not fail because the card could not be read" "$out"
+  stop_card_read_failing_proxy
+
+  assert_contains "$out" "spawned $id" "the spawn itself did not succeed"
+  assert_not_contains "$out" "dashboard: linked card" \
+    "the link reported success while the card's own state was never readable"
+  assert_contains "$out" "warning: dashboard card link failed" \
+    "an unreadable card state was not reported as a failed link"
+
+  home_name=$(basename "$home")
+  [ "$(card_field "$card" backlog_ref)" = "$home_name:$id" ] \
+    || fail "setup: the ref write should still have reached the real board through the proxy"
+  [ "$(card_status "$card")" = not_started ] \
+    || fail "the card advanced despite its state never being read"
+
+  status_json=$("$DASH" audit-status --json)
+  assert_contains "$status_json" "$card" \
+    "a link left unconfirmed by an unreadable card state left no fleet-visible finding"
+  pass "spawn never reports a link confirmed when the card's own state could not be read"
+}
+
 # --- teardown-side fake project/worktree (adapted from tests/fm-teardown.test.sh) ---
 
 make_teardown_case() {
@@ -679,7 +721,9 @@ EOF
 # alike - so the pending record survives it exactly like an unreachable board,
 # and only the noise is bounded: reported once, not on every arrival, because
 # an unbounded stream of identical findings trains the auditor's reader to
-# ignore the log.
+# ignore the log. "Every arrival" includes re-running the identical handoff
+# command, which this mechanism documents as an expected way to use it: nothing
+# about the pair changed, so the report it already has is still true.
 test_handoff_keeps_but_reports_once_a_pair_the_host_says_names_no_such_card() {
   local home sub id card out record findings
   home="$TMP_ROOT/handoff-nocard-id-main"
@@ -708,6 +752,14 @@ EOF
   findings=$("$DASH" audit-status --json | jq --arg c "$card" '[.log[] | select(.text | contains($c))] | length')
   [ "$findings" = 1 ] \
     || fail "expected exactly one fleet audit-log finding for the unlinkable card, got $findings"
+
+  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-d1 --card "$card" 2>&1)
+  expect_code 0 "$?" "re-running the identical handoff command should still succeed" "$out"
+  assert_not_contains "$out" "has no card $card" \
+    "an idempotent re-run of the same --card re-reported a pair whose report is still accurate"
+  findings=$("$DASH" audit-status --json | jq --arg c "$card" '[.log[] | select(.text | contains($c))] | length')
+  [ "$findings" = 1 ] \
+    || fail "an idempotent re-run appended another identical audit-log finding ($findings total)"
 
   out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-d2 2>&1)
   expect_code 0 "$?" "the next ordinary handoff should succeed" "$out"
@@ -1384,6 +1436,7 @@ test_spawn_links_card_and_advances_not_started_to_working
 test_spawn_without_card_flag_never_touches_the_dashboard
 test_spawn_with_unreachable_dashboard_still_succeeds_and_warns
 test_spawn_with_unknown_card_id_warns_and_records_a_fleet_finding
+test_spawn_never_confirms_a_link_whose_card_state_it_could_not_read
 test_teardown_advances_linked_card_to_testing_on_landed_work
 test_teardown_with_unreachable_dashboard_still_succeeds_and_warns
 test_teardown_without_dashboard_card_meta_is_a_noop
