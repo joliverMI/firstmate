@@ -1,23 +1,28 @@
 #!/usr/bin/env bash
 # tests/fm-dashboard-card-link.test.sh - end-to-end coverage for the mechanical
-# link between a spawned/torn-down task and its Admiral's Fleet Dashboard card
-# (docs/dashboard.md "The mechanical card link"): bin/fm-spawn.sh's --card
-# populates the card's ref/agent identity and advances a not_started card to
-# working; bin/fm-teardown.sh consumes that identity from state/<id>.meta and
-# advances the card to testing once cleanup actually succeeds. Both scripts
-# and a real dashboard server are driven only through their public CLIs.
+# link between a task and its Admiral's Fleet Dashboard card (docs/dashboard.md
+# "The mechanical card link"): bin/fm-spawn.sh's --card populates the card's
+# ref/agent identity and advances a not_started card to working;
+# bin/fm-teardown.sh consumes that identity from state/<id>.meta and advances
+# the card to testing once cleanup actually succeeds; bin/fm-backlog-handoff.sh's
+# --card gives a handed-off backlog item the same link, recorded as a
+# `dashboard_card:` body line on the item itself since a handed-off item has no
+# local task metadata to hold it. All three scripts and a real dashboard server
+# are driven only through their public CLIs.
 set -u
 
-# shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/secondmate-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/secondmate-helpers.sh"
 fm_git_identity fmtest fmtest@example.invalid
 
 command -v python3 >/dev/null 2>&1 || { pass "skipped - python3 not available"; exit 0; }
 command -v jq >/dev/null 2>&1 || { pass "skipped - jq not available"; exit 0; }
 command -v curl >/dev/null 2>&1 || { pass "skipped - curl not available"; exit 0; }
+command -v tasks-axi >/dev/null 2>&1 || { pass "skipped - tasks-axi not available (required by the handoff card-link coverage)"; exit 0; }
 
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
+HANDOFF="$ROOT/bin/fm-backlog-handoff.sh"
 DASH="$ROOT/bin/fm-dashboard.sh"
 TMP_ROOT=$(fm_test_tmproot fm-dashboard-card-link)
 
@@ -323,6 +328,95 @@ test_teardown_with_unreachable_dashboard_still_succeeds_and_warns() {
   pass "teardown --card advance never fails the teardown when the dashboard is unreachable, but warns loudly"
 }
 
+# --- handoff-side coverage (bin/fm-backlog-handoff.sh --card) ---------------
+# A handed-off item has no local task metadata to hold dashboard_card= the
+# way state/<id>.meta does, so the durable link instead lives as a
+# `dashboard_card: <card-id>` body line on the item itself, carried into the
+# secondmate's own backlog by the same move.
+
+setup_handoff_homes() {  # <main-home> <secondmate-home> [<secondmate-id>]
+  local home=$1 sub=$2 id=${3:-design} sub_abs
+  mkdir -p "$home/data" "$home/state"
+  seed_secondmate_home_marker "$sub" "$id"
+  sub_abs=$(cd "$sub" && pwd -P)
+  printf -- '- %s - feature work (home: %s; scope: feature work; projects: alpha; added 2026-07-09)\n' \
+    "$id" "$sub_abs" > "$home/data/secondmates.md"
+}
+
+test_handoff_links_card_and_advances_not_started_to_working() {
+  local home sub id card out
+  home="$TMP_ROOT/handoff-link-main"
+  sub="$TMP_ROOT/handoff-link-sub"
+  id=handoff-link-sm
+  setup_handoff_homes "$home" "$sub" "$id"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] handoff-item-a1 - fix the thing (repo: alpha)
+
+## Done
+EOF
+  card=$(add_card "Handoff-link coverage")
+  [ -n "$card" ] || fail "add_card returned no id"
+
+  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-a1 --card "$card" 2>&1)
+  expect_code 0 "$?" "handoff with --card should succeed"
+  assert_contains "$out" "handed off 1 item(s)" "handoff did not report success"
+  assert_contains "$out" "dashboard: linked card $card" "handoff did not report the dashboard link firing"
+  assert_grep "dashboard_card: $card" "$sub/data/backlog.md" \
+    "secondmate backlog did not record dashboard_card: on the handed-off item"
+
+  [ "$(card_field "$card" backlog_ref)" = "$id:handoff-item-a1" ] \
+    || fail "card ref was not set to $id:handoff-item-a1"
+  [ "$(card_field "$card" agent)" = "$id" ] || fail "card agent was not set to the secondmate id"
+  [ "$(card_status "$card")" = working ] || fail "not_started card did not advance to working at handoff"
+  pass "handoff --card links a not_started card's ref/agent and advances it to working"
+}
+
+test_handoff_without_card_flag_never_touches_the_dashboard() {
+  local home sub id out
+  home="$TMP_ROOT/handoff-nocard-main"
+  sub="$TMP_ROOT/handoff-nocard-sub"
+  id=handoff-nocard-sm
+  setup_handoff_homes "$home" "$sub" "$id"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] handoff-item-a2 - unrelated queued work (repo: alpha)
+
+## Done
+EOF
+
+  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-a2 2>&1)
+  expect_code 0 "$?" "handoff without --card should succeed"
+  assert_contains "$out" "handed off 1 item(s)" "handoff did not report success"
+  assert_not_contains "$out" "dashboard:" "a card-less handoff printed a dashboard line"
+  assert_no_grep "dashboard_card:" "$sub/data/backlog.md" \
+    "secondmate backlog recorded dashboard_card: with no --card given"
+  pass "handoff without --card is a complete dashboard no-op (the normal case)"
+}
+
+test_handoff_with_unreachable_dashboard_still_succeeds_and_warns() {
+  local home sub id card out
+  home="$TMP_ROOT/handoff-unreach-main"
+  sub="$TMP_ROOT/handoff-unreach-sub"
+  id=handoff-unreach-sm
+  setup_handoff_homes "$home" "$sub" "$id"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] handoff-item-a3 - fix the other thing (repo: alpha)
+
+## Done
+EOF
+  card=some-card-id
+
+  out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-a3 --card "$card" 2>&1)
+  expect_code 0 "$?" "handoff must not fail just because the dashboard is unreachable"
+  assert_contains "$out" "handed off 1 item(s)" "handoff did not report success despite the unreachable dashboard"
+  assert_contains "$out" "warning: dashboard card link failed" "handoff did not warn about the failed link"
+  assert_grep "dashboard_card: $card" "$sub/data/backlog.md" \
+    "secondmate backlog should still record the requested card id even when the link call failed"
+  pass "handoff --card never fails the handoff when the dashboard is unreachable, but warns loudly"
+}
+
 test_spawn_links_card_and_advances_not_started_to_working
 test_spawn_without_card_flag_never_touches_the_dashboard
 test_spawn_with_unreachable_dashboard_still_succeeds_and_warns
@@ -332,5 +426,8 @@ test_teardown_with_unreachable_dashboard_still_succeeds_and_warns
 test_teardown_without_dashboard_card_meta_is_a_noop
 test_teardown_force_discard_never_advances_the_card
 test_teardown_never_downgrades_an_already_complete_card
+test_handoff_links_card_and_advances_not_started_to_working
+test_handoff_without_card_flag_never_touches_the_dashboard
+test_handoff_with_unreachable_dashboard_still_succeeds_and_warns
 
 echo "# all fm-dashboard-card-link tests passed"
