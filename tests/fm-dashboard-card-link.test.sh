@@ -719,10 +719,14 @@ EOF
 # A host that answers "no such card" has NOT proved it is the board - a stale
 # dashboard url pointing at a machine that still serves HTTP 404s every card
 # alike - so the pending record survives it exactly like an unreachable board.
-# The report is bounded per command, not forever: an arrival that finds the
-# link still owed says so again, deliberately. Suppressing that across runs
-# once meant a durable ledger that had to stay honest against the record it
-# described, and a stale mark there silenced reports that were still true.
+# The stderr report is bounded per command, not forever: an arrival that finds
+# the link still owed says so again, deliberately. It never reaches the fleet
+# audit log at all - bin/fm-bootstrap.sh's own --resume-pending sweep runs
+# this same branch on every session start with no operator behind it, and a
+# durable, cumulative entry there would cost the Admiral's trust in that log
+# on a cadence nobody controls; surfacing a permanently unlinkable pair to him
+# is the fleet auditor's job, raised once through its own sweep, not this
+# path's on every boot.
 test_handoff_keeps_and_retries_a_pair_the_host_says_names_no_such_card() {
   local home sub id card out record findings
   home="$TMP_ROOT/handoff-nocard-id-main"
@@ -750,19 +754,19 @@ EOF
     || fail "one handoff reported the same unlinkable pair more than once"
 
   findings=$("$DASH" audit-status --json | jq --arg c "$card" '[.log[] | select(.text | contains($c))] | length')
-  [ "$findings" = 1 ] \
-    || fail "expected exactly one fleet audit-log finding for the unlinkable card, got $findings"
+  [ "$findings" = 0 ] \
+    || fail "an unlinkable card must never reach the fleet audit log - bootstrap sweeps it on every boot, got $findings finding(s)"
 
   out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-d2 2>&1)
   expect_code 0 "$?" "the next ordinary handoff should succeed" "$out"
   assert_contains "$out" "has no card $card" \
     "a later arrival stayed silent about a link that is still genuinely owed"
   findings=$("$DASH" audit-status --json | jq --arg c "$card" '[.log[] | select(.text | contains($c))] | length')
-  [ "$findings" = 2 ] \
-    || fail "a second arrival should report the still-pending pair once more, got $findings findings total"
+  [ "$findings" = 0 ] \
+    || fail "a second arrival must still never write to the fleet audit log, got $findings finding(s)"
   assert_grep "$(printf 'handoff-item-d1\t%s' "$card")" "$record" \
     "the pending pair was dropped by a later arrival instead of staying retriable"
-  pass "an unlinkable card id stays recorded and retriable, reported once per command that sweeps it"
+  pass "an unlinkable card id stays recorded and retriable on stderr only, never reaching the fleet audit log"
 }
 
 # Regression: the status advance used to re-read the card through a second
@@ -955,9 +959,9 @@ EOF
   findings=$("$DASH" audit-status --json \
     | jq --arg a "$first" --arg b "$second" \
       '[.log[] | select(.text | contains($a) or contains($b))] | length')
-  [ "$findings" = 2 ] \
-    || fail "one sweep of two distinct unlinkable pairs should leave two fleet findings, got $findings"
-  pass "one command reports every distinct unlinkable pair it sweeps, not just the first"
+  [ "$findings" = 0 ] \
+    || fail "an unlinkable pair must never reach the fleet audit log, even a second distinct one in the same sweep - got $findings finding(s)"
+  pass "one command reports every distinct unlinkable pair it sweeps on stderr, not just the first, and never on the fleet audit log"
 }
 
 # Regression: the ownership guard was gated on a successful card read, so a
@@ -1480,10 +1484,12 @@ test_resume_pending_links_a_landed_pair_while_a_later_delivery_is_still_stuck() 
 # delivered outbox's record in its outbox pass and then reads that same record
 # again in its card-record pass - both deliberate, since either pass alone has
 # to be able to finish a link the other never reaches. A pair the host says it
-# does not have is owed its report once per command, not once per pass: two
-# identical fleet findings out of one invocation is exactly the log-burying the
-# bound exists to prevent, and it is the only repeat left now that the report
-# is remembered in memory for the life of the process rather than on disk.
+# does not have is owed its stderr report once per command, not once per pass:
+# two identical warnings out of one invocation is exactly the noise the bound
+# exists to prevent, and it is the only repeat left now that the report is
+# remembered in memory for the life of the process rather than on disk. It
+# never reaches the fleet audit log at all, on any pass - bootstrap's own
+# unattended sweep on every boot is exactly why.
 test_resume_pending_reports_an_unlinkable_pair_once_per_command_not_once_per_sweep() {
   local card out findings record
   card=does-not-exist-resume-zzzz
@@ -1497,11 +1503,11 @@ test_resume_pending_reports_an_unlinkable_pair_once_per_command_not_once_per_swe
   [ "$(grep -c "has no card $card" <<<"$out")" -eq 1 ] \
     || fail "one command reported the same unlinkable pair on each of its two sweeps"
   findings=$("$DASH" audit-status --json | jq --arg c "$card" '[.log[] | select(.text | contains($c))] | length')
-  [ "$findings" = 1 ] \
-    || fail "one --resume-pending command left $findings fleet findings for one unlinkable pair"
+  [ "$findings" = 0 ] \
+    || fail "an unlinkable pair must never reach the fleet audit log, got $findings finding(s)"
   assert_grep "$(printf 'remote-item-r9\t%s' "$card")" "$record" \
     "the unlinkable pair was dropped instead of staying recorded and retriable"
-  pass "one command reports an unlinkable pair once, even though --resume-pending sweeps its record twice"
+  pass "one command reports an unlinkable pair once on stderr, even though --resume-pending sweeps its record twice, and never on the fleet audit log"
 }
 
 # Regression: the unreadable-card warning was the one report of the three that

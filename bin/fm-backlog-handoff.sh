@@ -167,7 +167,7 @@ else
   if [ "$CARD_SET" -eq 1 ]; then
     case "$CARD_ARG" in
       *[$'\t\n']*)
-        echo "error: --card value must not contain a tab or newline; the pending card record and the superseded ledger hold one tab-delimited <item-key>\\t<card-id> line per pair, and either character would silently corrupt that state" >&2
+        printf 'error: --card value must not contain a tab or newline; the pending card record and the superseded ledger hold one tab-delimited <item-key>\\t<card-id> line per pair, and either character would silently corrupt that state\n' >&2
         exit 1
         ;;
     esac
@@ -487,8 +487,13 @@ handoff_card_record_remove_pairs() { # <secondmate-id> <pair>...
 # A single mark per pair would swallow the second.
 #
 # What this buys is the repeat inside one command: without it, that same
-# double sweep lands each identical warning - and each identical audit-log
-# --fleet finding - twice for a single invocation.
+# double sweep lands each identical stderr warning twice for a single
+# invocation. None of these three reports ever reaches the fleet audit log -
+# bin/fm-bootstrap.sh's own --resume-pending sweep runs unattended on every
+# session start, so a durable, cumulative fleet-log entry for a
+# permanently-unretirable pair would cost the Admiral's trust in that log on
+# a cadence nobody controls; that surfacing belongs to the fleet auditor's
+# own sweep, raised once, not to this path shouting on every boot.
 #
 # The deliberate tradeoff: a LATER, separate invocation reports the same pair
 # again rather than staying silent forever. A repeated warning about a link
@@ -731,11 +736,20 @@ link_delivered_card_pairs() { # <secondmate-id> <unguarded-card|''> <pair>...
     # owed, and a 404 does not prove the answering host was the board. Only
     # the noise is bounded, and only within one command: a pair still owed its
     # link is reported once per command that sweeps it, and again on the next
-    # one, rather than once for all time.
+    # one, rather than once for all time. This case never reaches the fleet
+    # audit log: bin/fm-bootstrap.sh's own --resume-pending sweep runs this
+    # same branch on every session start with no operator driving it, so a
+    # single permanently-unretirable pair would otherwise write a durable,
+    # cumulative entry to the fleet discrepancy log - the Admiral's own trust
+    # surface - on a cadence nobody controls. Stderr costs whoever ran the
+    # command a second of attention; the fleet log costs the Admiral's trust
+    # in the one surface meant to tell him what is wrong. A permanently
+    # unlinkable pair is a real thing worth surfacing eventually, but that is
+    # the fleet auditor's job - raised once as a finding through its own
+    # sweep - not this handoff path shouting on every boot.
     if [ "$probe" -eq 2 ]; then
       if card_pair_report_once no-such-card "$sm_id" "$pair"; then
         echo "warning: the dashboard host has no card $card, so the pending link for $key cannot be completed; it stays recorded and will be retried on the next arrival" >&2
-        "$SCRIPT_DIR/fm-dashboard.sh" audit-log --fleet "handoff item $key to secondmate $sm_id names dashboard card $card, which the dashboard host says it does not have; the link is still pending and will be retried, but check whether the card id is wrong or the board url is stale" --kind error >/dev/null 2>&1 || true
       fi
       continue
     fi
