@@ -173,6 +173,77 @@ stop_card_read_failing_proxy() {
   CARD_READ_FAIL_PID=
 }
 
+# The inverse of the read-failing proxy above: forwards a card READ but fails
+# every ref/agent/status WRITE. dashboard_link_card's own transport-failure
+# audit-log rule only fires once the read has already succeeded (probe==0),
+# so exercising it needs writes that fail after a genuine read, not a board
+# that is unreachable outright. Sets CARD_WRITE_FAIL_PORT for the caller.
+CARD_WRITE_FAIL_PID=
+CARD_WRITE_FAIL_PORT=
+start_card_write_failing_proxy() {  # <label>
+  local portfile="$TMP_ROOT/card-write-fail-$1.port"
+  rm -f "$portfile"
+  python3 - "$portfile" "$FM_DASHBOARD_HOST" "$FM_DASHBOARD_PORT" >/dev/null 2>&1 <<'PY' &
+import http.server, os, re, socketserver, sys, urllib.error, urllib.request
+
+portfile, up_host, up_port = sys.argv[1], sys.argv[2], sys.argv[3]
+UPSTREAM = "http://%s:%s" % (up_host, up_port)
+WRITE_PATH = re.compile(r"^/api/tasks/[^/]+(/status)?$")
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.0"
+
+    def log_message(self, *args):
+        pass
+
+    def _reply(self, code, data):
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _relay(self):
+        if self.command in ("PATCH", "POST") and WRITE_PATH.match(self.path):
+            self._reply(500, b'{"error":"card write deliberately failed by the test proxy"}')
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else None
+        request = urllib.request.Request(UPSTREAM + self.path, data=body, method=self.command)
+        content_type = self.headers.get("Content-Type")
+        if content_type:
+            request.add_header("Content-Type", content_type)
+        try:
+            with urllib.request.urlopen(request) as response:
+                self._reply(response.status, response.read())
+        except urllib.error.HTTPError as exc:
+            self._reply(exc.code, exc.read())
+        except Exception:
+            self._reply(502, b'{"error":"proxy could not reach the board"}')
+
+    do_GET = do_POST = do_PATCH = do_PUT = do_DELETE = _relay
+
+
+socketserver.TCPServer.allow_reuse_address = True
+server = socketserver.TCPServer(("127.0.0.1", 0), Handler)
+with open(portfile + ".tmp", "w") as fh:
+    fh.write(str(server.server_address[1]))
+os.rename(portfile + ".tmp", portfile)
+server.serve_forever()
+PY
+  CARD_WRITE_FAIL_PID=$!
+  wait_for_port_file "$portfile" "$CARD_WRITE_FAIL_PID" "the card-write-failing proxy"
+  CARD_WRITE_FAIL_PORT=$(cat "$portfile")
+}
+
+stop_card_write_failing_proxy() {
+  [ -n "$CARD_WRITE_FAIL_PID" ] || return 0
+  kill "$CARD_WRITE_FAIL_PID" 2>/dev/null
+  wait "$CARD_WRITE_FAIL_PID" 2>/dev/null
+  CARD_WRITE_FAIL_PID=
+}
+
 card_status() {  # <card-id>
   "$DASH" show "$1" --json 2>/dev/null | jq -r '.status // empty'
 }
@@ -620,6 +691,89 @@ EOF
     || fail "the stranded card did not advance to working once the board became reachable"
   [ ! -e "$record" ] || fail "the card record should be retired once the board confirmed the link"
   pass "a card record survives a failed link and completes on the secondmate's next handoff"
+}
+
+# The fleet audit log is never written from a machine-cadence path. This is
+# --resume-pending's own twin of the general transport-failure rule already
+# covered for spawn/handoff above: the card read succeeds (probe==0, and the
+# card is still blank, so it is ours to write), but the ref/agent/status write
+# calls themselves fail. bin/fm-bootstrap.sh runs --resume-pending unattended
+# on every session start, so that failure must warn on stderr only and never
+# reach bin/fm-dashboard.sh audit-log --fleet.
+test_resume_pending_never_writes_the_fleet_audit_log_for_a_transport_failure() {
+  local home sub id card out record findings
+  home="$TMP_ROOT/handoff-resume-writefail-main"
+  sub="$TMP_ROOT/handoff-resume-writefail-sub"
+  id=handoff-resume-writefail-sm
+  setup_handoff_homes "$home" "$sub" "$id"
+  card=$(add_card "Resume write-fail coverage")
+  [ -n "$card" ] || fail "add_card returned no id"
+  record="$home/state/handoff-cards/$id"
+  mkdir -p "$(dirname "$record")"
+  printf 'resume-writefail-item\t%s' "$card" > "$record"
+
+  start_card_write_failing_proxy resumewritefail
+  out=$(FM_DASHBOARD_PORT="$CARD_WRITE_FAIL_PORT" FM_HOME="$home" "$HANDOFF" --resume-pending 2>&1)
+  expect_code 0 "$?" "--resume-pending should succeed even when the board rejects the write" "$out"
+  stop_card_write_failing_proxy
+  assert_contains "$out" "warning: dashboard card link failed" \
+    "resume did not warn about the transport failure"
+  [ "$(card_status "$card")" = not_started ] \
+    || fail "a card whose write genuinely failed must not read as linked"
+  assert_grep "$(printf 'resume-writefail-item\t%s' "$card")" "$record" \
+    "a failed write must leave the pending card record in place"
+
+  findings=$("$DASH" audit-status --json | jq --arg c "$card" '[.log[] | select(.text | contains($c))] | length')
+  [ "$findings" -eq 0 ] \
+    || fail "--resume-pending's own transport failure must never reach the fleet audit log"
+  pass "--resume-pending never writes the fleet audit log for a transport failure, only stderr"
+}
+
+# The operator-initiated counterpart: this same transport failure IS allowed
+# to reach the fleet audit log for a direct (non --resume-pending) handoff,
+# but at most once per invocation, even when the sweep hits it twice - once
+# for a leftover pair from an earlier crashed attempt, once for the pair this
+# call itself just staged.
+test_operator_handoff_writes_the_fleet_audit_log_once_per_invocation_for_two_transport_failures() {
+  local home sub id leftover_card new_card out record findings
+  home="$TMP_ROOT/handoff-operator-writefail-main"
+  sub="$TMP_ROOT/handoff-operator-writefail-sub"
+  id=handoff-operator-writefail-sm
+  setup_handoff_homes "$home" "$sub" "$id"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] operator-writefail-item - hand this one off too (repo: alpha)
+
+## Done
+EOF
+  leftover_card=$(add_card "Operator write-fail leftover coverage")
+  [ -n "$leftover_card" ] || fail "add_card returned no id for the leftover pair"
+  new_card=$(add_card "Operator write-fail new coverage")
+  [ -n "$new_card" ] || fail "add_card returned no id for the new pair"
+  record="$home/state/handoff-cards/$id"
+  mkdir -p "$(dirname "$record")"
+  printf 'operator-writefail-leftover\t%s' "$leftover_card" > "$record"
+
+  start_card_write_failing_proxy operatorwritefail
+  out=$(FM_DASHBOARD_PORT="$CARD_WRITE_FAIL_PORT" FM_HOME="$home" \
+    "$HANDOFF" "$id" operator-writefail-item --card "$new_card" 2>&1)
+  expect_code 0 "$?" "the handoff should succeed even when the board rejects both writes" "$out"
+  stop_card_write_failing_proxy
+  assert_contains "$out" "operator-writefail-leftover -> card $leftover_card" \
+    "no transport-failure warning named the leftover pair"
+  assert_contains "$out" "operator-writefail-item -> card $new_card" \
+    "no transport-failure warning named the newly staged pair"
+  [ "$(card_status "$leftover_card")" = not_started ] \
+    || fail "the leftover card whose write failed must not read as linked"
+  [ "$(card_status "$new_card")" = not_started ] \
+    || fail "the newly staged card whose write failed must not read as linked"
+
+  findings=$("$DASH" audit-status --json | jq \
+    --arg a "$leftover_card" --arg b "$new_card" \
+    '[.log[] | select((.text | contains($a)) or (.text | contains($b)))] | length')
+  [ "$findings" -eq 1 ] \
+    || fail "an operator-initiated handoff must write the fleet audit log at most once per invocation, got $findings"
+  pass "an operator-initiated handoff caps its fleet audit log write at one per invocation"
 }
 
 # Regression: --resume-pending is the documented recovery command for a link
@@ -1657,6 +1811,8 @@ if command -v tasks-axi >/dev/null 2>&1; then
   test_handoff_without_card_flag_never_touches_the_dashboard
   test_handoff_with_unreachable_dashboard_still_succeeds_and_warns
   test_handoff_card_record_survives_a_failed_link_and_completes_on_the_next_handoff
+  test_resume_pending_never_writes_the_fleet_audit_log_for_a_transport_failure
+  test_operator_handoff_writes_the_fleet_audit_log_once_per_invocation_for_two_transport_failures
   test_handoff_record_without_a_trailing_newline_loses_no_pair
   test_resume_pending_completes_a_stranded_local_card_link
   test_handoff_finishes_its_own_half_written_card_link

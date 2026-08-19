@@ -96,18 +96,20 @@
 # ref and agent are two separate calls and a half-written attempt of our own
 # must not read as somebody else's claim. A card id that
 # does not resolve, or an
-# unreachable dashboard, never fails the handoff; it is reported loudly on
-# stderr and nowhere else - bin/fm-bootstrap.sh's --resume-pending sweep runs
-# this same path unattended on every session start, so a permanently
-# unretirable pair must not grow a durable entry in the fleet discrepancy log
-# on a cadence no operator controls. Only a link that failed while it was
-# being written - the board refusing or never answering one of the
-# ref/agent/status calls - is also recorded through
-# `fm-dashboard.sh audit-log --fleet`. No --card is the default and stages
-# nothing on the board. Its one point of contact is completing a link an
-# earlier --card call already staged and could not finish: every confirmed
-# arrival sweeps and links every card it can, not just the one this command
-# line named.
+# unreachable dashboard, never fails the handoff; it is always reported loudly
+# on stderr. The fleet audit log is never written from a machine-cadence path:
+# bin/fm-bootstrap.sh's --resume-pending sweep runs this same path unattended
+# on every session start, so nothing it does may grow a durable entry in the
+# fleet discrepancy log on a cadence no operator controls. An operator-run
+# handoff (no --resume-pending) is different: a link that failed while it was
+# being written - the board refusing or never answering one of the ref/agent/
+# status calls - is also recorded once per invocation through
+# `fm-dashboard.sh audit-log --fleet`, so the Admiral's own trust surface still
+# hears about it from the one path a human actually drove. No --card is the
+# default and stages nothing on the board. Its one point of contact is
+# completing a link an earlier --card call already staged and could not
+# finish: every confirmed arrival sweeps and links every card it can, not just
+# the one this command line named.
 # Usage: fm-backlog-handoff.sh <secondmate-id> <item-key>... [--card <card-id>]
 #        fm-backlog-handoff.sh --resume-pending
 set -eu
@@ -617,6 +619,15 @@ handoff_card_superseded_forget() { # <secondmate-id> <pair>...
 # not_started. An empty <known-status> means the board never answered, and is
 # therefore a failure, never a licence to skip the advance.
 DASHBOARD_LINK_CONFIRMED=0
+# The fleet audit log is never written from a machine-cadence path. RESUME_PENDING
+# is set only by --resume-pending, the exact flag bin/fm-bootstrap.sh's own
+# unattended session-start sweep passes, so it stands in for "a human did not
+# just run this command." An operator-initiated invocation (no --resume-pending)
+# may still write there, but at most once per invocation: AUDIT_LOG_FLEET_WRITTEN
+# caps it, so a record carrying several stale pairs from an earlier crashed
+# attempt cannot turn one sweep into several entries on the Admiral's own trust
+# surface. Stderr warnings are unaffected either way.
+AUDIT_LOG_FLEET_WRITTEN=0
 dashboard_link_card() { # <secondmate-id> <item-key> <card-id> <known-status|''>
   local sm_id=$1 key=$2 card=$3 known_status=$4
   local dash ref failed=0 out
@@ -655,7 +666,10 @@ dashboard_link_card() { # <secondmate-id> <item-key> <card-id> <known-status|''>
   fi
 
   if [ "$failed" -eq 1 ]; then
-    "$dash" audit-log --fleet "dashboard link failed for handoff item $key -> card $card to secondmate $sm_id; ref/agent/status may be stale" --kind error >/dev/null 2>&1 || true
+    if [ "$RESUME_PENDING" -eq 0 ] && [ "$AUDIT_LOG_FLEET_WRITTEN" -eq 0 ]; then
+      AUDIT_LOG_FLEET_WRITTEN=1
+      "$dash" audit-log --fleet "dashboard link failed for handoff item $key -> card $card to secondmate $sm_id; ref/agent/status may be stale" --kind error >/dev/null 2>&1 || true
+    fi
   else
     DASHBOARD_LINK_CONFIRMED=1
   fi
