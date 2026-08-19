@@ -25,8 +25,8 @@ test_list_all_exact_suite_coverage() {
     done | LC_ALL=C sort
   )
   [ -n "$listed" ] || fail "--list --all printed nothing"
-  missing=$(comm -23 <(printf '%s\n' "$expected") <(printf '%s\n' "$listed") || true)
-  extra=$(comm -13 <(printf '%s\n' "$expected") <(printf '%s\n' "$listed") || true)
+  missing=$(LC_ALL=C comm -23 <(printf '%s\n' "$expected") <(printf '%s\n' "$listed") || true)
+  extra=$(LC_ALL=C comm -13 <(printf '%s\n' "$expected") <(printf '%s\n' "$listed") || true)
   [ -z "$missing" ] || fail "--list --all missing scripts: $missing"
   [ -z "$extra" ] || fail "--list --all unexpected scripts: $extra"
   # No duplicates.
@@ -359,7 +359,7 @@ test_portable_shard_union_and_coverage_guard() {
   herdr=$("$RUNNER" --list --family real-herdr-gated)
   [ -n "$s1" ] && [ -n "$s2" ] || fail "portable parallel shards must be non-empty"
   # Shards disjoint.
-  overlap=$(comm -12 <(printf '%s\n' "$s1" | LC_ALL=C sort) <(printf '%s\n' "$s2" | LC_ALL=C sort) || true)
+  overlap=$(LC_ALL=C comm -12 <(printf '%s\n' "$s1" | LC_ALL=C sort) <(printf '%s\n' "$s2" | LC_ALL=C sort) || true)
   [ -z "$overlap" ] || fail "portable parallel shards overlap: $overlap"
   # Union of shards equals proven-isolated.
   [ "$(printf '%s\n' "$s1" "$s2" | LC_ALL=C sort -u)" = \
@@ -384,6 +384,40 @@ test_portable_shard_union_and_coverage_guard() {
   [ "$first" = "tests/fm-x-mode.test.sh" ] \
     || fail "shard 1 must start with the longest proven script, got $first"
   pass "portable shard union, disjointness, and coverage guard hold"
+}
+
+test_coverage_guard_survives_a_non_c_collation_locale() {
+  local tmp loc pick out rc
+  # The guard sorts its lane files with LC_ALL=C but compares them with `comm`.
+  # Under a glibc collation that ignores '-' and '.' (en_US.UTF-8 and friends) a
+  # C-sorted file reads as unsorted, `comm` exits non-zero, and `set -e` kills
+  # the guard with no verdict at all. Run it under such a locale and require the
+  # same clean answer it gives under C.
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-locale.XXXXXX")
+  "$RUNNER" --list --all | LC_ALL=C sort >"$tmp/all_c"
+
+  pick=""
+  while read -r loc; do
+    [ -n "$loc" ] || continue
+    # Only a locale that actually reorders the inventory exercises the bug;
+    # C.UTF-8 collates by codepoint and would pass either way.
+    if ! LC_ALL="$loc" sort -c "$tmp/all_c" 2>/dev/null; then
+      pick="$loc"
+      break
+    fi
+  done < <(locale -a 2>/dev/null | grep -i -e 'utf-\?8$' || true)
+  rm -rf "$tmp"
+  if [ -z "$pick" ]; then
+    pass "skipped - no installed locale reorders the test inventory relative to C"
+    return 0
+  fi
+
+  out=$(LC_ALL="$pick" "$RUNNER" --check-coverage 2>&1) && rc=0 || rc=$?
+  [ "$rc" -eq 0 ] \
+    || fail "--check-coverage under LC_ALL=$pick exited $rc"$'\n'"--- output ---"$'\n'"$out"
+  assert_contains "$out" "FM_TEST_COVERAGE ok" "coverage guard verdict under LC_ALL=$pick"
+  assert_not_contains "$out" "comm:" "coverage guard must not emit comm sort-order warnings"
+  pass "coverage guard verdict is locale-independent (checked under LC_ALL=$pick)"
 }
 
 test_portable_serial_shards_partition_the_serial_lane() {
@@ -631,10 +665,27 @@ test_herdr_ci_family_run_has_a_step_timeout() {
   # The required Herdr lane's hang tripwire is the family-run *step* bound, not
   # the 75-minute job cap. Parse the workflow as YAML so nested `with.name`
   # artifact keys cannot masquerade as the step contract.
-  command -v ruby >/dev/null 2>&1 \
-    || fail "ruby is required to parse .github/workflows/ci.yml as YAML"
+  # Either YAML parser will do; python3 is already required by this suite, so
+  # ruby is only the fallback for hosts whose python3 has no PyYAML.
   local json job_timeout step_timeout
-  json=$(ruby -ryaml -rjson -e '
+  if python3 -c 'import yaml' 2>/dev/null; then
+    json=$(python3 -c '
+import json, sys, yaml
+doc = yaml.safe_load(open(sys.argv[1]))
+job = doc["jobs"]["tests-herdr"]
+step = next((s for s in job["steps"]
+             if isinstance(s, dict)
+             and s.get("name") == "Run real-Herdr family (serial, required)"), None)
+if step is None:
+    raise SystemExit("missing family-run step")
+if "timeout-minutes" not in step:
+    raise SystemExit("family-run step has no timeout-minutes")
+print(json.dumps({"job_timeout": job["timeout-minutes"],
+                  "step_timeout": step["timeout-minutes"]}))
+' "$ROOT/.github/workflows/ci.yml") \
+      || fail "could not parse tests-herdr timeouts from ci.yml"
+  elif command -v ruby >/dev/null 2>&1; then
+    json=$(ruby -ryaml -rjson -e '
 doc = YAML.load_file(ARGV[0])
 job = doc.fetch("jobs").fetch("tests-herdr")
 step = job.fetch("steps").find { |s|
@@ -647,7 +698,11 @@ puts JSON.generate(
   "step_timeout" => step.fetch("timeout-minutes")
 )
 ' "$ROOT/.github/workflows/ci.yml") \
-    || fail "could not parse tests-herdr timeouts from ci.yml"
+      || fail "could not parse tests-herdr timeouts from ci.yml"
+  else
+    pass "skipped - no YAML parser available (python3 PyYAML or ruby)"
+    return 0
+  fi
   job_timeout=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["job_timeout"])' <<<"$json") \
     || fail "could not read job timeout from parsed workflow"
   step_timeout=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["step_timeout"])' <<<"$json") \
@@ -715,6 +770,7 @@ test_gate_skip_accounting
 test_fail_on_gate_skip_token
 test_exclude_family
 test_portable_shard_union_and_coverage_guard
+test_coverage_guard_survives_a_non_c_collation_locale
 test_portable_serial_shards_partition_the_serial_lane
 test_portable_serial_shard_lane_refusals
 test_jobs_requires_proven_isolated
