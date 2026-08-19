@@ -12,6 +12,13 @@ EXT="$ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 # unrelated to plugin output, which the assertions intentionally require empty.
 export NODE_NO_WARNINGS=1
 
+# The node cases below run as `out=$(node ... <<QUOTED-EOF ... EOF)`. Stock
+# macOS Bash 3.2 scans a $(...) for its closing paren without understanding
+# heredocs, so a lone apostrophe anywhere in one of those bodies - "the
+# plugin's handle" in a JS comment is enough - opens a quote it never closes
+# and the WHOLE file fails to parse there (caught by the CI job "Stock macOS
+# Bash snapshot compatibility"). Keep apostrophes out of these heredoc bodies.
+
 # Arm-readiness budget for the cases below that drive an UNREADY successor arm
 # (FM_PI_ARM_READY_TIMEOUT_MS / FM_OPENCODE_ARM_READY_TIMEOUT_MS = 2000).
 #
@@ -1360,8 +1367,8 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
 await hooks.event(event);
 // The event hook does not await its own arm attempt, and that attempt spends
 // its time in `git`/`ps` subprocesses, so a fixed sleep cannot tell when the
-// foreign-lock decision has actually landed. Drain it through the plugin's own
-// coordinator handle instead: ensureArmed joins a launch that is still in
+// foreign-lock decision has actually landed. Drain it through the coordinator
+// handle the plugin itself exposes: ensureArmed joins a launch that is still in
 // flight, so once it resolves no attempt is outstanding and its status IS the
 // denial under test. Flipping the lock before that point let the next event
 // coalesce onto the stale read-only answer and never arm at all.
