@@ -10,6 +10,12 @@ const COORDINATOR_KEY = "__firstmateOpenCodeWatchArm";
 const ARM_READY_TIMEOUT_DEFAULT_MS = process.platform === "win32" ? 35000 : 12000;
 const ARM_READY_TIMEOUT_MS = positiveInteger("FM_OPENCODE_ARM_READY_TIMEOUT_MS", ARM_READY_TIMEOUT_DEFAULT_MS);
 const ARM_RETIRE_TIMEOUT_MS = positiveInteger("FM_WATCH_ARM_RETIRE_TIMEOUT_MS", 1000);
+// The arm child runs under a login shell so it inherits PATH additions the
+// account's profile provides (an nvm-managed node, for instance), which
+// bin/fm-watch-arm.sh and its descendants may need. FM_WATCH_ARM_NO_LOGIN_SHELL=1
+// drops to a plain shell for tests that must not pay an unbounded, machine-
+// dependent profile-sourcing cost inside a readiness window.
+const ARM_SHELL_FLAG = process.env.FM_WATCH_ARM_NO_LOGIN_SHELL === "1" ? "-c" : "-lc";
 const REARM_RETRY_BASE_MS = positiveInteger("FM_WATCH_REARM_RETRY_BASE_MS", 250);
 const REARM_RETRY_MAX_MS = positiveInteger("FM_WATCH_REARM_RETRY_MAX_MS", 4000);
 const REARM_RETRY_LIMIT = positiveInteger("FM_WATCH_REARM_RETRY_LIMIT", 5);
@@ -18,7 +24,8 @@ let child = null;
 let armStatus = "idle";
 let retryTimer = null;
 let retryFailures = 0;
-let launchQueue = Promise.resolve();
+let launchInFlight = null;
+let launchInFlightLock = null;
 let restorationInFlight = null;
 let armClose = new WeakMap();
 let armReadiness = new WeakMap();
@@ -302,7 +309,7 @@ function spawnArm(paths, sessionID, client, predecessorArmPid = "") {
     FM_CONFIG_OVERRIDE: paths.config,
     FM_WATCH_PREDECESSOR_ARM_PID: predecessorArmPid,
   };
-  const armChild = spawn("bash", ["-lc", 'config_dir="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"; [ -f "$config_dir/x-mode.env" ] && . "$config_dir/x-mode.env"; exec "$FM_ROOT_OVERRIDE/bin/fm-watch-arm.sh" --restart'], {
+  const armChild = spawn("bash", [ARM_SHELL_FLAG, 'config_dir="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"; [ -f "$config_dir/x-mode.env" ] && . "$config_dir/x-mode.env"; exec "$FM_ROOT_OVERRIDE/bin/fm-watch-arm.sh" --restart'], {
     cwd: paths.root,
     env,
     stdio: ["ignore", "pipe", "pipe"],
@@ -409,19 +416,42 @@ function armAttempt(status, armChild, includeArmChild) {
   return includeArmChild ? { status, armChild } : status;
 }
 
+function lockSnapshot(paths) {
+  try {
+    return readFileSync(`${paths.state}/.lock`, "utf8");
+  } catch {
+    return null;
+  }
+}
+
 async function ensureArm(paths, sessionID, client, predecessorArmPid = "", includeArmChild = false) {
-  // Every caller's evaluation is queued behind the ones ahead of it rather than
-  // reusing an earlier caller's still-resolving result: beginArm's own child/
-  // retryTimer checks already prevent a duplicate spawn once one is under way,
-  // so queuing costs nothing there, but a caller that arrives after session or
-  // lock state changed (for example the lock is reacquired) must see THAT
-  // current state at its own turn, not the stale verdict an earlier caller was
-  // still computing when this call started. Reusing the earlier promise here
-  // previously let a later, now-eligible caller silently inherit an earlier
-  // ineligible verdict and never arm.
-  const launch = launchQueue.catch(() => {}).then(() => beginArm(paths, sessionID, client, predecessorArmPid));
-  launchQueue = launch;
-  const launchResult = await launch;
+  // Every ordinary idle turn produces two callers (this plugin's own
+  // session.idle handler and the turn-end guard's coordinator call), so they
+  // share one in-flight beginArm rather than each paying its own git/ps
+  // subprocess walk. That share is only sound while the premise the in-flight
+  // attempt is evaluating still holds: an attempt that read a foreign lock is
+  // computing a "read-only" verdict, and a caller arriving after the lock was
+  // reacquired underneath it must not inherit that answer. Comparing the lock
+  // file's content at call time against what the in-flight attempt captured
+  // keeps the common case coalesced and forces a fresh evaluation exactly when
+  // the state it depends on changed.
+  const currentLock = lockSnapshot(paths);
+  let launchResult = null;
+  if (launchInFlight && launchInFlightLock === currentLock) {
+    launchResult = await launchInFlight;
+  } else {
+    const launch = beginArm(paths, sessionID, client, predecessorArmPid);
+    launchInFlight = launch;
+    launchInFlightLock = currentLock;
+    try {
+      launchResult = await launch;
+    } finally {
+      if (launchInFlight === launch) {
+        launchInFlight = null;
+        launchInFlightLock = null;
+      }
+    }
+  }
   const armChild = launchResult.armChild;
   if (!armChild) {
     return armAttempt(launchResult.status, null, includeArmChild);

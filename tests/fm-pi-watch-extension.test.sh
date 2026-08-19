@@ -11,20 +11,17 @@ EXT="$ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 # from a clean checkout with no tracked .opencode/package.json. The warning is
 # unrelated to plugin output, which the assertions intentionally require empty.
 export NODE_NO_WARNINGS=1
-# The extension under test spawns its arm child through `bash -lc`, a login
-# shell that sources the executing account's .profile/.bashrc (and whatever
-# those load, e.g. nvm.sh) before running anything. That cost is real,
-# unrelated to the extension's own behavior, and can vary from near-zero to
-# several hundred milliseconds depending on what happens to be on the
-# account's shell profile - which silently ate a load-dependent share of
-# every tight readiness/retire window below and made the arm-timing
-# assertions fail unpredictably depending on the executing machine's shell
-# setup rather than the extension's logic. Pointing HOME at an empty
-# directory with no profile files makes `bash -lc`'s own startup cost
-# negligible and machine-independent, so a tight timeout here measures only
-# the extension's readiness-detection logic, the thing under test.
-export HOME="$TMP_ROOT/os-home"
-mkdir -p "$HOME"
+# In production the extensions spawn their arm child through `bash -lc`, a
+# login shell that sources /etc/profile and /etc/profile.d/* as well as the
+# account's own .profile/.bashrc (and whatever those load, e.g. nvm.sh). That
+# cost is unrelated to the extension's own behavior and unbounded: the
+# system-wide half is not relocatable via HOME, so on a shared machine it can
+# eat an arbitrary, load-dependent share of the tight readiness/retire windows
+# the cases below assert on. The fixture arm scripts in this file are plain
+# bash and depend on nothing a login shell provides, so opting out entirely
+# leaves those windows measuring only the extension's own readiness-detection
+# logic, the thing under test.
+export FM_WATCH_ARM_NO_LOGIN_SHELL=1
 
 install_pi_watch_extension_fixture() {
   local repo=$1
@@ -919,8 +916,12 @@ test_pi_session_transition_generation_owner() {
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'watcher: started pid=%s\n' "$$"
-printf '%s\n' "$$" > "${FM_CHILD_PID_FILE:?}"
+# The arm log row must land before the pid file: every waitFor() below polls on
+# the pid file, while liveArmPids() counts arm log rows, so publishing the pid
+# first would let a waiter proceed into an assertion that reads a log this child
+# has not written to yet.
 printf 'arm pid=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+printf '%s\n' "$$" > "${FM_CHILD_PID_FILE:?}"
 trap 'exit 0' TERM INT
 while :; do sleep 0.2; done
 SH
@@ -1322,12 +1323,21 @@ EOF
   pass "OpenCode watcher plugin sources the effective config"
 }
 
+# Forces the stale-verdict race deterministically rather than hoping to land in
+# it. sessionOwnsLock() reads the lock file and then walks the process tree with
+# `ps`, so a `ps` that blocks on its first call pins one caller mid-evaluation
+# with the foreign lock it read as its premise. While it is pinned the lock is
+# reacquired and a second caller runs: it must evaluate the lock it can see now
+# rather than inherit the first caller's still-unresolved read-only verdict.
 test_opencode_primary_watch_plugin_requires_session_lock() {
-  local plugin repo home log out status
+  local plugin repo home log fakebin real_ps gate entered release out status
   plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
   repo="$TMP_ROOT/opencode-lock-root"
   home="$TMP_ROOT/opencode-lock-home"
   log="$TMP_ROOT/opencode-lock.log"
+  gate="$TMP_ROOT/opencode-lock-ps-gate"
+  entered="$TMP_ROOT/opencode-lock-ps-entered"
+  release="$TMP_ROOT/opencode-lock-ps-release"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
   git init -q "$repo"
   : > "$repo/AGENTS.md"
@@ -1338,37 +1348,78 @@ printf 'arm\n' >> "${FM_ARM_LOG:?}"
 printf 'watcher: healthy pid=1 (beacon 0s)\n'
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" node 2>&1 <<'EOF'
-import { existsSync, writeFileSync } from "node:fs";
+  real_ps=$(command -v ps) || fail "OpenCode session-lock test needs a real ps on PATH"
+  fakebin=$(fm_fakebin "$TMP_ROOT/opencode-lock")
+  # mkdir is the atomic claim: exactly one invocation wins it and blocks, every
+  # later one falls straight through to the real ps.
+  cat > "$fakebin/ps" <<SH
+#!/usr/bin/env bash
+if mkdir "$gate" 2>/dev/null; then
+  : > "$entered"
+  while [ ! -e "$release" ]; do sleep 0.02; done
+fi
+exec "$real_ps" "\$@"
+SH
+  chmod +x "$fakebin/ps"
+  out=$(PATH="$fakebin:$PATH" PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_PS_ENTERED="$entered" FM_PS_RELEASE="$release" node 2>&1 <<'EOF'
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const client = { session: { promptAsync: async () => {} } };
-const hooks = await mod.FmPrimaryWatchArm({
+await mod.FmPrimaryWatchArm({
   client,
   directory: process.env.WORKTREE,
   worktree: process.env.WORKTREE,
 });
-const event = { event: { type: "session.idle", properties: { sessionID: "session-test" } } };
+const coordinator = globalThis.__firstmateOpenCodeWatchArm;
+
+async function waitFor(pred, label) {
+  for (let i = 0; i < 500; i += 1) {
+    if (pred()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`timeout waiting for ${label}`);
+}
+
+// Failure-path only: a caller that can never settle would otherwise hang the
+// suite instead of reporting which caller was left waiting.
+function settling(promise, label) {
+  return Promise.race([
+    promise,
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${label} never settled`)), 20000);
+      timer.unref();
+    }),
+  ]);
+}
+
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
-await hooks.event(event);
-await new Promise((resolve) => setTimeout(resolve, 120));
+const foreign = coordinator.ensureArmed("session-foreign", client);
+await waitFor(() => existsSync(process.env.FM_PS_ENTERED), "the foreign-lock ownership walk to block mid-flight");
 if (existsSync(process.env.FM_ARM_LOG)) {
-  console.error("watch arm ran without owning the session lock");
-  process.exit(1);
+  throw new Error("watch arm ran without owning the session lock");
 }
+
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
-await hooks.event(event);
-for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
-  await new Promise((resolve) => setTimeout(resolve, 20));
+const owned = await settling(coordinator.ensureArmed("session-owned", client), "the reacquired-lock arm attempt");
+if (owned === "read-only") {
+  throw new Error("the reacquired-lock caller inherited the in-flight foreign-lock verdict");
 }
-if (!existsSync(process.env.FM_ARM_LOG)) {
-  console.error("watch arm did not run after the session lock matched");
-  process.exit(1);
+await waitFor(() => existsSync(process.env.FM_ARM_LOG), "the arm to run once the lock matched");
+if (!readFileSync(process.env.FM_ARM_LOG, "utf8").includes("arm")) {
+  throw new Error("the reacquired-lock caller reported success without running the arm");
+}
+
+writeFileSync(process.env.FM_PS_RELEASE, "");
+const foreignStatus = await settling(foreign, "the foreign-lock arm attempt");
+if (foreignStatus !== "read-only") {
+  throw new Error(`expected read-only for the foreign lock, got ${foreignStatus}`);
 }
 EOF
 )
   status=$?
+  : > "$release"
   expect_code 0 "$status" "OpenCode watch plugin must arm only when this session owns the fleet lock"
   [ -z "$out" ] || fail "OpenCode session-lock test printed output: $out"
   pass "OpenCode watcher plugin requires session lock ownership"
