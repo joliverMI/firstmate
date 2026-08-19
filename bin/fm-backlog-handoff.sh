@@ -436,6 +436,14 @@ handoff_card_record_pairs() { # <secondmate-id>
 # it makes is checked: a rewrite that cannot be completed leaves the original
 # file exactly as it was and says so, rather than reporting a removal that did
 # not happen.
+#
+# The `|| [ -n "$line" ]` on the read loop is load-bearing, here and in every
+# other loop over these files. docs/dashboard.md and this mechanism's own
+# warnings send the operator to state/handoff-cards/<id> to unpick a
+# half-written link by hand, so a last line with no trailing newline is an
+# anticipated input, not a hypothetical one - and a plain `read` would drop
+# it, which for a rewrite means silently deleting the one record proving that
+# link is still owed.
 handoff_card_lines_remove() { # <file> <line>...
   local file=$1 tmp line keep drop
   shift
@@ -558,6 +566,12 @@ handoff_card_superseded_add() { # <secondmate-id> <pair>
   mkdir -p "$(dirname "$file")" || return 1
   (
     umask 077
+    # Terminate an unterminated last entry before appending, for the same
+    # hand-edit reason handoff_card_lines_remove documents. Appending straight
+    # onto a partial line fuses two standing decisions into one string that
+    # matches neither, so both marks stop matching and both disowned cards
+    # become writable again on the next sweep - the exact drift the mark
+    # exists to prevent.
     if [ -s "$file" ] && [ -n "$(tail -c 1 -- "$file")" ]; then
       printf '\n%s\n' "$pair" >> "$file"
     else
