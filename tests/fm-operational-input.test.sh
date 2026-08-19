@@ -140,6 +140,50 @@ JS
   pass "operational input: the OpenCode adapter constructs through the canonical owner"
 }
 
+# The adapter writes the body to the encoder's stdin after the child is already
+# running, so an encoder that rejects the request and exits without draining a
+# body larger than the pipe buffer makes that write fail with EPIPE. Node raises
+# EPIPE on the stdin stream rather than on the ChildProcess, so with no listener
+# on that stream it becomes an unhandled 'error' event and kills the whole host
+# session process instead of rejecting this one call.
+test_adapter_surfaces_encoder_exit_instead_of_killing_the_host() {
+  local tmp fakeroot output status
+  tmp=$(fm_test_tmproot fm-operational-input-epipe)
+  fakeroot="$tmp/fakeroot"
+  mkdir -p "$fakeroot/bin"
+  cat > "$fakeroot/bin/fm-operational-input.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'encoder refused the request\n' >&2
+exit 1
+SH
+  chmod +x "$fakeroot/bin/fm-operational-input.sh"
+  output=$(FM_TEST_ROOT="$fakeroot" HELPER="$ROOT/.opencode/plugins/lib/fm-operational-input.js" \
+    node --input-type=module 2>&1 <<'JS'
+import { pathToFileURL } from "node:url";
+const { encodeFirstmateOperationalInput } = await import(pathToFileURL(process.env.HELPER).href);
+// Larger than the pipe buffer, so the write cannot be absorbed and must reach
+// the closed pipe of an encoder that already exited.
+const body = "x".repeat(4 * 1024 * 1024);
+try {
+  await encodeFirstmateOperationalInput(process.env.FM_TEST_ROOT, "watcher", body);
+  process.stdout.write("resolved\n");
+} catch (err) {
+  process.stdout.write(`rejected: ${err.message}\n`);
+}
+await new Promise((resolve) => setTimeout(resolve, 250));
+process.stdout.write("host-alive\n");
+JS
+  )
+  status=$?
+  [ "$status" -eq 0 ] \
+    || fail "OpenCode adapter host died (exit $status) when the encoder exited before reading the body: $output"
+  printf '%s\n' "$output" | grep -qx 'rejected: encoder refused the request' \
+    || fail "OpenCode adapter did not surface the encoder failure to its caller: $output"
+  printf '%s\n' "$output" | grep -qx 'host-alive' \
+    || fail "OpenCode adapter host did not survive the encoder exiting early: $output"
+  pass "operational input: an encoder that exits before reading fails one call, not the host session"
+}
+
 test_invalid_current_encodings_are_rejected() {
   local output
   output=$(printf 'body' | "$OWNER" encode legacy-operational 2>/dev/null) \
@@ -157,4 +201,5 @@ test_landed_untyped_prefix_is_explicitly_legacy
 test_isolated_legacy_matrix
 test_genuine_near_misses_remain_unclassified
 test_cross_language_adapter_uses_the_owner
+test_adapter_surfaces_encoder_exit_instead_of_killing_the_host
 test_invalid_current_encodings_are_rejected

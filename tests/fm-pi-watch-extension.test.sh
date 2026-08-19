@@ -20,22 +20,55 @@ export NODE_NO_WARNINGS=1
 # Bash snapshot compatibility"). Keep apostrophes out of these heredoc bodies.
 
 # Arm-readiness budget for the cases below that drive an UNREADY successor arm
-# (FM_PI_ARM_READY_TIMEOUT_MS / FM_OPENCODE_ARM_READY_TIMEOUT_MS = 2000).
+# (FM_PI_ARM_READY_TIMEOUT_MS / FM_OPENCODE_ARM_READY_TIMEOUT_MS = 2000), and
+# why this suite opts out of the arm child's login shell.
 #
-# Both watchers start their arm child as a LOGIN shell - `spawn("bash", ["-lc",
-# ...])` in .pi/extensions/fm-primary-pi-watch.ts and
-# .opencode/plugins/fm-primary-watch-arm.js - so every arm pays for /etc/profile
-# and /etc/profile.d before the fixture's fm-watch-arm.sh runs its first line.
-# Measured on this repo's own dev host: `bash -lc true` is ~140ms idle and
-# ~1150ms (max 1740ms) under CPU contention, against ~1ms for `bash -c true`.
+# Both watchers pick the arm child's shell flag once at module load - `spawn(
+# "bash", [armShellFlag, ...])` in .pi/extensions/fm-primary-pi-watch.ts and
+# `spawn("bash", [ARM_SHELL_FLAG, ...])` in
+# .opencode/plugins/fm-primary-watch-arm.js - and both default that flag to
+# `-lc`, a LOGIN shell, so an arm left on that default pays for /etc/profile and
+# /etc/profile.d before the fixture's fm-watch-arm.sh runs its first line.
+# Measured on this repo's own dev host: `bash -lc true` is ~131ms idle (min
+# 129ms / max 140ms over 20 samples). Under CPU contention it was re-measured
+# at 5x oversubscription (160 busy loops on 32 cores, 1-minute load average
+# ~151, 30 samples): min 1096ms, median ~1620ms, max 4246ms. Those loaded
+# figures supersede an earlier ~1150ms (max 1740ms) reading taken at an
+# unrecorded load level. `bash -c true` is ~1ms idle and 4-20ms loaded.
 # The earlier 250ms budget therefore expired BEFORE the successor arm had
 # appended its `arm=<pid>` row, the extension SIGTERMed a process that had not
 # run yet, and the row it should have recorded was lost - which is a lost
 # FIXTURE observation, not a behaviour change: the extension still made every
 # bounded attempt and still delivered the typed restoration failure. That is
-# what made these cases fail intermittently on CI runners. The budget must stay
-# well above a loaded login-shell start; the cases are otherwise unchanged, and
-# an arm that IS ready still settles immediately rather than waiting it out.
+# what made these cases fail intermittently on CI runners. The export below
+# removes that cost from this suite entirely, so the budget no longer has to
+# cover a login-shell start at all - it only has to cover the extension's own
+# readiness-detection logic, and main's 2000ms is generous headroom for that
+# rather than a figure this suite still depends on. This change neither raises
+# nor lowers it. The four cases are also no longer left to that budget alone:
+# each now waits on the observable arm-row count, then on a bounded wait for the
+# wake prompt, then re-reads the log after a settle delay. An arm that IS ready
+# still settles immediately rather than waiting the budget out.
+
+# That login-shell cost is real, but it is also the ONLY unbounded part of the
+# budget: /etc/profile and /etc/profile.d run whatever a given machine's
+# operator put there, with no upper bound this suite can measure or budget
+# against, unlike the fixed FM_PI_ARM_READY_TIMEOUT_MS / FM_OPENCODE_ARM_READY_
+# TIMEOUT_MS padding above. FM_WATCH_ARM_NO_LOGIN_SHELL=1 selects `-c` for that
+# flag instead, skipping profile sourcing entirely; production keeps the login
+# shell as the unconditional default (fm-watch-arm.sh and its descendants may
+# only reach node through PATH additions a profile makes). The export below
+# therefore holds for every case in this file, so their timed windows measure
+# readiness-detection logic rather than profile sourcing - the one exception is
+# test_watch_arm_login_shell_default_reaches_the_arm_child below, which
+# overrides the variable per invocation to exercise BOTH branches, including the
+# production default. That case owns no ADAPTER readiness window (neither
+# adapter awaits arm readiness on the path it drives), but it does own a 10s
+# wait of its own for the arm child to record itself, so its login branch is the
+# one place in this suite that still times an unbounded profile-sourcing cost.
+# That is inherent to what it verifies, not an oversight; see the note on its
+# wait below.
+export FM_WATCH_ARM_NO_LOGIN_SHELL=1
 
 install_pi_watch_extension_fixture() {
   local repo=$1
@@ -459,6 +492,18 @@ SH
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+// The arm fixture appends exactly one `arm=<pid>` row per attempt. Counting
+// only newline-terminated rows keeps a fixture descheduled between creating
+// the log and writing into it from reading as an attempt that already
+// happened.
+function armRows() {
+  if (!existsSync(process.env.FM_ARM_LOG)) return [];
+  return readFileSync(process.env.FM_ARM_LOG, "utf8")
+    .split("\n")
+    .slice(0, -1)
+    .filter((line) => line.startsWith("arm="));
+}
+
 let tool = null;
 let prompt = "";
 let rowsAtPrompt = 0;
@@ -470,34 +515,44 @@ const pi = {
   },
   sendUserMessage: async (message) => {
     prompt += message;
-    rowsAtPrompt = existsSync(process.env.FM_ARM_LOG)
-      ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
-      : 0;
+    rowsAtPrompt = armRows().length;
   },
 };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-hung-successor", {}, undefined, undefined, {});
-// Three unready attempts now cost 3 x FM_PI_ARM_READY_TIMEOUT_MS, so this
-// bound has to clear that before it can conclude the wake never arrived.
+// The one successor plus two retries the extension actually attempts each
+// write their arm-log row the moment they spawn, well before their own
+// readiness timeout has any chance to expire, so the row count is a real
+// observable condition - wait on it directly rather than on elapsed time.
+let rows = [];
+for (let i = 0; i < 3000; i += 1) {
+  rows = armRows();
+  if (rows.length >= 4) break;
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (rows.length !== 4) throw new Error(`expected one successor plus two retries, got ${rows.length}: ${rows.join(" | ")}`);
+// This assertion is a bounded negative: whether the extension ever gives up
+// and delivers its typed failure has no positive signal to observe, so a
+// bound is the only available instrument for it. The row-count wait above
+// has already confirmed every attempt really happened, so this bound now
+// covers only the bounded readiness/retire/retry sequence the extension runs
+// itself (3 x FM_PI_ARM_READY_TIMEOUT_MS plus backoff) rather than an
+// unrelated cost racing it.
 for (let i = 0; i < 3000 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
-const rows = existsSync(process.env.FM_ARM_LOG)
-  ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
-  : [];
-if (rows.length !== 4) throw new Error(`expected one successor plus two retries, got ${rows.length}: ${rows.join(" | ")}`);
 if (rowsAtPrompt !== 4) throw new Error(`wake arrived before restoration exhausted (${rowsAtPrompt} arm rows)`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
 if (!prompt.includes("could not restore watcher continuity after 2 retries")) throw new Error(`missing typed restoration failure: ${prompt}`);
 await new Promise((resolve) => setTimeout(resolve, 100));
-const stableRows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
+const stableRows = armRows();
 if (stableRows.length !== 4) throw new Error(`single-flight recovery launched ${stableRows.length} arms`);
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi must deliver the actionable wake after bounded hung-successor recovery"
+  expect_code 0 "$status" "Pi must deliver the actionable wake after bounded hung-successor recovery" "$out"
   [ -z "$out" ] || fail "Pi hung-successor test printed output: $out"
   pass "Pi hung successor falls back to one typed actionable wake"
 }
@@ -533,6 +588,18 @@ SH
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+// The arm fixture appends exactly one `arm=<pid>` row per attempt. Counting
+// only newline-terminated rows keeps a fixture descheduled between creating
+// the log and writing into it from reading as an attempt that already
+// happened.
+function armRows() {
+  if (!existsSync(process.env.FM_ARM_LOG)) return [];
+  return readFileSync(process.env.FM_ARM_LOG, "utf8")
+    .split("\n")
+    .slice(0, -1)
+    .filter((line) => line.startsWith("arm="));
+}
+
 let tool = null;
 let prompt = "";
 let rowsAtPrompt = 0;
@@ -544,31 +611,44 @@ const pi = {
   },
   sendUserMessage: async (message) => {
     prompt += message;
-    rowsAtPrompt = existsSync(process.env.FM_ARM_LOG)
-      ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
-      : 0;
+    rowsAtPrompt = armRows().length;
   },
 };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-unretired-successor", {}, undefined, undefined, {});
+// The original arm and its one unretired successor each write their arm-log
+// row the moment they spawn, so waiting for both rows is a real observable
+// condition rather than a guess at elapsed time.
+let rows = [];
+for (let i = 0; i < 500; i += 1) {
+  rows = armRows();
+  if (rows.length >= 2) break;
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (rows.length !== 2) throw new Error(`unretired arm overlapped a retry: ${rows.join(" | ")}`);
+// This assertion is a bounded negative: whether the extension gives up on the
+// unretired successor and delivers its typed failure has no positive signal
+// to observe, so a bound is the only available instrument for it. The
+// row-count wait above has already confirmed the successor really spawned, so
+// this bound now covers only the bounded readiness-then-retire sequence the
+// extension runs itself rather than an unrelated cost racing it.
 for (let i = 0; i < 500 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
-const rows = existsSync(process.env.FM_ARM_LOG)
-  ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
-  : [];
-if (rows.length !== 2) throw new Error(`unretired arm overlapped a retry: ${rows.join(" | ")}`);
 if (rowsAtPrompt !== 2) throw new Error(`wake arrived after an overlapping retry (${rowsAtPrompt} arm rows)`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
 if (!prompt.includes("unready successor arm did not exit within 20ms")) throw new Error(`missing unretired-arm failure: ${prompt}`);
+await new Promise((resolve) => setTimeout(resolve, 100));
+const stableRows = armRows();
+if (stableRows.length !== 2) throw new Error(`fallback launched ${stableRows.length} arms alongside the unretired successor: ${stableRows.join(" | ")}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
 await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi must fall back without overlapping an unretired successor"
+  expect_code 0 "$status" "Pi must fall back without overlapping an unretired successor" "$out"
   [ -z "$out" ] || fail "Pi unretired-successor test printed output: $out"
   pass "Pi unretired successor falls back without an overlapping retry"
 }
@@ -1350,8 +1430,47 @@ EOF
   pass "OpenCode watcher plugin sources the effective config"
 }
 
+# Shared `ps`/`git` shims for the two coordinator-race cases below.
+#
+# ps: mkdir is the atomic claim - exactly one invocation wins it, announces
+# itself and blocks, and every later one falls straight through to the real ps.
+# That pins a caller mid-sessionOwnsLock so those cases force the real
+# interleaving rather than waiting for it to happen to occur.
+#
+# git: isPrimaryRoot runs exactly ARM_GATE_EVALUATION_PROBES `git rev-parse`
+# probes per beginArm, and runs before anything can block, so the probe log
+# counts evaluations. That per-evaluation probe count is stated once here and
+# passed to both node bodies as FM_EVALUATION_PROBES, so a change to
+# isPrimaryRoot is corrected in one place rather than silently breaking one
+# copy of the arithmetic while the other copy still documents it.
+ARM_GATE_EVALUATION_PROBES=2
+
+install_arm_gate_shims() {
+  local prefix=$1 label=$2 real_ps real_git
+  real_ps=$(command -v ps) || fail "$label needs a real ps on PATH"
+  real_git=$(command -v git) || fail "$label needs a real git on PATH"
+  ARM_GATE_ENTERED="$prefix-ps-entered"
+  ARM_GATE_RELEASE="$prefix-ps-release"
+  ARM_GATE_GIT_LOG="$prefix-git.log"
+  ARM_GATE_FAKEBIN=$(fm_fakebin "$prefix")
+  cat > "$ARM_GATE_FAKEBIN/ps" <<SH
+#!/usr/bin/env bash
+if mkdir "$prefix-ps-gate" 2>/dev/null; then
+  : > "$ARM_GATE_ENTERED"
+  while [ ! -e "$ARM_GATE_RELEASE" ]; do sleep 0.02; done
+fi
+exec "$real_ps" "\$@"
+SH
+  cat > "$ARM_GATE_FAKEBIN/git" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$ARM_GATE_GIT_LOG"
+exec "$real_git" "\$@"
+SH
+  chmod +x "$ARM_GATE_FAKEBIN/ps" "$ARM_GATE_FAKEBIN/git"
+}
+
 test_opencode_primary_watch_plugin_requires_session_lock() {
-  local plugin repo home log out status
+  local plugin repo home log fakebin gitlog entered release out status
   plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
   repo="$TMP_ROOT/opencode-lock-root"
   home="$TMP_ROOT/opencode-lock-home"
@@ -1366,8 +1485,230 @@ printf 'arm\n' >> "${FM_ARM_LOG:?}"
 printf 'watcher: healthy pid=1 (beacon 0s)\n'
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" node 2>&1 <<'EOF'
-import { existsSync, writeFileSync } from "node:fs";
+  install_arm_gate_shims "$TMP_ROOT/opencode-lock" "OpenCode session-lock test"
+  fakebin=$ARM_GATE_FAKEBIN
+  gitlog=$ARM_GATE_GIT_LOG
+  entered=$ARM_GATE_ENTERED
+  release=$ARM_GATE_RELEASE
+  out=$(PATH="$fakebin:$PATH" PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_GIT_LOG="$gitlog" FM_EVALUATION_PROBES="$ARM_GATE_EVALUATION_PROBES" FM_PS_ENTERED="$entered" FM_PS_RELEASE="$release" FM_WATCH_REARM_RETRY_BASE_MS=60000 FM_WATCH_REARM_RETRY_MAX_MS=60000 node 2>&1 <<'EOF'
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+const client = { session: { promptAsync: async () => {} } };
+await mod.FmPrimaryWatchArm({
+  client,
+  directory: process.env.WORKTREE,
+  worktree: process.env.WORKTREE,
+});
+const coordinator = globalThis.__firstmateOpenCodeWatchArm;
+
+async function waitFor(pred, label) {
+  for (let i = 0; i < 500; i += 1) {
+    if (pred()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
+// Failure-path only: a caller that can never settle would otherwise hang the
+// suite instead of reporting which caller was left waiting.
+function settling(promise, label) {
+  return Promise.race([
+    promise,
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${label} never settled`)), 20000);
+      timer.unref();
+    }),
+  ]);
+}
+
+function evaluations() {
+  if (!existsSync(process.env.FM_GIT_LOG)) return 0;
+  const probes = readFileSync(process.env.FM_GIT_LOG, "utf8")
+    .split(/\n/)
+    .filter((line) => line.includes("rev-parse")).length;
+  return probes / Number(process.env.FM_EVALUATION_PROBES);
+}
+
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
+const foreign = coordinator.ensureArmed("session-foreign", client);
+await waitFor(() => existsSync(process.env.FM_PS_ENTERED), "the foreign-lock ownership walk to block mid-flight");
+if (existsSync(process.env.FM_ARM_LOG)) {
+  throw new Error("watch arm ran without owning the session lock");
+}
+
+// The foreign-lock check is still pinned inside its `ps` walk, holding a
+// verdict it began computing against the lock above. Reacquire the lock and
+// start a second caller before that verdict resolves, so it must see the new
+// premise at its own turn rather than inherit the stale one.
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const owned = await settling(coordinator.ensureArmed("session-owned", client), "the reacquired-lock arm attempt");
+if (owned === "read-only") {
+  throw new Error("the reacquired-lock caller inherited the in-flight foreign-lock verdict");
+}
+await waitFor(
+  () => existsSync(process.env.FM_ARM_LOG)
+    && readFileSync(process.env.FM_ARM_LOG, "utf8").includes("arm\n"),
+  "the arm to run once the lock matched",
+);
+
+writeFileSync(process.env.FM_PS_RELEASE, "");
+const foreignStatus = await settling(foreign, "the foreign-lock arm attempt");
+if (foreignStatus !== "read-only") {
+  throw new Error(`expected read-only for the foreign lock, got ${foreignStatus}`);
+}
+if (evaluations() !== 2) {
+  throw new Error(`two callers on different locks must each evaluate their own, got ${evaluations()} evaluations`);
+}
+EOF
+)
+  status=$?
+  : > "$release"
+  expect_code 0 "$status" "OpenCode watch plugin must arm only when this session owns the fleet lock" "$out"
+  [ -z "$out" ] || fail "OpenCode session-lock test printed output: $out"
+  pass "OpenCode watcher plugin requires session lock ownership"
+}
+
+# The other half of the same invariant. Every ordinary idle turn produces two
+# callers - the plugin's own session.idle handler and the turn-end guard's
+# coordinator call - and on an unchanged lock they must share one evaluation
+# rather than each walking isPrimaryRoot's git probes and sessionOwnsLock's ps
+# probes. Pinning the first caller inside its ps walk makes the second caller's
+# choice observable: it enters while the first is provably still in flight, so
+# the probe count after both settle says whether it shared or duplicated.
+test_opencode_watch_arm_coalesces_callers_on_an_unchanged_lock() {
+  local plugin repo home log fakebin gitlog entered release out status
+  plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
+  repo="$TMP_ROOT/opencode-coalesce-root"
+  home="$TMP_ROOT/opencode-coalesce-home"
+  log="$TMP_ROOT/opencode-coalesce.log"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  git init -q "$repo"
+  : > "$repo/AGENTS.md"
+  : > "$home/state/task.meta"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'arm\n' >> "${FM_ARM_LOG:?}"
+printf 'watcher: healthy pid=1 (beacon 0s)\n'
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  install_arm_gate_shims "$TMP_ROOT/opencode-coalesce" "OpenCode coalescing test"
+  fakebin=$ARM_GATE_FAKEBIN
+  gitlog=$ARM_GATE_GIT_LOG
+  entered=$ARM_GATE_ENTERED
+  release=$ARM_GATE_RELEASE
+  out=$(PATH="$fakebin:$PATH" PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_GIT_LOG="$gitlog" FM_EVALUATION_PROBES="$ARM_GATE_EVALUATION_PROBES" FM_PS_ENTERED="$entered" FM_PS_RELEASE="$release" node 2>&1 <<'EOF'
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+const client = { session: { promptAsync: async () => {} } };
+await mod.FmPrimaryWatchArm({
+  client,
+  directory: process.env.WORKTREE,
+  worktree: process.env.WORKTREE,
+});
+const coordinator = globalThis.__firstmateOpenCodeWatchArm;
+
+async function waitFor(pred, label) {
+  for (let i = 0; i < 500; i += 1) {
+    if (pred()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
+function settling(promise, label) {
+  return Promise.race([
+    promise,
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${label} never settled`)), 20000);
+      timer.unref();
+    }),
+  ]);
+}
+
+function evaluations() {
+  if (!existsSync(process.env.FM_GIT_LOG)) return 0;
+  const probes = readFileSync(process.env.FM_GIT_LOG, "utf8")
+    .split(/\n/)
+    .filter((line) => line.includes("rev-parse")).length;
+  return probes / Number(process.env.FM_EVALUATION_PROBES);
+}
+
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
+const first = coordinator.ensureArmed("session-first", client);
+await waitFor(() => existsSync(process.env.FM_PS_ENTERED), "the first ownership walk to block mid-flight");
+
+const second = coordinator.ensureArmed("session-second", client);
+writeFileSync(process.env.FM_PS_RELEASE, "");
+const firstStatus = await settling(first, "the first arm attempt");
+const secondStatus = await settling(second, "the second arm attempt");
+
+if (firstStatus !== "read-only" || secondStatus !== "read-only") {
+  throw new Error(`expected both callers to report read-only, got ${firstStatus} and ${secondStatus}`);
+}
+if (existsSync(process.env.FM_ARM_LOG)) {
+  throw new Error("watch arm ran without owning the session lock");
+}
+if (evaluations() !== 1) {
+  throw new Error(`two callers on an unchanged lock must share one evaluation, got ${evaluations()}`);
+}
+EOF
+)
+  status=$?
+  : > "$release"
+  expect_code 0 "$status" "OpenCode watch plugin must share one ownership evaluation between callers on an unchanged lock" "$out"
+  [ -z "$out" ] || fail "OpenCode coalescing test printed output: $out"
+  pass "OpenCode watcher plugin coalesces callers that share a lock premise"
+}
+
+# Every other case in this file exports FM_WATCH_ARM_NO_LOGIN_SHELL=1, so this
+# is the only coverage of either branch of that opt-out. The production default
+# is load-bearing: bin/fm-watch-arm.sh and its descendants may only reach node
+# through PATH additions the account's profile makes, so an arm child spawned
+# without the login shell would die at exec on such a machine. A temp HOME whose
+# .profile exports a marker makes "did the arm child inherit the profile"
+# directly observable. This case owns no ADAPTER readiness window - neither
+# adapter awaits arm readiness on the path it drives - so paying the profile
+# cost here costs the other cases' timed windows nothing. It does own a 10s
+# wait of its own for the arm child to record itself, which makes its login
+# branch the one place left in this suite that times an unbounded
+# profile-sourcing cost; that is inherent to verifying the production default,
+# and the wait below says so where it happens.
+test_watch_arm_login_shell_default_reaches_the_arm_child() {
+  local repo home oshome plugin ext log envprefix expected out status mode
+  repo="$TMP_ROOT/login-shell-root"
+  home="$TMP_ROOT/login-shell-home"
+  oshome="$TMP_ROOT/login-shell-os-home"
+  log="$TMP_ROOT/login-shell-arm.log"
+  mkdir -p "$repo/bin" "$home/state" "$home/config" "$oshome"
+  git init -q "$repo"
+  : > "$repo/AGENTS.md"
+  : > "$home/state/task.meta"
+  printf 'export FM_LOGIN_SHELL_MARKER=sourced\n' > "$oshome/.profile"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
+  ext="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'marker=%s\n' "${FM_LOGIN_SHELL_MARKER:-absent}" >> "${FM_ARM_LOG:?}"
+printf 'watcher: healthy pid=1 (beacon 0s)\n'
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  for mode in login plain; do
+    if [ "$mode" = login ]; then
+      envprefix=(env -u FM_WATCH_ARM_NO_LOGIN_SHELL)
+      expected="marker=sourced"
+    else
+      envprefix=(env FM_WATCH_ARM_NO_LOGIN_SHELL=1)
+      expected="marker=absent"
+    fi
+
+    rm -f "$log"
+    out=$("${envprefix[@]}" HOME="$oshome" PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_WATCH_REARM_RETRY_BASE_MS=60000 FM_WATCH_REARM_RETRY_MAX_MS=60000 node 2>&1 <<'EOF'
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
@@ -1377,40 +1718,75 @@ const hooks = await mod.FmPrimaryWatchArm({
   directory: process.env.WORKTREE,
   worktree: process.env.WORKTREE,
 });
-const event = { event: { type: "session.idle", properties: { sessionID: "session-test" } } };
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
-await hooks.event(event);
-// The event hook does not await its own arm attempt, and that attempt spends
-// its time in `git`/`ps` subprocesses, so a fixed sleep cannot tell when the
-// foreign-lock decision has actually landed. Drain it through the coordinator
-// handle the plugin itself exposes: ensureArmed joins a launch that is still in
-// flight, so once it resolves no attempt is outstanding and its status IS the
-// denial under test. Flipping the lock before that point let the next event
-// coalesce onto the stale read-only answer and never arm at all.
-const denied = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
-if (denied !== "read-only") {
-  console.error(`expected read-only without the session lock, got ${denied}`);
-  process.exit(1);
-}
-if (existsSync(process.env.FM_ARM_LOG)) {
-  console.error("watch arm ran without owning the session lock");
-  process.exit(1);
-}
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
-await hooks.event(event);
-for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
+await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
+const markerLogged = () => existsSync(process.env.FM_ARM_LOG)
+  && /^marker=\S+\n/m.test(readFileSync(process.env.FM_ARM_LOG, "utf8"));
+// A bounded wait on an inherently unbounded cost, which this one case cannot
+// avoid: it exists to exercise the real production default rather than the
+// opt-out, so its login branch must pay whatever /etc/profile costs here. The
+// 10s bound is ~2.4x the 4246ms worst case re-measured for a loaded `bash -lc`
+// start at 5x CPU oversubscription (median ~1620ms), but no bound can be a
+// hard guarantee on every machine.
+for (let i = 0; i < 500 && !markerLogged(); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
-if (!existsSync(process.env.FM_ARM_LOG)) {
-  console.error("watch arm did not run after the session lock matched");
+if (!markerLogged()) {
+  console.error("OpenCode watch arm did not record a complete marker row");
   process.exit(1);
 }
 EOF
 )
-  status=$?
-  expect_code 0 "$status" "OpenCode watch plugin must arm only when this session owns the fleet lock" "$out"
-  [ -z "$out" ] || fail "OpenCode session-lock test printed output: $out"
-  pass "OpenCode watcher plugin requires session lock ownership"
+    status=$?
+    expect_code 0 "$status" "OpenCode arm child must start under the $mode shell" "$out"
+    [ -z "$out" ] || fail "OpenCode $mode-shell arm test printed output: $out"
+    grep -qx "$expected" "$log" || fail "OpenCode arm child under the $mode shell expected $expected, got: $(cat "$log")"
+
+    rm -f "$log"
+    out=$("${envprefix[@]}" HOME="$oshome" PLUGIN="$ext" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_WATCH_REARM_RETRY_BASE_MS=60000 FM_WATCH_REARM_RETRY_MAX_MS=60000 node --input-type=module 2>&1 <<'EOF'
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+let handler = null;
+const pi = {
+  on() {},
+  registerCommand(name, options) {
+    if (name === "fm-watch-arm-pi") handler = options.handler;
+  },
+  registerTool() {},
+  sendUserMessage: async () => {},
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+if (!handler) {
+  console.error("Pi watch command was not registered");
+  process.exit(1);
+}
+await handler("", { ui: { notify() {} } });
+const markerLogged = () => existsSync(process.env.FM_ARM_LOG)
+  && /^marker=\S+\n/m.test(readFileSync(process.env.FM_ARM_LOG, "utf8"));
+// A bounded wait on an inherently unbounded cost, which this one case cannot
+// avoid: it exists to exercise the real production default rather than the
+// opt-out, so its login branch must pay whatever /etc/profile costs here. The
+// 10s bound is ~2.4x the 4246ms worst case re-measured for a loaded `bash -lc`
+// start at 5x CPU oversubscription (median ~1620ms), but no bound can be a
+// hard guarantee on every machine.
+for (let i = 0; i < 500 && !markerLogged(); i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 20));
+}
+if (!markerLogged()) {
+  console.error("Pi watch arm did not record a complete marker row");
+  process.exit(1);
+}
+EOF
+)
+    status=$?
+    expect_code 0 "$status" "Pi arm child must start under the $mode shell" "$out"
+    [ -z "$out" ] || fail "Pi $mode-shell arm test printed output: $out"
+    grep -qx "$expected" "$log" || fail "Pi arm child under the $mode shell expected $expected, got: $(cat "$log")"
+  done
+  pass "Watcher arm children inherit the login shell by default and skip it on opt-out"
 }
 
 test_opencode_watch_arm_coordinator_respects_primary_scope() {
@@ -1663,15 +2039,25 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+// The arm fixture appends exactly one `arm=<pid>` row per attempt. Counting
+// only newline-terminated rows keeps a fixture descheduled between creating
+// the log and writing into it from reading as an attempt that already
+// happened.
+function armRows() {
+  if (!existsSync(process.env.FM_ARM_LOG)) return [];
+  return readFileSync(process.env.FM_ARM_LOG, "utf8")
+    .split("\n")
+    .slice(0, -1)
+    .filter((line) => line.startsWith("arm="));
+}
+
 let prompt = "";
 let rowsAtPrompt = 0;
 const client = {
   session: {
     promptAsync: async (request) => {
       prompt += request.body.parts[0].text;
-      rowsAtPrompt = existsSync(process.env.FM_ARM_LOG)
-        ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
-        : 0;
+      rowsAtPrompt = armRows().length;
     },
   },
 };
@@ -1682,25 +2068,37 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-// Three unready attempts now cost 3 x FM_OPENCODE_ARM_READY_TIMEOUT_MS, so this
-// bound has to clear that before it can conclude the wake never arrived.
+// The one successor plus two retries the extension actually attempts each
+// write their arm-log row the moment they spawn, well before their own
+// readiness timeout has any chance to expire, so the row count is a real
+// observable condition - wait on it directly rather than on elapsed time.
+let rows = [];
+for (let i = 0; i < 3000; i += 1) {
+  rows = armRows();
+  if (rows.length >= 4) break;
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (rows.length !== 4) throw new Error(`expected one successor plus two retries, got ${rows.length}: ${rows.join(" | ")}`);
+// This assertion is a bounded negative: whether the extension ever gives up
+// and delivers its typed failure has no positive signal to observe, so a
+// bound is the only available instrument for it. The row-count wait above
+// has already confirmed every attempt really happened, so this bound now
+// covers only the bounded readiness/retire/retry sequence the extension runs
+// itself (3 x FM_OPENCODE_ARM_READY_TIMEOUT_MS plus backoff) rather than an
+// unrelated cost racing it.
 for (let i = 0; i < 3000 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
-const rows = existsSync(process.env.FM_ARM_LOG)
-  ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
-  : [];
-if (rows.length !== 4) throw new Error(`expected one successor plus two retries, got ${rows.length}: ${rows.join(" | ")}`);
 if (rowsAtPrompt !== 4) throw new Error(`wake arrived before restoration exhausted (${rowsAtPrompt} arm rows)`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
 if (!prompt.includes("could not restore watcher continuity after 2 retries")) throw new Error(`missing typed restoration failure: ${prompt}`);
 await new Promise((resolve) => setTimeout(resolve, 100));
-const stableRows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
+const stableRows = armRows();
 if (stableRows.length !== 4) throw new Error(`single-flight recovery launched ${stableRows.length} arms`);
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode must deliver the actionable wake after bounded hung-successor recovery"
+  expect_code 0 "$status" "OpenCode must deliver the actionable wake after bounded hung-successor recovery" "$out"
   [ -z "$out" ] || fail "OpenCode hung-successor test printed output: $out"
   pass "OpenCode hung successor falls back to one typed actionable wake"
 }
@@ -1739,15 +2137,25 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+// The arm fixture appends exactly one `arm=<pid>` row per attempt. Counting
+// only newline-terminated rows keeps a fixture descheduled between creating
+// the log and writing into it from reading as an attempt that already
+// happened.
+function armRows() {
+  if (!existsSync(process.env.FM_ARM_LOG)) return [];
+  return readFileSync(process.env.FM_ARM_LOG, "utf8")
+    .split("\n")
+    .slice(0, -1)
+    .filter((line) => line.startsWith("arm="));
+}
+
 let prompt = "";
 let rowsAtPrompt = 0;
 const client = {
   session: {
     promptAsync: async (request) => {
       prompt += request.body.parts[0].text;
-      rowsAtPrompt = existsSync(process.env.FM_ARM_LOG)
-        ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
-        : 0;
+      rowsAtPrompt = armRows().length;
     },
   },
 };
@@ -1758,22 +2166,37 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
+// The original arm and its one unretired successor each write their arm-log
+// row the moment they spawn, so waiting for both rows is a real observable
+// condition rather than a guess at elapsed time.
+let rows = [];
+for (let i = 0; i < 500; i += 1) {
+  rows = armRows();
+  if (rows.length >= 2) break;
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (rows.length !== 2) throw new Error(`unretired arm overlapped a retry: ${rows.join(" | ")}`);
+// This assertion is a bounded negative: whether the extension gives up on the
+// unretired successor and delivers its typed failure has no positive signal
+// to observe, so a bound is the only available instrument for it. The
+// row-count wait above has already confirmed the successor really spawned, so
+// this bound now covers only the bounded readiness-then-retire sequence the
+// extension runs itself rather than an unrelated cost racing it.
 for (let i = 0; i < 500 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
-const rows = existsSync(process.env.FM_ARM_LOG)
-  ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
-  : [];
-if (rows.length !== 2) throw new Error(`unretired arm overlapped a retry: ${rows.join(" | ")}`);
 if (rowsAtPrompt !== 2) throw new Error(`wake arrived after an overlapping retry (${rowsAtPrompt} arm rows)`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
 if (!prompt.includes("unready successor arm did not exit within 20ms")) throw new Error(`missing unretired-arm failure: ${prompt}`);
+await new Promise((resolve) => setTimeout(resolve, 100));
+const stableRows = armRows();
+if (stableRows.length !== 2) throw new Error(`fallback launched ${stableRows.length} arms alongside the unretired successor: ${stableRows.join(" | ")}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
 await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode must fall back without overlapping an unretired successor"
+  expect_code 0 "$status" "OpenCode must fall back without overlapping an unretired successor" "$out"
   [ -z "$out" ] || fail "OpenCode unretired-successor test printed output: $out"
   pass "OpenCode unretired successor falls back without an overlapping retry"
 }
@@ -2224,6 +2647,8 @@ test_opencode_plugin_package_boundary_is_explicit_esm
 test_opencode_primary_watch_plugin_uses_effective_state_home
 test_opencode_primary_watch_plugin_sources_effective_config
 test_opencode_primary_watch_plugin_requires_session_lock
+test_opencode_watch_arm_coalesces_callers_on_an_unchanged_lock
+test_watch_arm_login_shell_default_reaches_the_arm_child
 test_opencode_watch_arm_coordinator_respects_primary_scope
 test_opencode_primary_watch_plugin_rearms_after_wake
 test_opencode_pre_ready_actionable_close_preserves_its_successor

@@ -32,6 +32,12 @@ export function encodeFirstmateOperationalInput(root, kind, content) {
       }
       reject(new Error(stderr.trim() || `operational-input encoder exited ${code ?? "unknown"}`));
     });
+    // A child that exits before this write lands makes the write fail with
+    // EPIPE, which node raises on the stdin stream rather than on the child.
+    // Unhandled, that stream error throws and takes the whole process down.
+    // The child's own error/close handlers already settle this promise, so a
+    // child that no longer wants its input needs nothing further here.
+    child.stdin.on("error", () => {});
     child.stdin.end(content);
   });
 }
