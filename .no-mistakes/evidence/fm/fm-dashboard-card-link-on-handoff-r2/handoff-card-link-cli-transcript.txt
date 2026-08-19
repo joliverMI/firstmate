@@ -1,46 +1,77 @@
+# Fleet Dashboard card link on a backlog handoff - live operator run
+# bin/fm-backlog-handoff.sh --card <card-id>, against a real dashboard server.
+# board: http://127.0.0.1:34647   worktree: /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C8D53MDFDM07KJK2TJTMWC
 
-$ FM_HOME=/tmp/cardlink-demo/run/board-home /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-dashboard.sh start
-fleet dashboard started (pid 3050116) - http://127.0.0.1:53097/  log: /tmp/cardlink-demo/run/board-home/state/dashboard.log
+$ FM_HOME=/tmp/cardlink-r2-demo/run/board-home /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C8D53MDFDM07KJK2TJTMWC/bin/fm-dashboard.sh start
+fleet dashboard started (pid 3691551) - http://127.0.0.1:34647/  log: /tmp/cardlink-r2-demo/run/board-home/state/dashboard.log
 
-$ FM_HOME=/tmp/cardlink-demo/run/board-home /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-dashboard.sh server-status
-process: running (pid 3050116)
-api:     reachable at http://127.0.0.1:53097
+$ FM_HOME=/tmp/cardlink-r2-demo/run/board-home /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C8D53MDFDM07KJK2TJTMWC/bin/fm-dashboard.sh server-status
+process: running (pid 3691551)
+api:     reachable at http://127.0.0.1:34647
 
-$ /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-dashboard.sh add --title 'Ship the alpha widget' --captain firstmate --prompt '...'   # -> ship-the-alpha-widget-orbl
+$ /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C8D53MDFDM07KJK2TJTMWC/bin/fm-dashboard.sh add --title <title> --captain firstmate --prompt <prompt>   (three cards)
+card A = ship-the-alpha-widget-qcc1
+card B = polish-the-beta-surface-qbzb
+card C = wire-the-epsilon-importer-smlz
 
-$ /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-dashboard.sh show ship-the-alpha-widget-orbl --json | jq '{id,title,status,agent,backlog_ref}'
-{
-  "id": "ship-the-alpha-widget-orbl",
-  "title": "Ship the alpha widget",
-  "status": "not_started",
-  "agent": "",
-  "backlog_ref": null
-}
+$ # --- the Admiral's board before any handoff: three not_started cards, no agent, no ref ---
 
-$ cat /tmp/cardlink-demo/run/main-home/data/backlog.md
+$ /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C8D53MDFDM07KJK2TJTMWC/bin/fm-dashboard.sh list --json | jq '[.tasks[]|{id,title,status,agent,backlog_ref}]'
+[
+  {
+    "id": "ship-the-alpha-widget-qcc1",
+    "title": "Ship the alpha widget",
+    "status": "not_started",
+    "agent": "",
+    "backlog_ref": null
+  },
+  {
+    "id": "polish-the-beta-surface-qbzb",
+    "title": "Polish the beta surface",
+    "status": "not_started",
+    "agent": "",
+    "backlog_ref": null
+  },
+  {
+    "id": "wire-the-epsilon-importer-smlz",
+    "title": "Wire the epsilon importer",
+    "status": "not_started",
+    "agent": "",
+    "backlog_ref": null
+  }
+]
+
+$ cat main-home/data/backlog.md
 ## Queued
 - [ ] alpha-widget - wire the new intake path (repo: alpha)
   ## Intent
   The alpha widget must accept the new intake payload.
-- [ ] beta-polish - unrelated later work (repo: alpha)
+- [ ] beta-polish - polish the beta surface (repo: alpha)
+- [ ] epsilon-importer - import epsilon records nightly (repo: alpha)
+- [ ] gamma-thing - first of a two-item pair (repo: alpha)
+- [ ] delta-thing - second of a two-item pair (repo: alpha)
 
 ## Done
 
-$ FM_HOME=/tmp/cardlink-demo/run/main-home /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-backlog-handoff.sh design alpha-widget --card ship-the-alpha-widget-orbl
-handed off 1 item(s) to design: alpha-widget
-  into /tmp/cardlink-demo/run/design-home/data/backlog.md
-dashboard: linked card ship-the-alpha-widget-orbl to alpha-widget (ref=design:alpha-widget, agent=design, status not_started -> working)
+$ # === 1. a --card handoff against a live board links the card ===
 
-$ /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-dashboard.sh show ship-the-alpha-widget-orbl --json | jq '{id,title,status,agent,backlog_ref}'
+$ FM_HOME=main-home /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C8D53MDFDM07KJK2TJTMWC/bin/fm-backlog-handoff.sh design alpha-widget --card ship-the-alpha-widget-qcc1
+handed off 1 item(s) to design: alpha-widget
+  into /tmp/cardlink-r2-demo/run/design-home/data/backlog.md
+dashboard: linked card ship-the-alpha-widget-qcc1 to alpha-widget (ref=design:alpha-widget, agent=design, status not_started -> working)
+
+$ /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C8D53MDFDM07KJK2TJTMWC/bin/fm-dashboard.sh show ship-the-alpha-widget-qcc1 --json
 {
-  "id": "ship-the-alpha-widget-orbl",
+  "id": "ship-the-alpha-widget-qcc1",
   "title": "Ship the alpha widget",
   "status": "working",
   "agent": "design",
   "backlog_ref": "design:alpha-widget"
 }
 
-$ cat /tmp/cardlink-demo/run/design-home/data/backlog.md
+$ # the handed-off item landed byte-exact - body and all - with no card id written into it
+
+$ cat design-home/data/backlog.md
 ## In flight
 
 ## Queued
@@ -50,83 +81,127 @@ $ cat /tmp/cardlink-demo/run/design-home/data/backlog.md
 
 ## Done
 
-$ cat /tmp/cardlink-demo/run/main-home/data/backlog.md
-## Queued
-- [ ] beta-polish - unrelated later work (repo: alpha)
+$ # the pairing record was retired, because the board confirmed the link
 
-## Done
+$ ls -A main-home/state/handoff-cards
 
-$ the pairing lived in this home's own state, and was retired once the board confirmed the link
+$ # === 2. board unreachable at handoff time: the item still lands, the pairing is remembered ===
 
-$ ls -A /tmp/cardlink-demo/run/main-home/state/handoff-cards 2>&1 || true
-
-$ /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-dashboard.sh add --title 'Polish the beta surface' ...   # -> polish-the-beta-surface-d22h
-
-$ the board is unreachable at handoff time (FM_DASHBOARD_PORT=1)
-
-$ FM_DASHBOARD_PORT=1 FM_HOME=/tmp/cardlink-demo/run/main-home /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-backlog-handoff.sh design beta-polish --card polish-the-beta-surface-d22h
+$ FM_DASHBOARD_URL=http://127.0.0.1:1 FM_HOME=main-home /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C8D53MDFDM07KJK2TJTMWC/bin/fm-backlog-handoff.sh design beta-polish --card polish-the-beta-surface-qbzb
 handed off 1 item(s) to design: beta-polish
-  into /tmp/cardlink-demo/run/design-home/data/backlog.md
-warning: dashboard card link failed for beta-polish -> card polish-the-beta-surface-d22h (ref): fm-dashboard.sh: could not reach dashboard at http://127.0.0.1:1 (is it running? see: fm-dashboard.sh start / server-status): curl: (7) Failed to connect to 127.0.0.1 port 1 after 0 ms: Couldn't connect to server
+  into /tmp/cardlink-r2-demo/run/design-home/data/backlog.md
+warning: dashboard card link failed for beta-polish -> card polish-the-beta-surface-qbzb (ref): fm-dashboard.sh: could not reach dashboard at http://127.0.0.1:1 (is it running? see: fm-dashboard.sh start / server-status): curl: (7) Failed to connect to 127.0.0.1 port 1 after 0 ms: Couldn't connect to server
 
 000
-warning: dashboard card link failed for beta-polish -> card polish-the-beta-surface-d22h (agent): fm-dashboard.sh: could not reach dashboard at http://127.0.0.1:1 (is it running? see: fm-dashboard.sh start / server-status): curl: (7) Failed to connect to 127.0.0.1 port 1 after 0 ms: Couldn't connect to server
+warning: dashboard card link failed for beta-polish -> card polish-the-beta-surface-qbzb (agent): fm-dashboard.sh: could not reach dashboard at http://127.0.0.1:1 (is it running? see: fm-dashboard.sh start / server-status): curl: (7) Failed to connect to 127.0.0.1 port 1 after 0 ms: Couldn't connect to server
 
 000
 
-$ the handoff still landed the item, the card is untouched, and the pairing is REMEMBERED for a retry
-
-$ /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-dashboard.sh show polish-the-beta-surface-d22h --json | jq '{id,status,agent,backlog_ref}'
+$ /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C8D53MDFDM07KJK2TJTMWC/bin/fm-dashboard.sh show polish-the-beta-surface-qbzb --json   # untouched: the board never answered
 {
-  "id": "polish-the-beta-surface-d22h",
+  "id": "polish-the-beta-surface-qbzb",
+  "title": "Polish the beta surface",
   "status": "not_started",
   "agent": "",
   "backlog_ref": null
 }
 
-$ cat /tmp/cardlink-demo/run/main-home/state/handoff-cards/design
-beta-polish	polish-the-beta-surface-d22h
+$ cat main-home/state/handoff-cards/design   # kept, exactly where it was, for the retry
+beta-polish	polish-the-beta-surface-qbzb
 
-$ the secondmate's very next arrival retries the stranded link, with no --card on the command line
+$ ls -A main-home/data/handoff   # a LOCAL secondmate: no outbox exists at all
+ls: cannot access '/tmp/cardlink-r2-demo/run/main-home/data/handoff': No such file or directory
 
-$ FM_HOME=/tmp/cardlink-demo/run/main-home /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-backlog-handoff.sh design gamma-cleanup
-handed off 1 item(s) to design: gamma-cleanup
-  into /tmp/cardlink-demo/run/design-home/data/backlog.md
-dashboard: linked card polish-the-beta-surface-d22h to beta-polish (ref=design:beta-polish, agent=design, status not_started -> working)
+$ # === 3. --resume-pending completes that stranded link, with no outbox to sweep ===
 
-$ /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-dashboard.sh show polish-the-beta-surface-d22h --json | jq '{id,status,agent,backlog_ref}'
+$ FM_HOME=main-home /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C8D53MDFDM07KJK2TJTMWC/bin/fm-backlog-handoff.sh --resume-pending
+dashboard: linked card polish-the-beta-surface-qbzb to beta-polish (ref=design:beta-polish, agent=design, status not_started -> working)
+
+$ /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C8D53MDFDM07KJK2TJTMWC/bin/fm-dashboard.sh show polish-the-beta-surface-qbzb --json
 {
-  "id": "polish-the-beta-surface-d22h",
+  "id": "polish-the-beta-surface-qbzb",
+  "title": "Polish the beta surface",
   "status": "working",
   "agent": "design",
   "backlog_ref": "design:beta-polish"
 }
 
-$ ls -A /tmp/cardlink-demo/run/main-home/state/handoff-cards 2>&1 || true
+$ ls -A main-home/state/handoff-cards   # retired now that the board has answered
 
-$ a card names ONE deliverable, so --card with two items is refused and nothing moves
+$ # === 4. --card with more than one item is refused outright, and nothing moves ===
 
-$ FM_HOME=/tmp/cardlink-demo/run/main-home /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-backlog-handoff.sh design delta-one delta-two --card ship-the-alpha-widget-orbl; echo "exit: $?"
-error: --card applies only to a single-item handoff (a card names one deliverable); hand off delta-one delta-two without --card, or one item at a time
-exit: 1
+$ FM_HOME=main-home /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C8D53MDFDM07KJK2TJTMWC/bin/fm-backlog-handoff.sh design gamma-thing delta-thing --card wire-the-epsilon-importer-smlz
+error: --card applies only to a single-item handoff (a card names one deliverable); hand off gamma-thing delta-thing without --card, or one item at a time
+[exit 1]
 
-$ cat /tmp/cardlink-demo/run/main-home/data/backlog.md
+$ /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C8D53MDFDM07KJK2TJTMWC/bin/fm-dashboard.sh show wire-the-epsilon-importer-smlz --json   # still not_started, still unclaimed
+{
+  "id": "wire-the-epsilon-importer-smlz",
+  "title": "Wire the epsilon importer",
+  "status": "not_started",
+  "agent": "",
+  "backlog_ref": null
+}
+
+$ cat main-home/data/backlog.md   # both items still here
 ## Queued
-- [ ] delta-one - first (repo: alpha)
-- [ ] delta-two - second (repo: alpha)
+- [ ] epsilon-importer - import epsilon records nightly (repo: alpha)
+- [ ] gamma-thing - first of a two-item pair (repo: alpha)
+- [ ] delta-thing - second of a two-item pair (repo: alpha)
 
 ## Done
 
-$ a board that accepts the connection and then answers nothing (a powered-off tailnet host)
+$ # === 5. every board call is bounded, and a zero timeout is refused rather than honoured ===
 
-$ time FM_DASHBOARD_URL=http://127.0.0.1:44727 /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C0TRKGDJ1BS1ST19JVGVBF/bin/fm-dashboard.sh show ship-the-alpha-widget-orbl --json; echo "exit: $?"
-fm-dashboard.sh: could not reach dashboard at http://127.0.0.1:44727 (is it running? see: fm-dashboard.sh start / server-status): curl: (28) Operation timed out after 20008 milliseconds with 0 bytes received
+$ FM_DASHBOARD_MAX_TIME=0 /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C8D53MDFDM07KJK2TJTMWC/bin/fm-dashboard.sh show ship-the-alpha-widget-qcc1 --json
+fm-dashboard.sh: ignoring invalid FM_DASHBOARD_MAX_TIME=0 (want positive seconds); using 20
+{"id": "ship-the-alpha-widget-qcc1", "title": "Ship the alpha widget", "agent": "design", "captain": "firstmate", "status": "working", "waiting_on_id": null, "waiting_reason": null, "needs_attention_reason": null, "starred": 0, "backlog_ref": "design:alpha-widget", "initial_prompt": "Wire the new intake path end to end.", "created_at": "2026-08-19T06:26:08Z", "updated_at": "2026-08-19T06:26:08Z", "notes": [], "status_history": [{"id": 1, "task_id": "ship-the-alpha-widget-qcc1", "from_status": null, "to_status": "not_started", "changed_at": "2026-08-19T06:26:08Z", "note": "created"}, {"id": 4, "task_id": "ship-the-alpha-widget-qcc1", "from_status": "not_started", "to_status": "working", "changed_at": "2026-08-19T06:26:08Z", "note": null}]}
+
+$ # a board that drops packets (blackhole address) fails fast on the 5s connect bound
+
+$ time FM_DASHBOARD_URL=http://192.0.2.1:8420 /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C8D53MDFDM07KJK2TJTMWC/bin/fm-dashboard.sh show ship-the-alpha-widget-qcc1
+fm-dashboard.sh: could not reach dashboard at http://192.0.2.1:8420 (is it running? see: fm-dashboard.sh start / server-status): curl: (28) Failed to connect to 192.0.2.1 port 8420 after 5016 ms: Timeout was reached
 
 000
+elapsed: 5s (bounded by --connect-timeout 5, not hung)
 
-real	0m19.923s
-user	0m0.005s
-sys	0m0.006s
-exit: 1
+$ # === 6. board UI before/after: this same card moves Not Started -> Working ===
 
-$ bounded by --max-time (20s default), so a held handoff lock can never stall on an unreachable board
+$ FM_HOME=main-home /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C8D53MDFDM07KJK2TJTMWC/bin/fm-backlog-handoff.sh design epsilon-importer --card wire-the-epsilon-importer-smlz
+handed off 1 item(s) to design: epsilon-importer
+  into /tmp/cardlink-r2-demo/run/design-home/data/backlog.md
+dashboard: linked card wire-the-epsilon-importer-smlz to epsilon-importer (ref=design:epsilon-importer, agent=design, status not_started -> working)
+
+$ /home/joliv/.no-mistakes/worktrees/25cff23b1158/01M0C8D53MDFDM07KJK2TJTMWC/bin/fm-dashboard.sh show wire-the-epsilon-importer-smlz --json
+{
+  "id": "wire-the-epsilon-importer-smlz",
+  "title": "Wire the epsilon importer",
+  "status": "working",
+  "agent": "design",
+  "backlog_ref": "design:epsilon-importer"
+}
+
+$ curl -s http://127.0.0.1:34647/api/tasks | jq '[.tasks[]|{id,title,status,agent,backlog_ref}]'
+[
+  {
+    "id": "wire-the-epsilon-importer-smlz",
+    "title": "Wire the epsilon importer",
+    "status": "working",
+    "agent": "design",
+    "backlog_ref": "design:epsilon-importer"
+  },
+  {
+    "id": "polish-the-beta-surface-qbzb",
+    "title": "Polish the beta surface",
+    "status": "working",
+    "agent": "design",
+    "backlog_ref": "design:beta-polish"
+  },
+  {
+    "id": "ship-the-alpha-widget-qcc1",
+    "title": "Ship the alpha widget",
+    "status": "working",
+    "agent": "design",
+    "backlog_ref": "design:alpha-widget"
+  }
+]

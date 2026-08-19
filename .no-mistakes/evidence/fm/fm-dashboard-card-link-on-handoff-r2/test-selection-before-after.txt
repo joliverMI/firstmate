@@ -1,0 +1,15 @@
+# Does a change to the handoff script actually select the board suites?
+# bin/fm-test-run.sh --changed picks the tests CI runs for a diff. Same one-line
+# scratch edit to bin/fm-backlog-handoff.sh, run against each tree.
+
+$ # base 3c8f796 - the handoff script mapped to the secondmate family only
+$ bash bin/fm-test-run.sh --list --changed --base HEAD   # 18 suites
+tests/fm-backlog-handoff.test.sh
+tests/fm-remote-backlog-handoff.test.sh
+
+$ # this change (fb86c70)
+$ bash bin/fm-test-run.sh --list --changed --base HEAD   # 21 suites
+tests/fm-backlog-handoff.test.sh
+tests/fm-remote-backlog-handoff.test.sh
+tests/fm-dashboard-card-link.test.sh
+tests/fm-dashboard.test.sh
