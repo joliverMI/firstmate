@@ -818,6 +818,62 @@ EOF
   pass "--resume-pending completes a local secondmate's stranded card link, not just a remote outbox's"
 }
 
+# Regression: --resume-pending is not something an operator remembers to run -
+# bin/fm-bootstrap.sh runs it on every session start, and that is the whole
+# "card reaches testing without a human remembering" half of the mechanism. Its
+# gate used to require a pending remote outbox, which a purely local secondmate
+# never has, so a link stranded by a board that was down stayed stranded across
+# every subsequent session start. Driven through bin/fm-bootstrap.sh itself
+# rather than the handoff script, because the gate is bootstrap's own.
+test_session_start_completes_a_stranded_local_card_link() {
+  local home sub id card out record fakebin
+  home="$TMP_ROOT/handoff-bootstrap-resume-main"
+  sub="$TMP_ROOT/handoff-bootstrap-resume-sub"
+  id=handoff-bootstrap-sm
+  setup_handoff_homes "$home" "$sub" "$id"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] handoff-item-b1 - stranded by a board that was down (repo: alpha)
+
+## Done
+EOF
+  card=$(add_card "Session-start resume coverage")
+  [ -n "$card" ] || fail "add_card returned no id"
+  record="$home/state/handoff-cards/$id"
+
+  out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-b1 --card "$card" 2>&1)
+  expect_code 0 "$?" "handoff must not fail just because the dashboard is unreachable" "$out"
+  assert_grep "$(printf 'handoff-item-b1\t%s' "$card")" "$record" \
+    "a failed link must leave the pending card record in place"
+  assert_absent "$home/data/handoff" "a local handoff must not create a remote outbox directory"
+  [ "$(card_status "$card")" = not_started ] || fail "a card whose link merely failed must not read as linked"
+
+  # gh is the only other thing bootstrap's network half reaches for here, and
+  # what it answers is owned elsewhere; stub it so this case stays hermetic.
+  # FM_ROOT_OVERRIDE points bootstrap's own repo-relative sweeps at the fixture
+  # home, which has no clones to refresh - the resume it invokes resolves this
+  # repo's scripts from its own location either way.
+  fakebin="$home/fakebin"
+  mkdir -p "$fakebin"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$fakebin/gh"
+  chmod +x "$fakebin/gh"
+
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_BOOTSTRAP_NETWORK=only "$ROOT/bin/fm-bootstrap.sh" 2>&1)
+  expect_code 0 "$?" "session start should succeed while sweeping a pending card record" "$out"
+  [ "$(card_field "$card" backlog_ref)" = "$id:handoff-item-b1" ] \
+    || fail "session start did not complete the stranded link's card ref"
+  [ "$(card_field "$card" agent)" = "$id" ] || fail "session start did not set the card agent"
+  [ "$(card_status "$card")" = working ] || fail "the stranded card did not advance to working at session start"
+  assert_absent "$record" "the card record should be retired once the board confirmed the link"
+
+  # And with the pair retired, the marker that reported it goes quiet.
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" "$ROOT/bin/fm-bootstrap.sh" 2>&1)
+  assert_not_contains "$out" 'pending card link(s)' \
+    "session start still reported a card link the board had already confirmed"
+  pass "a session start sweeps a purely local secondmate's stranded card link to completion"
+}
+
 # Regression: docs/dashboard.md and this mechanism's own warnings send the
 # operator to state/handoff-cards/<secondmate-id> to unpick a half-written link
 # by hand, so a record saved by an editor that does not terminate its last line
@@ -1815,6 +1871,7 @@ if command -v tasks-axi >/dev/null 2>&1; then
   test_operator_handoff_writes_the_fleet_audit_log_once_per_invocation_for_two_transport_failures
   test_handoff_record_without_a_trailing_newline_loses_no_pair
   test_resume_pending_completes_a_stranded_local_card_link
+  test_session_start_completes_a_stranded_local_card_link
   test_handoff_finishes_its_own_half_written_card_link
   test_handoff_keeps_and_retries_a_pair_the_host_says_names_no_such_card
   test_handoff_never_confirms_a_link_whose_card_state_it_could_not_read

@@ -1028,6 +1028,54 @@ test_network_phases_record_per_step_elapsed_times() {
   pass "bootstrap: each deferred network phase, secondmate, and clone records its own elapsed time"
 }
 
+# Regression: a handed-off item whose Fleet Dashboard card link could not be
+# written leaves a pending pair in state/handoff-cards/<id>, and the sweep that
+# retries it is bin/fm-bootstrap.sh's own unattended --resume-pending run, whose
+# stderr this script discards and which is deliberately barred from the fleet
+# audit log. Without a marker of its own, a pair the board will never answer for
+# (a typo'd card id) was invisible on every surface - the card stayed frozen at
+# not_started exactly as before the mechanism existed. A purely local secondmate
+# never has an outbox, so this must fire on the record alone, and it must not be
+# swallowed by, or swallow, the outbox line for a secondmate that owes both.
+test_pending_card_links_are_reported_without_any_pending_outbox() {
+  local case_dir fakebin out
+  case_dir="$TMP_ROOT/handoff-card-detect"
+  mkdir -p "$case_dir/home/config" "$case_dir/home/state/handoff-cards"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  # Two pairs, the second unterminated - the hand-edited record
+  # bin/fm-backlog-handoff.sh already anticipates - so the count cannot come
+  # from a reader that drops an unterminated final line.
+  printf 'item-c1\tcard-one\nitem-c2\tcard-two' > "$case_dir/home/state/handoff-cards/local-sm"
+
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_BOOTSTRAP_NETWORK=skip "$ROOT/bin/fm-bootstrap.sh")
+  assert_contains "$out" 'SECONDMATE_HANDOFF: secondmate local-sm: pending card link(s): 2' \
+    "a stranded card link with no outbox at all reached no bootstrap surface"
+  assert_not_contains "$out" 'pending delivery:' \
+    "a home with no outbox directory was reported as owing a delivery"
+
+  # Reporting must not mutate the record - retiring a pair is --resume-pending's
+  # job alone - so a second session start says exactly the same thing.
+  [ "$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_BOOTSTRAP_NETWORK=skip "$ROOT/bin/fm-bootstrap.sh")" = "$out" ] \
+    || fail "the pending-card-link report is not idempotent across session starts"
+  assert_grep "$(printf 'item-c2\tcard-two')" "$case_dir/home/state/handoff-cards/local-sm" \
+    "reporting a pending card link altered the record it only reads"
+
+  # And a secondmate that owes both kinds is reported for both, independently.
+  mkdir -p "$case_dir/home/data/handoff"
+  printf '## Queued\n- [ ] item-c1 - handed off (repo: alpha)\n' \
+    > "$case_dir/home/data/handoff/local-sm.outbox.md"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_BOOTSTRAP_NETWORK=skip "$ROOT/bin/fm-bootstrap.sh")
+  assert_contains "$out" 'SECONDMATE_HANDOFF: secondmate local-sm: pending delivery: 1 item(s)' \
+    "the outbox line was lost once a card record existed alongside it"
+  assert_contains "$out" 'SECONDMATE_HANDOFF: secondmate local-sm: pending card link(s): 2' \
+    "the card-link line was lost once an outbox existed alongside it"
+  pass "bootstrap: a pending card link is reported on its own, with or without a pending outbox"
+}
+
 test_tasks_axi_verdict_handoff_is_consumed_once() {
   local case_dir fakebin log out
   case_dir="$TMP_ROOT/tasks-axi-handoff"
@@ -1173,6 +1221,7 @@ test_routine_bootstrap_contract_runs_under_system_bash
 test_network_phase_partitions_the_run
 test_network_sweeps_recheck_lock_ownership
 test_network_phases_record_per_step_elapsed_times
+test_pending_card_links_are_reported_without_any_pending_outbox
 test_tasks_axi_verdict_handoff_is_consumed_once
 test_crew_dispatch_active_rules_are_verbose_bootstrap_info
 test_crew_dispatch_validation

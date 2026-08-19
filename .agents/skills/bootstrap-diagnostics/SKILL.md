@@ -56,6 +56,9 @@ When any diagnostic needs captain attention, report the plain consequence and re
 - `SECONDMATE_HANDOFF: secondmate <id>: pending delivery: <n> item(s)` - queued work has already left the main dispatchable backlog and remains safe in the named remote route's backlog-format outbox.
   Preserve that outbox and rerun `bin/fm-backlog-handoff.sh --resume-pending` after same-host connectivity returns; never re-add or dispatch the items from the main backlog.
   An unsafe-outbox variant requires path and file-type inspection before any retry.
+- `SECONDMATE_HANDOFF: secondmate <id>: pending card link(s): <n>` - that many item/card pairs in `state/handoff-cards/<id>` are still owed their Fleet Dashboard link, so those cards are still reading `not_started` while the work is already with the secondmate.
+  Session start already retried them; a count that persists across runs means the board is unreachable, refusing the write, or does not have the named card, so run `bin/fm-backlog-handoff.sh --resume-pending` by hand and read its stderr for the per-pair reason before editing the record.
+  An unsafe-record variant requires the same path and file-type inspection as the outbox one.
 - `NUDGE_SECONDMATES: secondmate <id>: send failed: <reason>` - secondmate convergence changed a running home's loaded instructions or inherited config, but the deterministic `fm-send.sh fm-<id>` re-read nudge failed.
   Inspect the reason, keep the pending marker under `state/.secondmate-nudge-pending/` intact, and rerun session start after the endpoint or metadata issue is fixed so bootstrap can retry the exact same marked send on the same local or remote route.
 - `FMX: X mode on ...` / `FMX: X mode off ...` - bootstrap confirmed or removed the local Relay poll artifacts (`docs/configuration.md` "Relay (.env)"); the emitted line still carries Relay's former `X mode` wording.

@@ -200,7 +200,8 @@ The outbox is then copied to the remote handoff scratch directory and `fm-backlo
 Confirmed receipt removes the outbox.
 An existing outbox is the complete retry record for the item move itself, and `--resume-pending` safely re-delivers it.
 A `--card <card-id>` dashboard link keeps its own pending record and is resumed by the same flag on either route; [`dashboard.md`](dashboard.md) "The mechanical card link" owns that mechanism.
-Bootstrap runs that resume whenever either a pending outbox or a pending card record exists, and emits `SECONDMATE_HANDOFF:` only when an outbox remains.
+Bootstrap runs that resume whenever either a pending outbox or a pending card record exists, and emits a `SECONDMATE_HANDOFF:` line for each kind that remains afterwards - `pending delivery:` for an outbox, `pending card link(s):` for an unfinished card link.
+The two are independent, so a purely local secondmate that never has an outbox is still reported for a card link the board would not answer for.
 There is no two-phase journal and no additional tasks-axi release requirement.
 
 ## Sync, update, and retirement
