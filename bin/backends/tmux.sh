@@ -80,13 +80,57 @@ fm_backend_tmux_capture() {  # <target> <lines>
 # landing in a DIFFERENT live crew's composer. Prefix-colliding task ids (1 and
 # 10, 2 and 20) are routine, so that shape needs no dotted id at all.
 #
-# Still not covered, and deferred to fm-tmux-agent-state-session-prefix-match:
-# fm_backend_tmux_kill, which is DESTRUCTIVE and can silently destroy a
-# different live window given a dotted window name, and
-# fm_backend_tmux_agent_state, which is read-only and resolves its session
-# component by unpinned prefix match. That follow-up is a single shared
-# resolver for every one of these primitives - probe, keys, text, line,
-# literal, kill, agent-state - rather than further one-at-a-time fixes.
+# What is still UNPINNED, derived mechanically rather than from memory. The
+# list below is every raw `tmux <subcommand> ... -t <target>` under bin/ that
+# takes a caller-supplied target, minus the resolver's own calls and the two
+# gated sends above; re-derive it with:
+#
+#   grep -rnE '(^|[^#])[[:space:]]*(LC_ALL=C )?tmux [a-z-]+' --include='*.sh' bin/ \
+#     | grep -vE ':[0-9]+:[[:space:]]*#' | grep -E '\-t '
+#
+# Excluded from the list as not caller-supplied: the container-session checks
+# that address this process's OWN session or the literal `firstmate` (this
+# file's container_ensure, bin/fm-spawn.sh's worker-env read), and the
+# creation-time `new-window`/`set-window-option` calls that address a window id
+# this process just created.
+#
+# Destructive (acts on the wrong endpoint, not merely reports one):
+#   fm_backend_tmux_kill (this file)      - `=`-pinned components, but cannot
+#     address a dotted window NAME and can destroy a DIFFERENT live window.
+#   bin/fm-teardown.sh's reap_task_backend_process_group - raw
+#     `display-message -p -t "$T" '#{pane_pid}'`, whose result is SIGTERMed and
+#     SIGKILLed as a process group; the target is the recorded endpoint with no
+#     live check, so a prefix-resolved sibling's process group can be reaped.
+#     Reached when lsof is unavailable.
+#   bin/fm-afk-launch.sh - `kill-session -t "$target"` on the recorded
+#     daemon-session name (and `has-session -t "$target"` beside it).
+#
+# Input-delivering but ungated:
+#   fm_backend_tmux_send_text_line, fm_backend_tmux_send_literal (this file) -
+#     called only by bin/fm-spawn.sh, to type setup commands (`treehouse get`,
+#     the GOTMPDIR and TRACEPARENT exports) and the harness launch command into
+#     a pane it created earlier in the same run.
+#   bin/fm-supervise-daemon.sh's wedged-escalation `display-message -t
+#     "$target" <text>` status-line flash.
+#
+# Reads that can describe the wrong pane:
+#   fm_backend_tmux_capture (this file) - bin/fm-peek.sh and bin/fm-watch.sh
+#     capture with no existence gate, so a destroyed endpoint can print a live
+#     sibling's pane content under the dead task's label.
+#   fm_backend_tmux_current_path, fm_backend_tmux_current_command,
+#     fm_backend_tmux_foreground_comms, fm_backend_tmux_foreground_argv0s
+#     (this file) - raw `display-message` reads.
+#   fm_backend_tmux_agent_state (this file) - resolves its session component by
+#     unpinned prefix match, then checks the window name exactly against that
+#     session's inventory.
+#   fm_backend_tmux_create_task (this file) - the spawn-time duplicate-name
+#     check lists an unpinned session name.
+#   bin/fm-tmux-lib.sh's composer, cursor, busy and pane-identity reads
+#     (capture-pane and display-message on a caller-supplied target).
+#
+# All of them are deferred to fm-tmux-agent-state-session-prefix-match, whose
+# whole point is a single shared resolver used by every one of these rather
+# than further one-at-a-time fixes.
 
 # fm_backend_tmux_send_key: one named key, delivered only to an endpoint that
 # resolves exactly. Anything else is refused before send-keys runs at all: a

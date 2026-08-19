@@ -644,6 +644,39 @@ pass "real tmux: a window NAME containing a dot receives its own text, not the s
 kill_window_id "$dot_wid"
 kill_window_id "$dot_sib_wid"
 
+# --- an ambiguous bare window name is refused, not silently picked -----------
+# A bare, colon-free target is answered from the window-name inventory, and
+# that inventory spans EVERY session - the same fm-<id> window name can be live
+# in two of them at once. Returning the first listed match would make the
+# resolver's answer depend on tmux's listing order while the refusal messages
+# claim the target resolved "to exactly one live endpoint", and that answer is
+# now the SEND address too, so a send would type into an arbitrary one of the
+# two. An ambiguous name has no correct answer, so it must resolve to nothing.
+AMBIG_NAME="fm-ambig"
+AMBIG_SESSION="ambig-$$"
+ambig_wid=$(fm_backend_tmux_create_task "$SESSION" "$AMBIG_NAME" "$HOME") \
+  || fail "could not create the first window of the ambiguous bare-name pair"
+
+fm_backend_target_exists tmux "$AMBIG_NAME" \
+  || fail "a bare window name live in exactly one session must still resolve"
+pass "real tmux: an unambiguous bare window name still resolves"
+
+tmux new-session -d -s "$AMBIG_SESSION" -n "$AMBIG_NAME" -x 200 -y 50 \
+  || fail "could not create the second session holding the same window name"
+[ "$(tmux list-windows -a -F '#{window_name}' | grep -Fxc "$AMBIG_NAME")" -eq 2 ] \
+  || fail "ambiguity fixture is invalid: '$AMBIG_NAME' is not live in exactly two sessions"
+
+if fm_backend_target_exists tmux "$AMBIG_NAME"; then
+  fail "fm_backend_target_exists resolved the bare name '$AMBIG_NAME' that is live in two sessions"
+fi
+if fm_backend_tmux_send_key "$AMBIG_NAME" Enter 2>/dev/null; then
+  fail "fm_backend_tmux_send_key delivered to one of two windows both named '$AMBIG_NAME'"
+fi
+pass "real tmux: a bare window name live in two sessions is refused rather than resolved to either one"
+
+tmux kill-session -t "=$AMBIG_SESSION" 2>/dev/null || true
+kill_window_id "$ambig_wid"
+
 # --- kill and recovery-grade missing-window classification ------------------
 
 fm_backend_tmux_kill "$TARGET"

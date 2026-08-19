@@ -921,7 +921,7 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
 # id arm; only a colon-free `%N`/`@N`/`$N` is an id, and tmux never
 # prefix-matches those.
 fm_backend_tmux_exact_target() {  # <target> -> prints an exactly addressable target
-  local target=$1 session window pane base want listing line id rest pane_field window_field
+  local target=$1 session window pane base want listing line id rest pane_field window_field matches match_id
   case "$target" in
     *:*:*|'':*|*:'')
       return 1
@@ -990,6 +990,12 @@ EOF
       # The id carried on the matching inventory line is what is printed,
       # because the bare NAME is not an exact address even once it is known
       # to exist.
+      #
+      # A session name is unique per tmux server, so the session inventory
+      # answers at most once. A bare WINDOW name is not unique - the same
+      # fm-<id> window name can be live in two sessions at once - and an
+      # ambiguous name has no correct answer, so it is REFUSED rather than
+      # resolved to whichever session the listing happened to print first.
       listing=$(LC_ALL=C tmux list-sessions -F '#{session_id} #{session_name}' 2>/dev/null)
       while IFS= read -r line; do
         id=${line%% *}
@@ -1002,17 +1008,20 @@ EOF
 $listing
 EOF
       listing=$(LC_ALL=C tmux list-windows -a -F '#{window_id} #{window_name}' 2>/dev/null)
+      matches=0
+      match_id=
       while IFS= read -r line; do
         id=${line%% *}
         rest=${line#* }
         if [ -n "$id" ] && [ "$rest" = "$target" ]; then
-          printf '%s' "$id"
-          return 0
+          matches=$((matches + 1))
+          match_id=$id
         fi
       done <<EOF
 $listing
 EOF
-      return 1
+      [ "$matches" -eq 1 ] || return 1
+      printf '%s' "$match_id"
       ;;
   esac
 }

@@ -94,9 +94,16 @@ Sharing one resolution is the point: while the send re-derived its own `=$sessio
 The resolver answers each shape with the address it verified - a `session:window` pair with the `=`-pinned string it probed, a dotted or pane-qualified target and a bare name with the `@N`, `%N` or `$N` id read from the inventory listing that matched - so no shape is addressable only by a name tmux cannot express.
 A target that does not resolve is refused: nothing is sent, the call returns nonzero, and the text path reports `target-unresolved` rather than a verdict a caller could read as delivered.
 
-Two input-delivering primitives in the same adapter are NOT gated and still send unpinned: `fm_backend_tmux_send_text_line` and `fm_backend_tmux_send_literal`, both called only by `fm-spawn.sh` to type setup commands and the harness launch command into a pane it created earlier in the same run.
-Two more helpers resolve their own targets and are deferred to `fm-tmux-agent-state-session-prefix-match`: `fm_backend_tmux_kill`, which is destructive and can silently destroy a *different* live window when given a dotted window name, and `fm_backend_tmux_agent_state`, which is read-only and resolves its session component by unpinned prefix match.
-That follow-up is a single shared resolver used by every one of these primitives - probe, keys, text, line, literal, kill, agent-state.
+A bare, colon-free window name that is live in more than one session is refused rather than resolved, because an ambiguous name has no correct answer; a session name is unique per tmux server and so still resolves.
+
+Everything else that hands tmux a caller-supplied target is still unpinned and is deferred to `fm-tmux-agent-state-session-prefix-match`.
+The list below is mechanically derived from every raw `tmux <subcommand> ... -t <target>` under `bin/`, minus the resolver's own calls and the two gated sends; the header comment in `bin/backends/tmux.sh` carries the `grep` that reproduces it, and excludes the container-session checks that address this process's own session or the literal `firstmate`, and the creation-time calls that address a window id the same process just created.
+
+- **Destructive** - acts on the wrong endpoint rather than merely reporting one: `fm_backend_tmux_kill`, whose components are `=`-pinned but which cannot address a dotted window name and can destroy a *different* live window; `fm-teardown.sh`'s process-group reaper, whose raw `display-message -p -t "$T" '#{pane_pid}'` result is SIGTERMed and SIGKILLed as a process group with no live check on the recorded endpoint (reached when `lsof` is unavailable); and `fm-afk-launch.sh`'s `kill-session` on the recorded daemon-session name.
+- **Input-delivering but ungated**: `fm_backend_tmux_send_text_line` and `fm_backend_tmux_send_literal`, called only by `fm-spawn.sh` to type setup commands and the harness launch command into a pane it created earlier in the same run; and `fm-supervise-daemon.sh`'s wedged-escalation status-line flash.
+- **Reads that can describe the wrong pane**: `fm_backend_tmux_capture` (`fm-peek.sh` and `fm-watch.sh` capture with no existence gate, so a destroyed endpoint can print a live sibling's pane under the dead task's label), `fm_backend_tmux_current_path`, `fm_backend_tmux_current_command`, the two foreground-process probes, `fm_backend_tmux_agent_state` (unpinned session component), `fm_backend_tmux_create_task`'s duplicate-name check, and `fm-tmux-lib.sh`'s composer, cursor, busy and pane-identity reads.
+
+That follow-up is a single shared resolver used by every one of them.
 `tests/fm-backend-tmux-smoke.test.sh` asserts both refusals, that the live decoy pane receives neither the keystroke nor the message, that a dotted window name receives its own text rather than a sibling's pane, and that an exactly resolvable target still delivers, against a real tmux server.
 
 OpenCode 1.18.4 has one busy-queue exception.
