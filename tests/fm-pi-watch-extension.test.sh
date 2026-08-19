@@ -1555,6 +1555,110 @@ EOF
   pass "OpenCode watcher plugin coalesces callers that share a lock premise"
 }
 
+# Every other case in this file exports FM_WATCH_ARM_NO_LOGIN_SHELL=1, so this
+# is the only coverage of either branch of that opt-out. The production default
+# is load-bearing: bin/fm-watch-arm.sh and its descendants may only reach node
+# through PATH additions the account's profile makes, so an arm child spawned
+# without the login shell would die at exec on such a machine. A temp HOME whose
+# .profile exports a marker makes "did the arm child inherit the profile"
+# directly observable, and this case owns no readiness window, so paying the
+# profile cost here costs the timed cases nothing.
+test_watch_arm_login_shell_default_reaches_the_arm_child() {
+  local repo home oshome plugin ext log envprefix expected out status mode
+  repo="$TMP_ROOT/login-shell-root"
+  home="$TMP_ROOT/login-shell-home"
+  oshome="$TMP_ROOT/login-shell-os-home"
+  log="$TMP_ROOT/login-shell-arm.log"
+  mkdir -p "$repo/bin" "$home/state" "$home/config" "$oshome"
+  git init -q "$repo"
+  : > "$repo/AGENTS.md"
+  : > "$home/state/task.meta"
+  printf 'export FM_LOGIN_SHELL_MARKER=sourced\n' > "$oshome/.profile"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
+  ext="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'marker=%s\n' "${FM_LOGIN_SHELL_MARKER:-absent}" >> "${FM_ARM_LOG:?}"
+printf 'watcher: healthy pid=1 (beacon 0s)\n'
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  for mode in login plain; do
+    if [ "$mode" = login ]; then
+      envprefix=(env -u FM_WATCH_ARM_NO_LOGIN_SHELL)
+      expected="marker=sourced"
+    else
+      envprefix=(env FM_WATCH_ARM_NO_LOGIN_SHELL=1)
+      expected="marker=absent"
+    fi
+
+    rm -f "$log"
+    out=$("${envprefix[@]}" HOME="$oshome" PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_WATCH_REARM_RETRY_BASE_MS=60000 FM_WATCH_REARM_RETRY_MAX_MS=60000 node 2>&1 <<'EOF'
+import { existsSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+const client = { session: { promptAsync: async () => {} } };
+const hooks = await mod.FmPrimaryWatchArm({
+  client,
+  directory: process.env.WORKTREE,
+  worktree: process.env.WORKTREE,
+});
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
+for (let i = 0; i < 500 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 20));
+}
+if (!existsSync(process.env.FM_ARM_LOG)) {
+  console.error("OpenCode watch arm did not run");
+  process.exit(1);
+}
+EOF
+)
+    status=$?
+    expect_code 0 "$status" "OpenCode arm child must start under the $mode shell"
+    [ -z "$out" ] || fail "OpenCode $mode-shell arm test printed output: $out"
+    grep -qx "$expected" "$log" || fail "OpenCode arm child under the $mode shell expected $expected, got: $(cat "$log")"
+
+    rm -f "$log"
+    out=$("${envprefix[@]}" HOME="$oshome" PLUGIN="$ext" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_WATCH_REARM_RETRY_BASE_MS=60000 FM_WATCH_REARM_RETRY_MAX_MS=60000 node --input-type=module 2>&1 <<'EOF'
+import { existsSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+let handler = null;
+const pi = {
+  on() {},
+  registerCommand(name, options) {
+    if (name === "fm-watch-arm-pi") handler = options.handler;
+  },
+  registerTool() {},
+  sendUserMessage: async () => {},
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+if (!handler) {
+  console.error("Pi watch command was not registered");
+  process.exit(1);
+}
+await handler("", { ui: { notify() {} } });
+for (let i = 0; i < 500 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 20));
+}
+if (!existsSync(process.env.FM_ARM_LOG)) {
+  console.error("Pi watch arm did not run");
+  process.exit(1);
+}
+EOF
+)
+    status=$?
+    expect_code 0 "$status" "Pi arm child must start under the $mode shell"
+    [ -z "$out" ] || fail "Pi $mode-shell arm test printed output: $out"
+    grep -qx "$expected" "$log" || fail "Pi arm child under the $mode shell expected $expected, got: $(cat "$log")"
+  done
+  pass "Watcher arm children inherit the login shell by default and skip it on opt-out"
+}
+
 test_opencode_watch_arm_coordinator_respects_primary_scope() {
   local plugin base repo home log out status
   plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
@@ -2365,6 +2469,7 @@ test_opencode_primary_watch_plugin_uses_effective_state_home
 test_opencode_primary_watch_plugin_sources_effective_config
 test_opencode_primary_watch_plugin_requires_session_lock
 test_opencode_watch_arm_coalesces_callers_on_an_unchanged_lock
+test_watch_arm_login_shell_default_reaches_the_arm_child
 test_opencode_watch_arm_coordinator_respects_primary_scope
 test_opencode_primary_watch_plugin_rearms_after_wake
 test_opencode_pre_ready_actionable_close_preserves_its_successor
