@@ -42,11 +42,28 @@ fm_backend_tmux_capture() {  # <target> <lines>
   tmux capture-pane -p -t "$1" -S -"$2"
 }
 
-# fm_backend_tmux_send_key: one named key. Mirrors fm-send.sh's --key path:
-# `tmux display-message -p -t "$T" '#{pane_id}' >/dev/null`, then
-# `tmux send-keys -t "$T" "$2"`.
+# fm_backend_tmux_send_key: one named key, delivered only to an endpoint that
+# resolves EXACTLY. The pre-send guard used to be the same
+# `tmux display-message -p -t "$T" '#{pane_id}'` exit-status probe
+# fm_backend_target_exists no longer trusts, and on a send path its failure is
+# worse than a wrong liveness verdict: verified on real tmux that with
+# `sess:fm-alpha` destroyed and `sess:fm-alpha-2` alive the probe exits 0 AND
+# the following `send-keys -t sess:fm-alpha` DELIVERS the keystrokes into
+# fm-alpha-2's pane - one crew's interrupt or Enter landing in a DIFFERENT live
+# crew's composer. The guard is therefore the one exact-resolution primitive
+# (fm_backend_target_exists, bin/fm-backend.sh) rather than a second bespoke
+# probe, and an unresolvable target REFUSES before send-keys runs at all: a
+# keystroke that goes nowhere is a nuisance, a keystroke in the wrong pane can
+# be anything. Once the exact target is known to exist the raw target is safe
+# to hand tmux - tmux resolves an exact name before any prefix - and it must
+# stay raw, because the `=` pin that makes the guard exact cannot express the
+# pane-qualified forms send targets legitimately take (verified: `send-keys -t
+# '=sess:=win.0'` fails with "can't find pane: 0" for a live pane 0).
 fm_backend_tmux_send_key() {  # <target> <key>
-  tmux display-message -p -t "$1" '#{pane_id}' >/dev/null
+  fm_backend_target_exists tmux "$1" || {
+    echo "error: refusing to send key '$2': tmux target '$1' does not resolve to exactly one live endpoint" >&2
+    return 1
+  }
   tmux send-keys -t "$1" "$2"
 }
 

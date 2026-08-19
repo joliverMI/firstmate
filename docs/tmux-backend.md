@@ -87,6 +87,11 @@ Only a proven empty composer is a positive delivery acknowledgement.
 Text left in established structure remains `pending`, text in ambiguous structure remains unproven, and unreadable or unsafe state remains unknown.
 `fm-send.sh` reports every unconfirmed verdict as a failure instead of retyping or assuming delivery.
 
+Key delivery is addressed to an exactly resolved endpoint.
+tmux resolves a bare `session:window` target by prefix, so the target of a destroyed window is answered by any live window whose name merely extends it: with `sess:fm-alpha` gone and `sess:fm-alpha-2` live, an unpinned `send-keys -t sess:fm-alpha` delivers the keystrokes into `fm-alpha-2`'s pane.
+The named-key path therefore verifies the target through the same exact-match resolution `fm_backend_target_exists` uses and refuses - sending nothing at all - when the target does not resolve to exactly one live endpoint, so an interrupt or Enter can never land in another crew's composer.
+`tests/fm-backend-tmux-smoke.test.sh` asserts the refusal and the decoy pane's silence against a real tmux server.
+
 OpenCode 1.18.4 has one busy-queue exception.
 While OpenCode is mid-turn, Enter queues the message but leaves its text visible until the turn completes.
 After the normal retry budget, only structurally proven pending text in a provably busy pane is accepted as queued, while an idle pane remains `pending` as a genuine swallowed Enter.

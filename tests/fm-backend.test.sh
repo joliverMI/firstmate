@@ -668,7 +668,7 @@ run_send_case() {  # <bin-root> <fakebin> <log> <home> -- <send args...>
 
 strip_send_preflight() {  # <log>
   local preflight
-  preflight=$'tmux\x1fdisplay-message\x1f-p\x1f-t\x1fsess:win\x1f#{pane_id}'
+  preflight=$'tmux\x1flist-panes\x1f-t\x1f=sess:=win'
   awk -v preflight="$preflight" '$0 != preflight { print }' "$1"
 }
 
@@ -689,8 +689,15 @@ test_send_tmux_contract() {
   run_send_case "$ROOT" "$fb" "$log" "$home" -- "sess:win" --key Escape
   rc=$?
   expect_code 0 "$rc" "fm-send --key should succeed against a live fake pane"
-  assert_contains "$(cat "$log")" $'\x1f''display-message'$'\x1f''-p'$'\x1f''-t'$'\x1f''sess:win'$'\x1f''#{pane_id}' \
-    "fm-send --key did not verify the explicit tmux target before sending"
+  # The pre-send verification is the EXACT-match probe, not the old
+  # `display-message -p -t sess:win '#{pane_id}'` exit-status read: that probe
+  # answers from a prefix-colliding live window and the unpinned send that
+  # followed it delivered the key into that other window's pane (proved
+  # against real tmux in tests/fm-backend-tmux-smoke.test.sh).
+  assert_contains "$(cat "$log")" $'\x1f''list-panes'$'\x1f''-t'$'\x1f''=sess:=win' \
+    "fm-send --key did not verify the explicit tmux target with an exact-match probe before sending"
+  assert_not_contains "$(cat "$log")" $'\x1f''display-message'$'\x1f''-p'$'\x1f''-t'$'\x1f''sess:win'$'\x1f''#{pane_id}' \
+    "fm-send --key still pre-flights with the prefix-resolving display-message probe"
   assert_contains "$(cat "$log")" $'\x1f''Escape' "fm-send --key did not send the named key"
   assert_not_contains "$(cat "$log")" $'\x1f''-l'$'\x1f' "fm-send --key must not type literal text"
 

@@ -482,6 +482,68 @@ if fm_backend_target_exists tmux "%99999"; then
 fi
 pass "real tmux: fm_backend_target_exists rejects a nonexistent pane id"
 
+# --- fm_backend_tmux_send_key: refuses a target it cannot resolve exactly -----
+# A send is the damaging direction of the same prefix-resolution flaw the
+# assertions above cover for liveness. The old pre-send guard was
+# `tmux display-message -p -t "$T" '#{pane_id}'`, whose exit status this suite
+# already proves is not an existence answer, and the send that followed was an
+# unpinned `send-keys -t "$T"`: with a destroyed `session:fm-decoy` and a live
+# sibling `session:fm-decoy-2`, the guard exits 0 AND tmux delivers the
+# keystrokes into the SIBLING crew's pane. So this asserts both halves - the
+# call must REFUSE (nonzero, no send-keys at all), and the live decoy must
+# never receive the Enter.
+# The proof that the Enter did not merely arrive late: a marker command is
+# TYPED into the decoy without submitting it, the refused Enter is attempted,
+# and only then is a sentinel driven through the decoy to completion. tmux
+# delivers keys in order, so a sentinel that has already executed means any
+# misdelivered Enter would have executed the marker first. The marker's output
+# token is never typed contiguously in the command line itself (same discipline
+# as wait_for_capture_text's header), so the echo of the typed-but-unsubmitted
+# command cannot false-positive.
+DECOY_LIVE="fm-decoy-2"
+DECOY_DEAD="$SESSION:fm-decoy"
+decoy_wid=$(fm_backend_tmux_create_task "$SESSION" "$DECOY_LIVE" "$HOME") \
+  || fail "could not create the live decoy window for the send-key refusal check"
+if tmux list-windows -t "=$SESSION" -F '#{window_name}' | grep -Fqx "fm-decoy"; then
+  fail "decoy fixture is invalid: the supposedly destroyed 'fm-decoy' window actually exists"
+fi
+
+DECOY_READY=false
+for _ in $(seq 1 100); do
+  tmux send-keys -t "$decoy_wid" C-c
+  tmux send-keys -t "$decoy_wid" -l "printf 'decoy-%s\\n' ready"
+  tmux send-keys -t "$decoy_wid" Enter
+  if wait_for_capture_text "$decoy_wid" "decoy-ready" 10; then
+    DECOY_READY=true
+    break
+  fi
+done
+[ "$DECOY_READY" = true ] || fail "the decoy shell never became ready to execute a misdelivered Enter"
+
+fm_backend_tmux_send_literal "$decoy_wid" "printf 'MISDELIVERED-%s\\n' KEYSTROKE" \
+  || fail "could not type the unsubmitted marker command into the decoy pane"
+
+if fm_backend_tmux_send_key "$DECOY_DEAD" Enter 2>/dev/null; then
+  fail "fm_backend_tmux_send_key accepted '$DECOY_DEAD', a destroyed target whose name is only a prefix of the live '$DECOY_LIVE'"
+fi
+pass "real tmux: fm_backend_tmux_send_key refuses a target that does not resolve exactly"
+
+tmux send-keys -t "$decoy_wid" C-c
+tmux send-keys -t "$decoy_wid" -l "printf 'decoy-%s\\n' sentinel"
+fm_backend_tmux_send_key "$decoy_wid" Enter \
+  || fail "fm_backend_tmux_send_key refused the LIVE decoy window id; the guard must not block a resolvable target"
+wait_for_capture_text "$decoy_wid" "decoy-sentinel" \
+  || fail "the decoy sentinel never executed, so the misdelivery assertion below would prove nothing"
+decoy_out=$(fm_backend_tmux_capture "$decoy_wid" 200) \
+  || fail "fm_backend_tmux_capture failed for the decoy pane"
+case "$decoy_out" in
+  *MISDELIVERED-KEYSTROKE*)
+    fail "keys addressed to the destroyed '$DECOY_DEAD' were delivered into the live '$DECOY_LIVE' pane"$'\n'"$decoy_out" ;;
+esac
+pass "real tmux: a key addressed to a destroyed prefix-colliding target never lands in the live sibling's pane"
+
+kill_window_id "$decoy_wid"
+
 # --- kill and recovery-grade missing-window classification ------------------
 
 fm_backend_tmux_kill "$TARGET"
