@@ -76,8 +76,13 @@
 # does not resolve, or an
 # unreachable dashboard, never fails the handoff; it is reported loudly on
 # stderr and, when the dashboard answers at all, recorded through
-# `fm-dashboard.sh audit-log --fleet`. No --card is the default and stays a
-# complete dashboard no-op.
+# `fm-dashboard.sh audit-log --fleet`. No --card is the default and stages
+# nothing on the board. Its one point of contact is completing a link an
+# earlier --card call already staged: a remote outbox is delivered whole, so a
+# later handoff (with or without --card) can land items an earlier failed run
+# annotated, and deleting the delivered outbox destroys the only record of
+# them - so every card the delivery actually landed is linked, not just the
+# one this command line named.
 # Usage: fm-backlog-handoff.sh <secondmate-id> <item-key> [--card <card-id>]
 #        fm-backlog-handoff.sh --resume-pending
 set -eu
@@ -317,6 +322,11 @@ backlog_key_noncanonical_body_lines() {
 # item header or an unindented `## ` section heading. Feeds
 # annotate_dashboard_card's read-modify-write; the write itself is delegated
 # to `tasks-axi update --body-file`, which re-applies the canonical indent.
+# A whitespace-only line is a BLANK body line that the body continues past,
+# not a boundary - that is what tasks-axi itself does with it, and treating a
+# stray lone space or tab as the end of the item would make this reader claim
+# a shorter body than the item really has, which the rewrite below would then
+# make true by writing the truncation back.
 backlog_key_body_lines() { # <file> <key>
   local file=$1 key=$2
   [ -f "$file" ] || return 0
@@ -331,10 +341,36 @@ backlog_key_body_lines() { # <file> <key>
       next
     }
     capturing && /^##[[:space:]]/ { exit }
-    capturing && /^$/ { print; next }
+    capturing && /^[[:space:]]*$/ { print ""; next }
     capturing && /^  / { line = $0; sub(/^  /, "", line); print line; next }
     capturing { exit }
   ' "$file"
+}
+
+# Prove the reader above agrees with tasks-axi - the single owner of the
+# backlog format - BEFORE anything is rewritten, by writing the body back
+# unchanged on a throwaway copy and requiring the copy to still say what the
+# original said. `tasks-axi update --body-file` REPLACES the whole body, so any
+# line this reader failed to see would be silently and unrecoverably written
+# away; a body that does not survive being written back unchanged is refused
+# instead, which surfaces as the caller's ordinary loud, non-fatal `annotate`
+# warning and leaves the item exactly as it was. Trailing whitespace is
+# normalized on both sides because tasks-axi rewrites a whitespace-only line as
+# an empty one, which loses no content.
+annotate_body_roundtrips() { # <file> <key> <body-path>
+  local file=$1 key=$2 body=$3 probe rc=0
+  probe=$(mktemp "${TMPDIR:-/tmp}/fm-handoff-probe.XXXXXX") || return 1
+  if ! cp -p -- "$file" "$probe"; then
+    rm -f "$probe" "$probe.lock"
+    return 1
+  fi
+  if ! tasks-axi update "$key" --file "$probe" --body-file "$body" >/dev/null 2>&1; then
+    rm -f "$probe" "$probe.lock"
+    return 1
+  fi
+  diff -q <(sed 's/[[:space:]]*$//' "$file") <(sed 's/[[:space:]]*$//' "$probe") >/dev/null 2>&1 || rc=1
+  rm -f "$probe" "$probe.lock"
+  return "$rc"
 }
 
 # Record the card id as a durable `dashboard_card: <card-id>` body line on the
@@ -352,7 +388,7 @@ backlog_key_body_lines() { # <file> <key>
 # Failure here is reported by the caller exactly like a failed dashboard call;
 # it never fails the handoff itself.
 annotate_dashboard_card() { # <file> <key> <card-id>
-  local file=$1 key=$2 card=$3 tmp existing kept desired
+  local file=$1 key=$2 card=$3 tmp unchanged existing kept desired
   existing=$(backlog_key_body_lines "$file" "$key")
   kept=
   if [ -n "$existing" ]; then
@@ -364,6 +400,16 @@ annotate_dashboard_card() { # <file> <key> <card-id>
     desired="dashboard_card: $card"
   fi
   [ "$desired" != "$existing" ] || return 0
+  if [ -n "$existing" ]; then
+    unchanged=$(mktemp "${TMPDIR:-/tmp}/fm-handoff-body.XXXXXX") || return 1
+    printf '%s\n' "$existing" > "$unchanged"
+    if ! annotate_body_roundtrips "$file" "$key" "$unchanged"; then
+      rm -f "$unchanged"
+      echo "warning: refusing to rewrite $key's body: it does not survive a tasks-axi round-trip unchanged, so recording card $card on it could lose body content" >&2
+      return 1
+    fi
+    rm -f "$unchanged"
+  fi
   tmp=$(mktemp "${TMPDIR:-/tmp}/fm-handoff-body.XXXXXX") || return 1
   printf '%s\n' "$desired" > "$tmp"
   if ! tasks-axi update "$key" --file "$file" --body-file "$tmp" >/dev/null 2>&1; then
@@ -480,6 +526,33 @@ card_already_linked() { # <card-id>
 # so the board is only claimed when the card carries neither a ref nor an
 # agent. The durable `dashboard_card:` annotation is still (re)written either
 # way - it records which card the item serves, not who currently owns the card.
+# Link every card a confirmed remote delivery actually landed, not just the one
+# the current command line named. One outbox is delivered as a whole, so it can
+# carry items annotated by earlier runs whose delivery failed; those cards were
+# deliberately left unlinked then, and once the outbox is transferred and
+# deleted the annotated item text - the only record of them - is gone with it,
+# so this is the last moment they can ever be linked. <unguarded-card> is the
+# one card this run is actively claiming and may overwrite; every other pair is
+# a leftover completion that only fills in a card nothing has claimed yet.
+link_delivered_card_pairs() { # <secondmate-id> <unguarded-card|''> <pair>...
+  local sm_id=$1 unguarded=$2 pair key card
+  shift 2
+  for pair in "$@"; do
+    [ -n "$pair" ] || continue
+    key=${pair%%$'\t'*}
+    card=${pair#*$'\t'}
+    if [ -n "$unguarded" ] && [ "$card" = "$unguarded" ]; then
+      dashboard_link_card "$sm_id" "$key" "$card"
+      continue
+    fi
+    if card_already_linked "$card"; then
+      echo "dashboard: card $card already links to ${CARD_EXISTING_REF:-(no ref)} (agent=${CARD_EXISTING_AGENT:-none}); left unchanged"
+      continue
+    fi
+    dashboard_link_card "$sm_id" "$key" "$card"
+  done
+}
+
 handoff_dashboard_link() { # <backlog-file> <secondmate-id> <item-key> <card-id> [preserve-existing-link]
   local file=$1 sm_id=$2 key=$3 card=$4 preserve=${5:-0}
   if ! annotate_dashboard_card "$file" "$key" "$card"; then
@@ -600,8 +673,8 @@ remove_interrupted_source_duplicates() { # <outbox> <keys...>
 }
 
 remote_handoff() { # <secondmate-id> <keys...>
-  local id=$1 outbox section main_section out_section key mv_out
-  local -a requested to_move already missing in_flight done_items not_queued
+  local id=$1 outbox section main_section out_section key mv_out pair found unguarded
+  local -a requested to_move already missing in_flight done_items not_queued staged
   shift
   requested=("$@")
   outbox="$DATA/handoff/$id.outbox.md"
@@ -667,6 +740,21 @@ remote_handoff() { # <secondmate-id> <keys...>
     annotate_dashboard_card "$outbox" "${requested[0]}" "$CARD_ARG" \
       || echo "warning: dashboard card link failed for ${requested[0]} -> card $CARD_ARG (annotate): could not record dashboard_card= on the handed-off item" >&2
   fi
+  # Read the staged pairs while the outbox still exists: delivery transfers and
+  # then deletes it, and the same read is what the crash-recovery path replays.
+  staged=()
+  while IFS= read -r pair; do
+    [ -n "$pair" ] && staged+=("$pair")
+  done < <(outbox_dashboard_card_pairs "$outbox")
+  if [ "$CARD_SET" -eq 1 ]; then
+    found=0
+    for pair in ${staged[@]+"${staged[@]}"}; do
+      [ "${pair#*$'\t'}" != "$CARD_ARG" ] || found=1
+    done
+    # An annotation that could not be written still gets its board link; only
+    # the durable record on the item is missing, and that was already warned.
+    [ "$found" -eq 1 ] || staged+=("${requested[0]}"$'\t'"$CARD_ARG")
+  fi
   remote_deliver_outbox "$id" "$outbox" || return 1
   echo "handed off ${#requested[@]} item(s) to remote secondmate $id: ${requested[*]}"
   [ "${#already[@]}" -eq 0 ] || echo "  already staged (recovered): ${already[*]}"
@@ -674,13 +762,11 @@ remote_handoff() { # <secondmate-id> <keys...>
   # Nothing newly staged means this run only re-delivered an already-staged
   # outbox, the remote twin of the local already-present path: never overwrite
   # a link something more precise has since claimed.
-  if [ "$CARD_SET" -eq 1 ]; then
-    if [ "${#to_move[@]}" -eq 0 ] && card_already_linked "$CARD_ARG"; then
-      echo "dashboard: card $CARD_ARG already links to ${CARD_EXISTING_REF:-(no ref)} (agent=${CARD_EXISTING_AGENT:-none}); left unchanged"
-    else
-      dashboard_link_card "$id" "${requested[0]}" "$CARD_ARG"
-    fi
+  unguarded=
+  if [ "$CARD_SET" -eq 1 ] && [ "${#to_move[@]}" -gt 0 ]; then
+    unguarded=$CARD_ARG
   fi
+  link_delivered_card_pairs "$id" "$unguarded" ${staged[@]+"${staged[@]}"}
 }
 
 with_remote_route_locks() { # <secondmate-id> <function> <args...>
@@ -702,7 +788,7 @@ with_remote_route_locks() { # <secondmate-id> <function> <args...>
 }
 
 resume_remote_outbox() { # <secondmate-id> <outbox-path>
-  local id=$1 outbox=$2 pair key card
+  local id=$1 outbox=$2 pair
   local -a pending_cards=()
   [ -e "$outbox" ] || [ -L "$outbox" ] || return 0
   if [ ! -f "$outbox" ] || [ -L "$outbox" ]; then
@@ -718,11 +804,7 @@ resume_remote_outbox() { # <secondmate-id> <outbox-path>
     [ -n "$pair" ] && pending_cards+=("$pair")
   done < <(outbox_dashboard_card_pairs "$outbox")
   remote_deliver_outbox "$id" "$outbox" || return 1
-  for pair in "${pending_cards[@]}"; do
-    key=${pair%%$'\t'*}
-    card=${pair#*$'\t'}
-    dashboard_link_card "$id" "$key" "$card"
-  done
+  link_delivered_card_pairs "$id" '' ${pending_cards[@]+"${pending_cards[@]}"}
 }
 
 resume_pending_outboxes() {

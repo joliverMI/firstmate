@@ -529,6 +529,75 @@ EOF
   pass "a corrected --card replaces the item's stale dashboard_card line rather than appending beside it"
 }
 
+# Regression: recording the card id REPLACES the item's whole body through
+# `tasks-axi update --body-file`, so anything the reader failed to see is
+# written away unrecoverably. A whitespace-only line (a lone space, a tab) is a
+# blank body line to tasks-axi, and nothing refuses it on the way in - it is an
+# ordinary editor artifact, not malformed input. It reaches the rewrite on the
+# already-present path, whose file no tasks-axi move has just normalized and
+# which no pre-move canonical check ever validated.
+test_handoff_card_annotation_keeps_a_body_split_by_a_whitespace_only_line() {
+  local home sub id card out
+  home="$TMP_ROOT/handoff-wsbody-main"
+  sub="$TMP_ROOT/handoff-wsbody-sub"
+  id=handoff-wsbody-sm
+  setup_handoff_homes "$home" "$sub" "$id"
+  printf '## Queued\n\n## Done\n' > "$home/data/backlog.md"
+  {
+    printf '## Queued\n'
+    printf -- '- [ ] handoff-item-a6 - body split by stray whitespace (repo: alpha)\n'
+    printf '  intent: first body line\n'
+    printf ' \n'
+    printf '  more: important detail\n'
+    printf '\t\n'
+    printf '  owner: someone\n'
+    printf '\n## Done\n'
+  } > "$sub/data/backlog.md"
+  card=$(add_card "Whitespace-split body coverage")
+
+  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-a6 --card "$card" 2>&1)
+  expect_code 0 "$?" "handoff of an item whose body has a whitespace-only line should succeed"
+  assert_grep "dashboard_card: $card" "$sub/data/backlog.md" "the card id was not recorded on the item"
+  assert_grep "intent: first body line" "$sub/data/backlog.md" "annotation lost the first body line"
+  assert_grep "more: important detail" "$sub/data/backlog.md" \
+    "annotation truncated the body at a whitespace-only line"
+  assert_grep "owner: someone" "$sub/data/backlog.md" \
+    "annotation truncated the body at a whitespace-only line"
+  pass "recording a card id never truncates a body that a whitespace-only line splits"
+}
+
+# Regression: the already-present path annotates the SECONDMATE's backlog,
+# which no pre-move canonical check ever validated, so a tab-indented
+# continuation line reaches the rewrite there. tasks-axi does not read such a
+# line as body, so it must be left exactly where it is rather than written away.
+test_handoff_already_present_annotation_keeps_a_noncanonical_body() {
+  local home sub id card out
+  home="$TMP_ROOT/handoff-tabbody-main"
+  sub="$TMP_ROOT/handoff-tabbody-sub"
+  id=handoff-tabbody-sm
+  setup_handoff_homes "$home" "$sub" "$id"
+  printf '## Queued\n\n## Done\n' > "$home/data/backlog.md"
+  {
+    printf '## Queued\n'
+    printf -- '- [ ] handoff-item-a7 - already landed with a tab body (repo: alpha)\n'
+    printf '  intent: canonical line\n'
+    printf '\tmore: tab indented detail\n'
+    printf '  owner: someone\n'
+    printf '\n## Done\n'
+  } > "$sub/data/backlog.md"
+  card=$(add_card "Tab-indented body coverage")
+
+  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-a7 --card "$card" 2>&1)
+  expect_code 0 "$?" "an already-present handoff should still succeed"
+  assert_contains "$out" "nothing to move" "the re-run did not report the idempotent no-op"
+  assert_grep "intent: canonical line" "$sub/data/backlog.md" "annotation lost the canonical body line"
+  assert_grep "more: tab indented detail" "$sub/data/backlog.md" \
+    "annotation wrote away the tab-indented continuation line"
+  assert_grep "owner: someone" "$sub/data/backlog.md" \
+    "annotation wrote away body content following a tab-indented line"
+  pass "annotating an already-present item never writes away a non-canonical continuation line"
+}
+
 # --- remote-route handoff coverage ------------------------------------------
 # A remote handoff stages the item into data/handoff/<id>.outbox.md, annotates
 # the card id onto the staged item there, and links the card only once delivery
@@ -652,6 +721,65 @@ test_resume_pending_links_the_card_recorded_in_the_staged_outbox() {
   pass "a crash-recovered outbox links its card from the annotated item alone, with no --card on the command line"
 }
 
+# stage_unreachable_card_item <key> <card-id> - leave one annotated item in the
+# pending outbox by handing it off to an unreachable remote, the state a failed
+# delivery genuinely leaves behind.
+stage_unreachable_card_item() {
+  local key=$1 card=$2 rc
+  write_remote_parent_backlog "- [ ] $key - staged before the remote came back (repo: alpha)"
+  FM_FAKE_SSH_MODE=unreachable run_remote_handoff "$REMOTE_SM" "$key" --card "$card" >/dev/null && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || fail "handoff to an unreachable remote claimed success"
+  assert_grep "dashboard_card: $card" "$REMOTE_PARENT/data/handoff/$REMOTE_SM.outbox.md" \
+    "the unreachable handoff did not stage its card annotation"
+}
+
+# Regression: an outbox is transferred and deleted as a WHOLE, so a later
+# handoff lands every item an earlier failed run left staged. Linking only the
+# key this command line named orphans those cards permanently - the deleted
+# outbox was the only record of them - which is the freeze-at-not-started bug
+# this whole mechanism exists to prevent.
+test_remote_handoff_links_every_card_its_delivery_lands() {
+  local stranded fresh out
+  stranded=$(add_card "Stranded co-staged coverage")
+  fresh=$(add_card "Fresh remote coverage")
+  stage_unreachable_card_item remote-item-r3 "$stranded"
+
+  write_remote_parent_backlog '- [ ] remote-item-r4 - handed off once the remote is back (repo: alpha)'
+  out=$(run_remote_handoff "$REMOTE_SM" remote-item-r4 --card "$fresh")
+  expect_code 0 "$?" "the later handoff should succeed"
+  assert_absent "$REMOTE_PARENT/data/handoff/$REMOTE_SM.outbox.md" "confirmed delivery left a pending outbox"
+  assert_grep 'remote-item-r3' "$REMOTE_SM_HOME/data/backlog.md" "the co-staged item was not delivered"
+  assert_grep 'remote-item-r4' "$REMOTE_SM_HOME/data/backlog.md" "the newly staged item was not delivered"
+
+  [ "$(card_field "$fresh" backlog_ref)" = "$REMOTE_SM:remote-item-r4" ] \
+    || fail "the card this run named was not linked"
+  [ "$(card_field "$stranded" backlog_ref)" = "$REMOTE_SM:remote-item-r3" ] \
+    || fail "a co-staged card the same delivery landed was left orphaned at not_started"
+  [ "$(card_field "$stranded" agent)" = "$REMOTE_SM" ] || fail "the co-staged card's agent was not set"
+  [ "$(card_status "$stranded")" = working ] || fail "the co-staged card never advanced to working"
+  pass "a remote handoff links every card its delivery landed, not only the one it was asked about"
+}
+
+# The same boundary reached with no --card at all: the run stages nothing on
+# the board of its own, it only completes a link an earlier --card call staged
+# and would otherwise destroy by deleting the delivered outbox.
+test_card_less_remote_handoff_completes_a_link_its_delivery_lands() {
+  local stranded out
+  stranded=$(add_card "Card-less flush coverage")
+  stage_unreachable_card_item remote-item-r5 "$stranded"
+
+  write_remote_parent_backlog '- [ ] remote-item-r6 - ordinary card-less handoff (repo: alpha)'
+  out=$(run_remote_handoff "$REMOTE_SM" remote-item-r6)
+  expect_code 0 "$?" "the card-less handoff should succeed"
+  assert_grep 'remote-item-r5' "$REMOTE_SM_HOME/data/backlog.md" "the co-staged item was not delivered"
+  assert_grep 'remote-item-r6' "$REMOTE_SM_HOME/data/backlog.md" "the card-less item was not delivered"
+
+  [ "$(card_field "$stranded" backlog_ref)" = "$REMOTE_SM:remote-item-r5" ] \
+    || fail "a card-less handoff dropped the link its own delivery made recoverable-never-again"
+  [ "$(card_status "$stranded")" = working ] || fail "the co-staged card never advanced to working"
+  pass "a card-less remote handoff still completes a link an earlier --card call staged"
+}
+
 test_spawn_links_card_and_advances_not_started_to_working
 test_spawn_without_card_flag_never_touches_the_dashboard
 test_spawn_with_unreachable_dashboard_still_succeeds_and_warns
@@ -667,10 +795,14 @@ test_handoff_with_unreachable_dashboard_still_succeeds_and_warns
 test_handoff_refuses_card_with_more_than_one_item
 test_handoff_already_present_never_overwrites_an_existing_card_link
 test_handoff_card_annotation_replaces_a_stale_card_id
+test_handoff_card_annotation_keeps_a_body_split_by_a_whitespace_only_line
+test_handoff_already_present_annotation_keeps_a_noncanonical_body
 if command -v node >/dev/null 2>&1; then
   setup_remote_route
   test_remote_handoff_links_card_only_after_confirmed_delivery
   test_resume_pending_links_the_card_recorded_in_the_staged_outbox
+  test_remote_handoff_links_every_card_its_delivery_lands
+  test_card_less_remote_handoff_completes_a_link_its_delivery_lands
 else
   pass "skipped remote-route card coverage - node not available for the remote fixture"
 fi
