@@ -90,6 +90,16 @@ until "$DASH" server-status 2>/dev/null | grep -qF 'api:     reachable'; do
   sleep 0.1
 done
 
+wait_for_port_file() {  # <portfile> <pid> <label>
+  local portfile=$1 pid=$2 label=$3 i=0
+  until [ -s "$portfile" ]; do
+    i=$((i + 1))
+    [ "$i" -lt 200 ] || { kill "$pid" 2>/dev/null; fail "$label never bound a port"; }
+    kill -0 "$pid" 2>/dev/null || fail "$label died before binding a port"
+    sleep 0.05
+  done
+}
+
 card_status() {  # <card-id>
   "$DASH" show "$1" --json 2>/dev/null | jq -r '.status // empty'
 }
@@ -549,13 +559,13 @@ EOF
   pass "a handoff finishes its own half-written card link instead of retiring it as somebody else's"
 }
 
-# Regression: a card id the board itself rejects can never be linked, so a
-# record that keeps retrying it re-warns and appends another identical
-# audit-log --fleet entry on every future handoff to this secondmate, forever
-# - an unbounded stream of identical findings trains the auditor's reader to
-# ignore the log. A definitive board rejection is retired once, loudly; only a
-# board that could not be read at all keeps its retry.
-test_handoff_retires_a_pair_the_board_says_names_no_such_card() {
+# A host that answers "no such card" has NOT proved it is the board - a stale
+# dashboard url pointing at a machine that still serves HTTP 404s every card
+# alike - so the pending record survives it exactly like an unreachable board,
+# and only the noise is bounded: reported once, not on every arrival, because
+# an unbounded stream of identical findings trains the auditor's reader to
+# ignore the log.
+test_handoff_keeps_but_reports_once_a_pair_the_host_says_names_no_such_card() {
   local home sub id card out record findings
   home="$TMP_ROOT/handoff-nocard-id-main"
   sub="$TMP_ROOT/handoff-nocard-id-sub"
@@ -565,6 +575,7 @@ test_handoff_retires_a_pair_the_board_says_names_no_such_card() {
 ## Queued
 - [ ] handoff-item-d1 - names a card that does not exist (repo: alpha)
 - [ ] handoff-item-d2 - a later unrelated handoff (repo: alpha)
+- [ ] handoff-item-d3 - a third unrelated handoff (repo: alpha)
 
 ## Done
 EOF
@@ -574,23 +585,200 @@ EOF
   out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-d1 --card "$card" 2>&1)
   expect_code 0 "$?" "handoff must not fail just because --card names an unknown card"
   assert_contains "$out" "handed off 1 item(s)" "the handoff itself did not succeed"
-  assert_contains "$out" "does not exist on the board" \
-    "the handoff did not report the board's definitive rejection of the card id"
+  assert_contains "$out" "has no card $card" "the handoff did not report the unlinkable card"
   assert_grep 'handoff-item-d1' "$sub/data/backlog.md" "the item did not land"
-  [ ! -e "$record" ] \
-    || fail "a card the board itself says does not exist stayed pending, so it will be retried forever"
+  assert_grep "$(printf 'handoff-item-d1\t%s' "$card")" "$record" \
+    "a card the host merely says it does not have must stay recorded, like any other failed link"
 
   findings=$("$DASH" audit-status --json | jq --arg c "$card" '[.log[] | select(.text | contains($c))] | length')
   [ "$findings" = 1 ] \
-    || fail "expected exactly one fleet audit-log finding for the rejected card, got $findings"
+    || fail "expected exactly one fleet audit-log finding for the unlinkable card, got $findings"
 
   out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-d2 2>&1)
   expect_code 0 "$?" "the next ordinary handoff should succeed"
-  assert_not_contains "$out" "$card" "a retired, impossible link re-warned on the next handoff"
+  assert_not_contains "$out" "$card" "an already-reported unlinkable link re-warned on the next handoff"
+  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-d3 2>&1)
+  expect_code 0 "$?" "a third handoff should succeed"
+  assert_not_contains "$out" "$card" "an already-reported unlinkable link re-warned again"
   findings=$("$DASH" audit-status --json | jq --arg c "$card" '[.log[] | select(.text | contains($c))] | length')
   [ "$findings" = 1 ] \
-    || fail "the impossible link appended another audit-log finding on the next handoff ($findings total)"
-  pass "a card the board definitively rejects is retired once, loudly, and never retried"
+    || fail "the unlinkable link appended another audit-log finding on a later handoff ($findings total)"
+  assert_grep "$(printf 'handoff-item-d1\t%s' "$card")" "$record" \
+    "the pending pair was dropped by a later arrival instead of staying retriable"
+  pass "an unlinkable card id stays recorded and retriable, but is reported exactly once"
+}
+
+# Regression: the status advance used to re-read the card through a second
+# `show`, whose failure was masked by the missing pipefail - an unread status
+# is indistinguishable from "already past not_started", so the link reported
+# itself CONFIRMED, the record was retired, and the card stayed frozen at
+# not_started with nothing left to retry it. Drive that with a real proxy that
+# forwards the writes to the real board but fails every card read, which is
+# exactly the mid-sequence outage the original report describes.
+test_handoff_never_confirms_a_link_whose_card_state_it_could_not_read() {
+  local home sub id card out record portfile proxy_pid port
+  home="$TMP_ROOT/handoff-blindstatus-main"
+  sub="$TMP_ROOT/handoff-blindstatus-sub"
+  id=handoff-blindstatus-sm
+  setup_handoff_homes "$home" "$sub" "$id"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] handoff-item-e1 - linked while the card is unreadable (repo: alpha)
+- [ ] handoff-item-e2 - a later handoff once the board is whole again (repo: alpha)
+
+## Done
+EOF
+  card=$(add_card "Blind status coverage")
+  [ -n "$card" ] || fail "add_card returned no id"
+  record="$home/state/handoff-cards/$id"
+
+  portfile="$TMP_ROOT/blindstatus.port"
+  rm -f "$portfile"
+  python3 - "$portfile" "$FM_DASHBOARD_HOST" "$FM_DASHBOARD_PORT" >/dev/null 2>&1 <<'PY' &
+import http.server, os, socketserver, sys, urllib.error, urllib.request
+
+portfile, up_host, up_port = sys.argv[1], sys.argv[2], sys.argv[3]
+UPSTREAM = "http://%s:%s" % (up_host, up_port)
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.0"
+
+    def log_message(self, *args):
+        pass
+
+    def _reply(self, code, data):
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _relay(self):
+        # Reading a card is the one call this fixture breaks; every write is
+        # forwarded to the real board, which is the mid-sequence outage shape.
+        if self.command == "GET" and self.path.startswith("/api/tasks/"):
+            self._reply(500, b'{"error":"card read deliberately failed by the test proxy"}')
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else None
+        request = urllib.request.Request(UPSTREAM + self.path, data=body, method=self.command)
+        content_type = self.headers.get("Content-Type")
+        if content_type:
+            request.add_header("Content-Type", content_type)
+        try:
+            with urllib.request.urlopen(request) as response:
+                self._reply(response.status, response.read())
+        except urllib.error.HTTPError as exc:
+            self._reply(exc.code, exc.read())
+        except Exception:
+            self._reply(502, b'{"error":"proxy could not reach the board"}')
+
+    do_GET = do_POST = do_PATCH = do_PUT = do_DELETE = _relay
+
+
+socketserver.TCPServer.allow_reuse_address = True
+server = socketserver.TCPServer(("127.0.0.1", 0), Handler)
+with open(portfile + ".tmp", "w") as fh:
+    fh.write(str(server.server_address[1]))
+os.rename(portfile + ".tmp", portfile)
+server.serve_forever()
+PY
+  proxy_pid=$!
+  wait_for_port_file "$portfile" "$proxy_pid" "the card-read-failing proxy"
+  port=$(cat "$portfile")
+
+  out=$(FM_DASHBOARD_URL="http://127.0.0.1:$port" FM_HOME="$home" \
+    "$HANDOFF" "$id" handoff-item-e1 --card "$card" 2>&1)
+  expect_code 0 "$?" "the handoff must not fail because the card could not be read"
+  assert_contains "$out" "handed off 1 item(s)" "the handoff itself did not succeed"
+  assert_not_contains "$out" "dashboard: linked card" \
+    "the link reported success while the card's own state was never readable"
+  assert_contains "$out" "warning: dashboard card link failed" \
+    "an unreadable card state was not reported as a failed link"
+  [ "$(card_status "$card")" = not_started ] \
+    || fail "the card advanced despite its state never being read"
+  assert_grep "$(printf 'handoff-item-e1\t%s' "$card")" "$record" \
+    "a link that never confirmed the card's status retired the only record that could retry it"
+
+  kill "$proxy_pid" 2>/dev/null
+  wait "$proxy_pid" 2>/dev/null
+
+  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-e2 2>&1)
+  expect_code 0 "$?" "the next ordinary handoff should succeed"
+  [ "$(card_status "$card")" = working ] \
+    || fail "the stranded card never advanced once the board was whole again"
+  [ ! -e "$record" ] || fail "the record should retire once the link is genuinely complete"
+  pass "a link whose card state could not be read is never confirmed, so its record stays retriable"
+}
+
+# Regression: re-recording a key with a corrected card id used to replace the
+# old pair outright, discarding a link that may already be half-written on the
+# old card - it keeps a dangling ref at not_started with no record left to
+# finish it, and nothing said so.
+test_handoff_re_card_keeps_the_unresolved_pairing_it_would_replace() {
+  local home sub id first second out record
+  home="$TMP_ROOT/handoff-recard-main"
+  sub="$TMP_ROOT/handoff-recard-sub"
+  id=handoff-recard-sm
+  setup_handoff_homes "$home" "$sub" "$id"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] handoff-item-f1 - first named the wrong card (repo: alpha)
+
+## Done
+EOF
+  first=$(add_card "Mistyped card coverage")
+  second=$(add_card "Corrected card coverage")
+  [ -n "$first" ] && [ -n "$second" ] || fail "add_card returned no id"
+  record="$home/state/handoff-cards/$id"
+
+  out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-f1 --card "$first" 2>&1)
+  expect_code 0 "$?" "handoff must not fail just because the dashboard is unreachable"
+  assert_grep "$(printf 'handoff-item-f1\t%s' "$first")" "$record" "the first pairing was not recorded"
+
+  out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-f1 --card "$second" 2>&1)
+  expect_code 0 "$?" "re-running an already-landed handoff should still succeed"
+  assert_contains "$out" "still has an unresolved dashboard card pairing to $first" \
+    "re-naming the card said nothing about the pairing already pending for that item"
+  assert_grep "$(printf 'handoff-item-f1\t%s' "$first")" "$record" \
+    "a still-unresolved pairing was silently dropped when a different card was named"
+  assert_grep "$(printf 'handoff-item-f1\t%s' "$second")" "$record" \
+    "the newly named card was not recorded"
+  pass "naming a different card for the same item keeps the unresolved pairing and says so"
+}
+
+# The card link is firstmate-local bookkeeping done after the move has already
+# landed and been reported, so a failure to write it must never retroactively
+# turn that reported success into a non-zero exit.
+test_handoff_record_bookkeeping_failure_never_fails_the_handoff() {
+  local home sub id card out rc
+  [ "$(id -u)" -ne 0 ] || { pass "skipped record-bookkeeping-failure coverage - running as root ignores permissions"; return 0; }
+  home="$TMP_ROOT/handoff-bookkeeping-main"
+  sub="$TMP_ROOT/handoff-bookkeeping-sub"
+  id=handoff-bookkeeping-sm
+  setup_handoff_homes "$home" "$sub" "$id"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] handoff-item-g1 - staged while the record is writable (repo: alpha)
+- [ ] handoff-item-g2 - swept once the record cannot be rewritten (repo: alpha)
+
+## Done
+EOF
+  card=$(add_card "Unwritable record coverage")
+  [ -n "$card" ] || fail "add_card returned no id"
+
+  out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-g1 --card "$card" 2>&1)
+  expect_code 0 "$?" "staging the pending pair should succeed"
+
+  chmod 500 "$home/state/handoff-cards" || fail "could not make the record directory unwritable"
+  out=$(FM_HOME="$home" "$HANDOFF" "$id" handoff-item-g2 2>&1) && rc=0 || rc=$?
+  chmod 700 "$home/state/handoff-cards"
+
+  expect_code 0 "$rc" "a purely local bookkeeping failure turned a completed handoff into a reported failure"
+  assert_contains "$out" "handed off 1 item(s)" "the handoff itself did not complete"
+  assert_grep 'handoff-item-g2' "$sub/data/backlog.md" "the item did not land"
+  pass "a card-record write failure warns without failing a handoff that already landed"
 }
 
 test_handoff_refuses_card_with_more_than_one_item() {
@@ -962,7 +1150,10 @@ test_handoff_without_card_flag_never_touches_the_dashboard
 test_handoff_with_unreachable_dashboard_still_succeeds_and_warns
 test_handoff_card_record_survives_a_failed_link_and_completes_on_the_next_handoff
 test_handoff_finishes_its_own_half_written_card_link
-test_handoff_retires_a_pair_the_board_says_names_no_such_card
+test_handoff_keeps_but_reports_once_a_pair_the_host_says_names_no_such_card
+test_handoff_never_confirms_a_link_whose_card_state_it_could_not_read
+test_handoff_re_card_keeps_the_unresolved_pairing_it_would_replace
+test_handoff_record_bookkeeping_failure_never_fails_the_handoff
 test_handoff_refuses_card_with_more_than_one_item
 test_handoff_already_present_never_overwrites_an_existing_card_link
 test_handoff_into_a_non_empty_destination_queue_links_the_card

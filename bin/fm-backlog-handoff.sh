@@ -65,16 +65,17 @@
 # (state/handoff-cards/<secondmate-id>, one "<item-key>\t<card-id>" line per
 # item), written once staging has actually landed. That record is retired per
 # pair, and only once the board has genuinely ANSWERED for that pair - the
-# link confirmed, a more precise claim found already in place, or the card id
-# definitively rejected as one the board does not have - never on the strength
-# of having merely attempted it. A pair whose link fails (an unreachable
-# board, a refused write) stays recorded, exactly where it was, for the next
-# arrival at this secondmate - a later handoff's delivery, or --resume-pending
-# - to retry; deleting it on a failed attempt would silently orphan the card
-# for good, which is the audit finding this whole mechanism exists to fix.
-# The mirror of that is a card the board itself says does not exist: retrying
-# it can never succeed, so it is retired with exactly one loud fleet record
-# rather than re-warning on every future handoff to this secondmate forever.
+# link confirmed, or a more precise claim found already in place - never on
+# the strength of having merely attempted it. A pair whose link fails (an
+# unreachable board, a refused write, or a host that says it has no such card)
+# stays recorded, exactly where it was, for the next arrival at this
+# secondmate - a later handoff's delivery, or --resume-pending - to retry;
+# deleting it on a failed attempt would silently orphan the card for good,
+# which is the audit finding this whole mechanism exists to fix. A card the
+# host says it does not have is kept for the same reason: a 404 proves only
+# that some host answered, never that the answering host was the board. What
+# is bounded there is the noise, not the record - each such pair is reported
+# once, not on every arrival.
 # The handed-off item itself is never rewritten:
 # which card a deliverable serves is firstmate-local bookkeeping, and
 # recording it in the item's body would mean this script performing a
@@ -101,6 +102,7 @@
 # Usage: fm-backlog-handoff.sh <secondmate-id> <item-key> [--card <card-id>]
 #        fm-backlog-handoff.sh --resume-pending
 set -eu
+set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
@@ -354,13 +356,31 @@ handoff_card_record() { # <secondmate-id>
   printf '%s\n' "$STATE/handoff-cards/$id"
 }
 
+# Re-recording a key with a DIFFERENT card keeps both pairs rather than
+# replacing the old one, and says so loudly. Of the two ways to stop a silent
+# overwrite - keep both, or refuse the new card while one is unresolved -
+# keeping both is the one consistent with the rest of this mechanism, whose
+# whole rule is that a durable record is discarded only on a genuine answer
+# from the board: an unresolved old pair may already carry a half-written link
+# on its card, and dropping it leaves that card dangling with nothing left to
+# finish it. Refusing the new card instead would also block the corrected card
+# behind an old one that may never resolve (a card the board does not have is
+# never retired either). Re-recording the SAME pair is the idempotent case and
+# stays a no-op.
 handoff_card_record_put() { # <secondmate-id> <item-key> <card-id>
-  local id=$1 key=$2 card=$3 record tmp
+  local id=$1 key=$2 card=$3 record tmp pending
   record=$(handoff_card_record "$id") || return 1
   mkdir -p "$(dirname "$record")" || return 1
   tmp=$(umask 077; mktemp "$(dirname "$record")/.card.XXXXXX") || return 1
   if [ -f "$record" ] && [ ! -L "$record" ]; then
-    awk -F'\t' -v key="$key" '$1 != key' "$record" > "$tmp" || { rm -f "$tmp"; return 1; }
+    awk -F'\t' -v key="$key" -v card="$card" '!($1 == key && $2 == card)' "$record" > "$tmp" \
+      || { rm -f "$tmp"; return 1; }
+    while IFS= read -r pending; do
+      [ -n "$pending" ] || continue
+      [ "${pending%%$'\t'*}" = "$key" ] || continue
+      printf 'warning: %s still has an unresolved dashboard card pairing to %s; keeping it alongside the newly named card %s rather than dropping a link that may already be half-written on the board - correct or resolve whichever card is wrong.\n' \
+        "$key" "${pending#*$'\t'}" "$card" >&2
+    done < "$tmp"
   fi
   printf '%s\t%s\n' "$key" "$card" >> "$tmp" || { rm -f "$tmp"; return 1; }
   mv -f -- "$tmp" "$record" || { rm -f "$tmp"; return 1; }
@@ -374,32 +394,84 @@ handoff_card_record_pairs() { # <secondmate-id>
   cat -- "$record"
 }
 
+# Rewrite one of this mechanism's line-per-entry state files without exactly
+# the named lines, leaving every other line untouched. Sole owner of the
+# filter, shared by the durable pair record and the once-per-pair warning
+# ledger below so the two can never drift apart on what "this exact entry"
+# means.
+handoff_card_lines_remove() { # <file> <line>...
+  local file=$1 tmp line keep drop
+  shift
+  [ "$#" -gt 0 ] || return 0
+  [ -f "$file" ] && [ ! -L "$file" ] || return 0
+  tmp=$(umask 077; mktemp "$(dirname "$file")/.card.XXXXXX") || return 1
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    keep=1
+    for drop in "$@"; do
+      [ "$line" != "$drop" ] || { keep=0; break; }
+    done
+    [ "$keep" -eq 0 ] || printf '%s\n' "$line" >> "$tmp"
+  done < "$file"
+  if [ -s "$tmp" ]; then
+    mv -f -- "$tmp" "$file" || { rm -f "$tmp"; return 1; }
+  else
+    rm -f -- "$tmp" "$file"
+  fi
+  return 0
+}
+
 # Remove exactly the named "<key>\t<card>" pairs from this secondmate's
 # durable record, leaving any other pair - one whose link attempt failed, or
 # one staged by a call that raced this read - untouched. A pending card
 # record is retired per pair, only once the board has genuinely confirmed
 # that pair's link; this is the only way anything is ever removed from it.
 handoff_card_record_remove_pairs() { # <secondmate-id> <pair>...
-  local id=$1 record tmp pair keep confirmed
+  local id=$1 record
   shift
   [ "$#" -gt 0 ] || return 0
   record=$(handoff_card_record "$id") || return 1
-  [ -f "$record" ] && [ ! -L "$record" ] || return 0
-  tmp=$(umask 077; mktemp "$(dirname "$record")/.card.XXXXXX") || return 1
-  while IFS= read -r pair; do
-    [ -n "$pair" ] || continue
-    keep=1
-    for confirmed in "$@"; do
-      [ "$pair" != "$confirmed" ] || { keep=0; break; }
-    done
-    [ "$keep" -eq 0 ] || printf '%s\n' "$pair" >> "$tmp"
-  done < "$record"
-  if [ -s "$tmp" ]; then
-    mv -f -- "$tmp" "$record" || { rm -f "$tmp"; return 1; }
-  else
-    rm -f -- "$tmp" "$record"
-  fi
+  handoff_card_lines_remove "$record" "$@"
+}
+
+# A pair the board answers about but cannot link - it says the card id does
+# not exist - is kept and retried like any other failure, because a 404 only
+# proves some host answered, never that the host answering was the board: a
+# stale config/dashboard-url pointing at a machine that still serves HTTP but
+# no longer runs the dashboard 404s every card, and honouring that as a
+# verdict would silently discard every pending link at once. What is bounded
+# instead is the NOISE: this ledger remembers which pairs have already been
+# reported that way, so each is warned about (and recorded to the fleet log)
+# exactly once rather than on every subsequent arrival. It is advisory only -
+# losing it costs a duplicate warning, never a link - and entries are dropped
+# as soon as their pair is retired.
+handoff_card_warnings_file() { # <secondmate-id>
+  local id=$1
+  case "$id" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  printf '%s\n' "$STATE/handoff-card-warnings/$id"
+}
+
+handoff_card_warning_seen() { # <secondmate-id> <pair>
+  local id=$1 pair=$2 file
+  file=$(handoff_card_warnings_file "$id") || return 1
+  [ -f "$file" ] && [ ! -L "$file" ] || return 1
+  grep -Fqx -- "$pair" "$file" 2>/dev/null
+}
+
+handoff_card_warning_mark() { # <secondmate-id> <pair>
+  local id=$1 pair=$2 file
+  file=$(handoff_card_warnings_file "$id") || return 1
+  mkdir -p "$(dirname "$file")" || return 1
+  ( umask 077; printf '%s\n' "$pair" >> "$file" ) || return 1
   return 0
+}
+
+handoff_card_warnings_forget() { # <secondmate-id> <pair>...
+  local id=$1 file
+  shift
+  [ "$#" -gt 0 ] || return 0
+  file=$(handoff_card_warnings_file "$id") || return 1
+  handoff_card_lines_remove "$file" "$@"
 }
 
 # Best-effort mechanical link to the Admiral's Fleet Dashboard
@@ -421,10 +493,18 @@ handoff_card_record_remove_pairs() { # <secondmate-id> <pair>...
 # is the only way a caller can tell confirmed from merely-attempted without
 # weakening that. link_delivered_card_pairs below is that caller: it uses this
 # to decide which pairs a pending record may actually retire.
+#
+# <known-status> is the status card_claim_probe already read from the board an
+# instant earlier, passed in rather than re-fetched: a second read here would
+# be a second separately-failable call inside the held handoff lock, and an
+# unreadable one is indistinguishable from "already past not_started" - which
+# would confirm, and so retire, a pair whose card is still frozen at
+# not_started. An empty <known-status> means the board never answered, and is
+# therefore a failure, never a licence to skip the advance.
 DASHBOARD_LINK_CONFIRMED=0
-dashboard_link_card() { # <secondmate-id> <item-key> <card-id>
-  local sm_id=$1 key=$2 card=$3
-  local dash ref failed=0 out current_status
+dashboard_link_card() { # <secondmate-id> <item-key> <card-id> <known-status|''>
+  local sm_id=$1 key=$2 card=$3 known_status=$4
+  local dash ref failed=0 out
   DASHBOARD_LINK_CONFIRMED=0
   dash="$SCRIPT_DIR/fm-dashboard.sh"
   ref="$sm_id:$key"
@@ -444,8 +524,10 @@ dashboard_link_card() { # <secondmate-id> <item-key> <card-id>
   fi
 
   if [ "$failed" -eq 0 ]; then
-    if current_status=$("$dash" show "$card" --json 2>/dev/null | jq -r '.status // empty' 2>/dev/null) \
-       && [ "$current_status" = not_started ]; then
+    if [ -z "$known_status" ]; then
+      failed=1
+      echo "warning: dashboard card link failed for $key -> card $card (status): the board did not answer when this card was read, so it cannot be confirmed past not_started" >&2
+    elif [ "$known_status" = not_started ]; then
       if out=$("$dash" status "$card" working 2>&1); then
         echo "dashboard: linked card $card to $key (ref=$ref, agent=$sm_id, status not_started -> working)"
       else
@@ -467,29 +549,39 @@ dashboard_link_card() { # <secondmate-id> <item-key> <card-id>
 
 # Read the board's own view of a card, distinguishing the two failures a
 # pending link must treat completely differently:
-#   0 - the board answered and the card exists; CARD_EXISTING_REF and
-#       CARD_EXISTING_AGENT hold what it currently carries (possibly empty).
-#   2 - the board answered and says this card id does not exist. That is a
-#       definitive verdict, not a hiccup: retrying it can never succeed.
+#   0 - the board answered and the card exists; CARD_EXISTING_REF,
+#       CARD_EXISTING_AGENT and CARD_EXISTING_STATUS hold what it currently
+#       carries (ref and agent possibly empty).
+#   2 - the host answered and says this card id does not exist. Reported so
+#       the caller can say something more useful than "unreachable", but NOT
+#       treated as a verdict that the card is gone: a 404 only proves some
+#       host answered, and a stale dashboard-url pointing at a machine that
+#       still serves HTTP would 404 every card alike.
 #   1 - the board could not be read at all (unreachable, timed out, any other
-#       refusal). Deliberately NOT treated as a verdict about the card, so the
-#       caller still attempts the write and fails the same loud, recorded,
-#       never-fatal way an unreachable board always has, and retries later.
-# fm-dashboard.sh reserves exit code 4 for the definitive rejection precisely
-# so this can be told apart without parsing its stderr.
+#       refusal). The caller still attempts the write and fails the same loud,
+#       recorded, never-fatal way an unreachable board always has.
+# fm-dashboard.sh reserves exit code 4 for the answered-but-missing case
+# precisely so this can be told apart without parsing its stderr.
+#
+# This is the single read of the card in the whole sweep: everything the link
+# below needs about the card's current state comes from here, so no decision
+# rests on a second call that could fail on its own.
 CARD_EXISTING_REF=
 CARD_EXISTING_AGENT=
+CARD_EXISTING_STATUS=
 DASH_EXIT_NOT_FOUND=4
 card_claim_probe() { # <card-id>
   local card=$1 out rc=0
   CARD_EXISTING_REF=
   CARD_EXISTING_AGENT=
+  CARD_EXISTING_STATUS=
   out=$("$SCRIPT_DIR/fm-dashboard.sh" show "$card" --json 2>/dev/null) || rc=$?
   [ "$rc" -ne "$DASH_EXIT_NOT_FOUND" ] || return 2
   [ "$rc" -eq 0 ] || return 1
   [ -n "$out" ] || return 1
   CARD_EXISTING_REF=$(printf '%s' "$out" | jq -r '.backlog_ref // empty' 2>/dev/null) || return 1
   CARD_EXISTING_AGENT=$(printf '%s' "$out" | jq -r '.agent // empty' 2>/dev/null) || return 1
+  CARD_EXISTING_STATUS=$(printf '%s' "$out" | jq -r '.status // empty' 2>/dev/null) || return 1
   return 0
 }
 
@@ -523,12 +615,11 @@ card_claim_is_ours() { # <secondmate-id> <item-key>
 #
 # Populates RETIRABLE_CARD_PAIRS for the caller: one "<key>\t<card>" entry per
 # pair the board has now given a genuine, final answer about - freshly linked,
-# already claimed by something more precise, or definitively rejected as a
-# card that does not exist - so the durable record can retire exactly those.
-# A pair whose link attempt merely failed is never added here, so it is never
-# retired either: it stays recorded for the next arrival (a later handoff's
-# delivery, or --resume-pending) to retry, instead of being thrown away on
-# the strength of having merely tried.
+# or already claimed by something more precise - so the durable record can
+# retire exactly those. A pair whose link attempt merely failed is never added
+# here, so it is never retired either: it stays recorded for the next arrival
+# (a later handoff's delivery, or --resume-pending) to retry, instead of being
+# thrown away on the strength of having merely tried.
 RETIRABLE_CARD_PAIRS=()
 link_delivered_card_pairs() { # <secondmate-id> <unguarded-card|''> <pair>...
   local sm_id=$1 unguarded=$2 pair key card probe
@@ -540,16 +631,18 @@ link_delivered_card_pairs() { # <secondmate-id> <unguarded-card|''> <pair>...
     card=${pair#*$'\t'}
     probe=0
     card_claim_probe "$card" || probe=$?
-    # A card id the board itself rejects can never be linked, so retiring it
-    # is the only end state that terminates. Retire it here, with exactly one
-    # fleet-visible record, rather than re-warning and re-appending an
-    # identical audit-log entry on every future handoff to this secondmate:
-    # an unbounded stream of identical warnings trains its reader to ignore
-    # the log, which is the same silence this mechanism exists to break.
+    # A card the host says it does not have is kept and retried like any other
+    # unanswerable link - the record is the only evidence the link is still
+    # owed, and a 404 does not prove the answering host was the board. Only
+    # the noise is bounded: report each such pair once, not on every arrival,
+    # so an unresolvable id cannot bury the fleet log it is recorded in.
     if [ "$probe" -eq 2 ]; then
-      echo "warning: dashboard card $card does not exist on the board; dropping the pending link for $key - it can never succeed and will not be retried" >&2
-      "$SCRIPT_DIR/fm-dashboard.sh" audit-log --fleet "handoff item $key to secondmate $sm_id names dashboard card $card, which does not exist on the board; the pending link was dropped and will not be retried" --kind error >/dev/null 2>&1 || true
-      RETIRABLE_CARD_PAIRS+=("$pair")
+      if ! handoff_card_warning_seen "$sm_id" "$pair"; then
+        echo "warning: the dashboard host has no card $card, so the pending link for $key cannot be completed; it stays recorded and will be retried on the next arrival, but this is the only time it will be reported" >&2
+        "$SCRIPT_DIR/fm-dashboard.sh" audit-log --fleet "handoff item $key to secondmate $sm_id names dashboard card $card, which the dashboard host says it does not have; the link is still pending and will be retried, but check whether the card id is wrong or the board url is stale" --kind error >/dev/null 2>&1 || true
+        handoff_card_warning_mark "$sm_id" "$pair" \
+          || echo "warning: could not record that card $card was already reported for $key; it may be reported again on the next arrival" >&2
+      fi
       continue
     fi
     if [ "$probe" -eq 0 ] && [ "$card" != "$unguarded" ] && ! card_claim_is_ours "$sm_id" "$key"; then
@@ -557,7 +650,7 @@ link_delivered_card_pairs() { # <secondmate-id> <unguarded-card|''> <pair>...
       RETIRABLE_CARD_PAIRS+=("$pair")
       continue
     fi
-    dashboard_link_card "$sm_id" "$key" "$card"
+    dashboard_link_card "$sm_id" "$key" "$card" "$CARD_EXISTING_STATUS"
     [ "$DASHBOARD_LINK_CONFIRMED" -eq 0 ] || RETIRABLE_CARD_PAIRS+=("$pair")
   done
 }
@@ -576,6 +669,12 @@ link_delivered_card_pairs() { # <secondmate-id> <unguarded-card|''> <pair>...
 # Callers must hold this secondmate's handoff lock: the record is a
 # read-modify-write, and the sweep reads it, then writes back a filtered
 # snapshot of it.
+#
+# Always returns 0. The handoff (or the delivery) is already complete and
+# already reported by the time this runs, and this is purely firstmate-local
+# bookkeeping, so a full disk or an unwritable state directory here warns and
+# is never allowed to reach the caller's exit status - which on every route is
+# the script's own.
 consume_handoff_card_record() { # <secondmate-id> <unguarded-card|''>
   local id=$1 unguarded=$2 pair
   local -a pairs=()
@@ -584,7 +683,12 @@ consume_handoff_card_record() { # <secondmate-id> <unguarded-card|''>
   done < <(handoff_card_record_pairs "$id")
   [ "${#pairs[@]}" -eq 0 ] && return 0
   link_delivered_card_pairs "$id" "$unguarded" "${pairs[@]}"
-  [ "${#RETIRABLE_CARD_PAIRS[@]}" -eq 0 ] || handoff_card_record_remove_pairs "$id" "${RETIRABLE_CARD_PAIRS[@]}"
+  if [ "${#RETIRABLE_CARD_PAIRS[@]}" -gt 0 ]; then
+    handoff_card_record_remove_pairs "$id" "${RETIRABLE_CARD_PAIRS[@]}" \
+      || echo "warning: could not retire ${#RETIRABLE_CARD_PAIRS[@]} confirmed card pairing(s) for $id; the next arrival will re-check them against the board" >&2
+    handoff_card_warnings_forget "$id" "${RETIRABLE_CARD_PAIRS[@]}" || true
+  fi
+  return 0
 }
 
 # Stage this run's own pair (if it named a card) and sweep the whole record in
