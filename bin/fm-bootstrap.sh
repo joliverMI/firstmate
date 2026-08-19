@@ -730,7 +730,12 @@ secondmate_liveness_one() {  # <meta> <id>
 }
 
 secondmate_handoff_resume() {
-  [ -d "$DATA/handoff" ] || return 0
+  # Two kinds of pending work exist: an undelivered remote outbox, and a
+  # dashboard card link a handoff of either route staged and could not finish
+  # (bin/fm-backlog-handoff.sh). A home with only local secondmates has the
+  # second without ever having the first, so gating on the outbox directory
+  # alone would skip the resume that exists to complete those links.
+  [ -d "$DATA/handoff" ] || [ -d "$STATE/handoff-cards" ] || return 0
   "$SCRIPT_DIR/fm-backlog-handoff.sh" --resume-pending >/dev/null 2>&1 || true
 }
 

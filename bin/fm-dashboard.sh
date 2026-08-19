@@ -58,7 +58,8 @@
 # address (see docs/dashboard.md "Reaching the board from a secondmate").
 #
 # Every call is bounded: --connect-timeout 5s and --max-time 20s, overridable
-# with $FM_DASHBOARD_CONNECT_TIMEOUT / $FM_DASHBOARD_MAX_TIME (seconds).
+# with $FM_DASHBOARD_CONNECT_TIMEOUT / $FM_DASHBOARD_MAX_TIME (positive
+# seconds; anything else is ignored loudly and the default used).
 # Exit codes: 0 success, 4 the board answered and said the id does not exist,
 # 1 anything else (unreachable board, refused write, bad usage).
 set -u
@@ -105,16 +106,22 @@ DASH_EXIT_NOT_FOUND=4
 # bin/fm-bootstrap.sh's synchronous path, where an unbounded wait stalls the
 # whole fleet rather than one card. A non-numeric override is ignored loudly
 # rather than passed to curl, which would reject it and turn a bad env var
-# into "the board is unreachable".
+# into "the board is unreachable". A non-positive one is ignored just as
+# loudly for the opposite reason: curl accepts --max-time 0 and
+# --connect-timeout 0 and reads them as no timeout at all, so honouring a zero
+# would silently restore exactly the unbounded wait these bounds exist to
+# remove. Zero is spelled as "no [1-9] anywhere in an otherwise valid decimal",
+# which catches 0, 0.0 and .0 alike; a negative value carries a '-' and is
+# already non-numeric here.
 dash_timeout_seconds() { # <env-name> <raw-value> <default>
   local name=$1 raw=$2 default=$3
   case "$raw" in
     '') printf '%s' "$default"; return 0 ;;
-    .|*.*.*|*[!0-9.]*)
-      printf 'fm-dashboard.sh: ignoring invalid %s=%s (want seconds); using %s\n' "$name" "$raw" "$default" >&2
-      printf '%s' "$default"; return 0 ;;
+    .|*.*.*|*[!0-9.]*) : ;;
+    *[1-9]*) printf '%s' "$raw"; return 0 ;;
   esac
-  printf '%s' "$raw"
+  printf 'fm-dashboard.sh: ignoring invalid %s=%s (want positive seconds); using %s\n' "$name" "$raw" "$default" >&2
+  printf '%s' "$default"
 }
 
 # dash_call METHOD PATH [JSON_BODY] - prints response body on stdout,
@@ -542,7 +549,7 @@ main() {
     stop) cmd_server_stop ;;
     restart) cmd_server_stop 2>/dev/null; cmd_server_start ;;
     server-status) cmd_server_status ;;
-    ""|--help|-h|help) sed -n '2,63p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+    ""|--help|-h|help) sed -n '2,64p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
     *) die "unknown command '$cmd' - run: fm-dashboard.sh --help" ;;
   esac
 }

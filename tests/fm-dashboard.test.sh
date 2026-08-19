@@ -229,6 +229,28 @@ PY
   pass "every dashboard call is bounded, so a board that never answers fails fast instead of hanging"
 }
 
+# The bound above can be handed back by an override curl accepts but reads as
+# "no timeout at all": --max-time 0 and --connect-timeout 0 are unlimited, not
+# instant. A zero (or all-zero decimal) override therefore has to be refused
+# exactly like a non-numeric one - reported loudly and replaced by the
+# default - rather than passed through to curl.
+test_zero_timeout_override_is_refused_like_any_other_unusable_one() {
+  local err
+  err="$FM_HOME/zero-timeout.err"
+
+  FM_DASHBOARD_MAX_TIME=0 FM_DASHBOARD_CONNECT_TIMEOUT=0.0 \
+    "$DASH" list >/dev/null 2>"$err" || fail "list failed under a zero timeout override: $(cat "$err")"
+  assert_grep 'ignoring invalid FM_DASHBOARD_MAX_TIME=0' "$err" \
+    "a zero --max-time override was accepted silently instead of falling back to the bounded default"
+  assert_grep 'ignoring invalid FM_DASHBOARD_CONNECT_TIMEOUT=0.0' "$err" \
+    "an all-zero --connect-timeout override was accepted silently instead of falling back to the bounded default"
+
+  FM_DASHBOARD_MAX_TIME=2 "$DASH" list >/dev/null 2>"$err" \
+    || fail "list failed under a valid timeout override: $(cat "$err")"
+  assert_no_grep 'ignoring invalid' "$err" "a valid timeout override was rejected"
+  pass "a zero timeout override is refused and replaced by the default, so the bound cannot be handed back"
+}
+
 # bin/fm-backlog-handoff.sh's pending card record must retire a card the board
 # itself rejects while retrying one it merely could not reach, so the two need
 # to be distinguishable from the outside - by exit code, not by parsing
@@ -269,5 +291,6 @@ test_needs_attention_status_carries_reason_and_sorts_first
 test_audit_log_run_and_interval
 test_bad_input_fails_with_nonzero_exit
 test_calls_are_bounded_against_a_board_that_never_answers
+test_zero_timeout_override_is_refused_like_any_other_unusable_one
 test_missing_id_and_unreachable_board_have_distinct_exit_codes
 test_star_and_delete

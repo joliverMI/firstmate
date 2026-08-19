@@ -1014,9 +1014,44 @@ resume_pending_outboxes() {
   return "$failed"
 }
 
+# An outbox is only the remote route's recovery record. The local route stages
+# a pending pair too and never writes an outbox, so a local secondmate whose
+# link failed while the board was down is invisible to the sweep above and
+# would have no recovery command at all - only the accident of some later
+# handoff to that same secondmate. Sweep the records themselves as well, so
+# --resume-pending means every pending link rather than the remote half of
+# them.
+#
+# The outbox check is what keeps the two sweeps from disagreeing: an id whose
+# outbox is still present has NOT arrived - that is precisely what the pass
+# above tries and may have failed to confirm - and its record must not be
+# linked on the strength of having merely been staged. Re-checked here under
+# the lock rather than trusted from the loop below, since the pass above runs
+# unlocked between the two. Nothing here stages a card of its own, so every
+# pair stays guarded, exactly as the remote resume path leaves them.
+resume_pending_card_record() { # <secondmate-id>
+  local id=$1 outbox="$DATA/handoff/$1.outbox.md"
+  [ ! -e "$outbox" ] && [ ! -L "$outbox" ] || return 0
+  consume_handoff_card_record "$id" ''
+}
+
+resume_pending_card_records() {
+  local record id failed=0
+  [ -d "$STATE/handoff-cards" ] || return 0
+  for record in "$STATE/handoff-cards"/*; do
+    [ -f "$record" ] && [ ! -L "$record" ] || continue
+    id=$(basename "$record")
+    case "$id" in ''|*[!A-Za-z0-9._-]*) echo "error: unsafe pending handoff card record: $record" >&2; failed=1; continue ;; esac
+    with_handoff_card_lock "$id" resume_pending_card_record "$id" || failed=1
+  done
+  return "$failed"
+}
+
 if [ "$RESUME_PENDING" -eq 1 ]; then
-  resume_pending_outboxes
-  exit $?
+  rc=0
+  resume_pending_outboxes || rc=1
+  resume_pending_card_records || rc=1
+  exit "$rc"
 fi
 
 ACTIVE_REGISTRY_LOCK=$(secondmate_registry_lock_path "$STATE")
@@ -1085,10 +1120,12 @@ fi
 
 if [ "${#TO_MOVE[@]}" -eq 0 ]; then
   echo "nothing to move: ${ALREADY[*]:-no keys} already present in $SUB_BACKLOG"
-  # Nothing was staged, so nothing is recorded: the item is already where it
-  # belongs. This run has no claim of its own to make, so every pair - this
-  # card included - stays guarded against a link the secondmate may since have
-  # made more precise by spawning against it.
+  # A --card here is still recorded - the pair is durable evidence of a link
+  # that is owed, and a re-run is as good a statement of which card the item
+  # serves as the first run was - but nothing was staged, so this run has no
+  # claim of its own to make: every pair, this card included, stays guarded
+  # against a link the secondmate may since have made more precise by spawning
+  # against it.
   with_handoff_card_lock "$ID" record_and_sweep_card_pairs "$ID" "${ALREADY[0]:-}" ''
   exit 0
 fi

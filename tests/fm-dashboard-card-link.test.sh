@@ -580,6 +580,48 @@ EOF
   pass "a card record survives a failed link and completes on the secondmate's next handoff"
 }
 
+# Regression: --resume-pending is the documented recovery command for a link
+# that could not be completed, but a locally handed-off item never writes an
+# outbox, so a sweep that only walks pending outboxes never reaches it - the
+# card stays frozen until some unrelated later handoff to the same secondmate
+# happens to sweep the record. --resume-pending has to mean every pending
+# link, not the remote half of them.
+test_resume_pending_completes_a_stranded_local_card_link() {
+  local home sub id card out record
+  home="$TMP_ROOT/handoff-local-resume-main"
+  sub="$TMP_ROOT/handoff-local-resume-sub"
+  id=handoff-local-resume-sm
+  setup_handoff_homes "$home" "$sub" "$id"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] handoff-item-l1 - stranded by a board that was down (repo: alpha)
+
+## Done
+EOF
+  card=$(add_card "Local resume-pending coverage")
+  [ -n "$card" ] || fail "add_card returned no id"
+  record="$home/state/handoff-cards/$id"
+
+  out=$(FM_DASHBOARD_PORT=1 FM_HOME="$home" "$HANDOFF" "$id" handoff-item-l1 --card "$card" 2>&1)
+  expect_code 0 "$?" "handoff must not fail just because the dashboard is unreachable" "$out"
+  assert_grep 'handoff-item-l1' "$sub/data/backlog.md" "the local move did not land"
+  assert_grep "$(printf 'handoff-item-l1\t%s' "$card")" "$record" \
+    "a failed link must leave the pending card record in place"
+  [ "$(card_status "$card")" = not_started ] || fail "a card whose link merely failed must not read as linked"
+  assert_absent "$home/data/handoff/$id.outbox.md" "a local handoff must not write a remote outbox"
+
+  out=$(FM_HOME="$home" "$HANDOFF" --resume-pending 2>&1)
+  expect_code 0 "$?" "--resume-pending should succeed with only a local record pending" "$out"
+  assert_contains "$out" "dashboard: linked card $card" \
+    "--resume-pending did not complete the stranded local link"
+  [ "$(card_field "$card" backlog_ref)" = "$id:handoff-item-l1" ] \
+    || fail "--resume-pending did not set the card ref to the stranded pair's item"
+  [ "$(card_field "$card" agent)" = "$id" ] || fail "--resume-pending did not set the card agent"
+  [ "$(card_status "$card")" = working ] || fail "the stranded card did not advance to working on resume"
+  assert_absent "$record" "the card record should be retired once the board confirmed the link"
+  pass "--resume-pending completes a local secondmate's stranded card link, not just a remote outbox's"
+}
+
 # Regression: the link writes ref and agent as two separate board calls, so a
 # link of the handoff's own that fails between them leaves the card carrying
 # OUR ref and nothing else. Asking only "does this card carry anything at all"
@@ -1248,6 +1290,7 @@ if command -v tasks-axi >/dev/null 2>&1; then
   test_handoff_without_card_flag_never_touches_the_dashboard
   test_handoff_with_unreachable_dashboard_still_succeeds_and_warns
   test_handoff_card_record_survives_a_failed_link_and_completes_on_the_next_handoff
+  test_resume_pending_completes_a_stranded_local_card_link
   test_handoff_finishes_its_own_half_written_card_link
   test_handoff_keeps_but_reports_once_a_pair_the_host_says_names_no_such_card
   test_handoff_never_confirms_a_link_whose_card_state_it_could_not_read
