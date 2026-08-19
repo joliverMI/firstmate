@@ -1,0 +1,70 @@
+
+$ bin/fm-dashboard.sh add --title 'Make the status page readable on his phone' --captain firstmate --prompt-file ...
+make-the-status-page-readable-on-his-pho-absa	not_started	firstmate	-	Make the status page readable on his phone
+
+$ bin/fm-dashboard.sh show make-the-status-page-readable-on-his-pho-absa    # before the handoff
+id:       make-the-status-page-readable-on-his-pho-absa
+title:    Make the status page readable on his phone
+status:   not_started
+captain:  firstmate
+agent:    
+starred:  false
+
+--- prompt ---
+Make the status page readable one-handed, outdoors, on a phone.
+
+
+$ cat $FM_HOME/data/backlog.md    # the item still sits in firstmate's own queue
+## Queued
+- [ ] phone-status-page - Make the status page readable on the Admiral's phone (repo: alpha)
+  ## Intent
+  The board has to be legible one-handed, outdoors, on a phone.
+- [ ] unrelated-thing - Something nobody handed off (repo: alpha)
+
+## Done
+
+$ bin/fm-backlog-handoff.sh design phone-status-page --card make-the-status-page-readable-on-his-pho-absa
+handed off 1 item(s) to design: phone-status-page
+  into /tmp/fm-cardlink-demo.cEbr0M/secondmate-design/data/backlog.md
+dashboard: linked card make-the-status-page-readable-on-his-pho-absa to phone-status-page (ref=design:phone-status-page, agent=design, status not_started -> working)
+handoff exit: 0
+
+$ bin/fm-dashboard.sh show make-the-status-page-readable-on-his-pho-absa    # after the handoff - ref, agent and status set mechanically
+id:       make-the-status-page-readable-on-his-pho-absa
+title:    Make the status page readable on his phone
+status:   working
+captain:  firstmate
+agent:    design
+starred:  false
+ref:      design:phone-status-page
+
+--- prompt ---
+Make the status page readable one-handed, outdoors, on a phone.
+
+
+$ cat $SECONDMATE_HOME/data/backlog.md    # the item landed, body byte-identical, no card id written into it
+## In flight
+
+## Queued
+- [ ] phone-status-page - Make the status page readable on the Admiral's phone (repo: alpha)
+  ## Intent
+  The board has to be legible one-handed, outdoors, on a phone.
+
+## Done
+
+$ cat $FM_HOME/state/handoff-cards/design    # the pairing is firstmate-local, and consumed on arrival
+(empty - the local move confirmed arrival immediately, so the record was consumed)
+
+$ bin/fm-backlog-handoff.sh design phone-status-page --card make-the-status-page-readable-on-his-pho-absa    # re-run: idempotent, never re-claims
+nothing to move: phone-status-page already present in /tmp/fm-cardlink-demo.cEbr0M/secondmate-design/data/backlog.md
+dashboard: card make-the-status-page-readable-on-his-pho-absa already links to design:phone-status-page (agent=design); left unchanged
+
+$ bin/fm-backlog-handoff.sh design unrelated-thing --card no-such-card    # a bad card id is loud, never silent
+handed off 1 item(s) to design: unrelated-thing
+  into /tmp/fm-cardlink-demo.cEbr0M/secondmate-design/data/backlog.md
+warning: dashboard card link failed for unrelated-thing -> card no-such-card (ref): fm-dashboard.sh: server refused (404): no such task: 'no-such-card'
+warning: dashboard card link failed for unrelated-thing -> card no-such-card (agent): fm-dashboard.sh: server refused (404): no such task: 'no-such-card'
+handoff exit: 0  (the item still moved - a dashboard problem never blocks the handoff)
+
+$ bin/fm-dashboard.sh list
+make-the-status-page-readable-on-his-pho-absa	working	firstmate	-	Make the status page readable on his phone

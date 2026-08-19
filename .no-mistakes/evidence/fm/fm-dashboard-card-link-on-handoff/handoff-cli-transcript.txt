@@ -1,0 +1,52 @@
+$ fm-dashboard.sh show fix-the-login-redirect-loop-after-sso-4ft5 --json   # before the handoff
+{
+  "id": "fix-the-login-redirect-loop-after-sso-4ft5",
+  "status": "not_started",
+  "agent": "",
+  "backlog_ref": null
+}
+
+$ fm-backlog-handoff.sh atlas login-redirect-loop --card fix-the-login-redirect-loop-after-sso-4ft5
+handed off 1 item(s) to atlas: login-redirect-loop
+  into /tmp/fm-handoff-demo/secondmate-atlas/data/backlog.md
+dashboard: linked card fix-the-login-redirect-loop-after-sso-4ft5 to login-redirect-loop (ref=atlas:login-redirect-loop, agent=atlas, status not_started -> working)
+
+$ fm-dashboard.sh show fix-the-login-redirect-loop-after-sso-4ft5 --json   # after the handoff
+{
+  "id": "fix-the-login-redirect-loop-after-sso-4ft5",
+  "status": "working",
+  "agent": "atlas",
+  "backlog_ref": "atlas:login-redirect-loop"
+}
+
+$ sed -n '/## Queued/,/## Done/p' $SECONDMATE_HOME/data/backlog.md   # item landed, byte-identical body
+## Queued
+- [ ] atlas-existing - token refresh audit (repo: alpha)
+
+- [ ] login-redirect-loop - Fix the login redirect loop after SSO (repo: alpha)
+  intent: users bounce between /login and /callback forever
+  acceptance: a signed-in user lands on the dashboard once
+## Done
+
+=== the item the handoff delivered carries no dashboard bookkeeping ===
+$ grep -c dashboard_card $SECONDMATE_HOME/data/backlog.md
+0
+0  (the pairing is never written into the item)
+
+=== the secondmate then spawns against the same card; its precise link replaces the coarse one ===
+$ fm-dashboard.sh ref fix-the-login-redirect-loop-after-sso-4ft5 atlas-home:task-4471 ; fm-dashboard.sh agent fix-the-login-redirect-loop-after-sso-4ft5 task-4471
+{
+  "status": "working",
+  "agent": "task-4471",
+  "backlog_ref": "atlas-home:task-4471"
+}
+
+=== re-running the (idempotent) handoff must not reset the board to the stale identity ===
+$ fm-backlog-handoff.sh atlas login-redirect-loop --card fix-the-login-redirect-loop-after-sso-4ft5
+nothing to move: login-redirect-loop already present in /tmp/fm-handoff-demo/secondmate-atlas/data/backlog.md
+dashboard: card fix-the-login-redirect-loop-after-sso-4ft5 already links to atlas-home:task-4471 (agent=task-4471); left unchanged
+{
+  "status": "working",
+  "agent": "task-4471",
+  "backlog_ref": "atlas-home:task-4471"
+}

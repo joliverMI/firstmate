@@ -1,0 +1,39 @@
+
+$ bin/fm-dashboard.sh add --title 'Rebuild the board for one-handed reading' ... --status working
+rebuild-the-board-for-one-handed-reading-xmmb	working	firstmate	-	Rebuild the board for one-handed reading
+
+$ cat $FM_STATE/phone-status-page-impl.meta    # the durable identity link fm-spawn.sh --card established
+window=firstmate:fm-phone-status-page-impl
+endpoint_task_id=phone-status-page-impl
+worktree=/tmp/fm-cardlink-demo.cEbr0M/teardown-case/wt
+project=/tmp/fm-cardlink-demo.cEbr0M/teardown-case/project
+kind=ship
+mode=local-only
+dashboard_card=rebuild-the-board-for-one-handed-reading-xmmb
+
+$ bin/fm-teardown.sh phone-status-page-impl    # nobody is asked to remember the board
+teardown phone-status-page-impl complete (window firstmate:fm-phone-status-page-impl, worktree /tmp/fm-cardlink-demo.cEbr0M/teardown-case/wt)
+dashboard: advanced card rebuild-the-board-for-one-handed-reading-xmmb to testing for phone-status-page-impl
+Backlog: phone-status-page-impl just finished. Run tasks-axi done phone-status-page-impl --note "local main", then run tasks-axi ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+teardown exit: 0
+
+$ bin/fm-dashboard.sh show rebuild-the-board-for-one-handed-reading-xmmb    # the transition the audit named as most-forgotten, fired mechanically
+id:       rebuild-the-board-for-one-handed-reading-xmmb
+title:    Rebuild the board for one-handed reading
+status:   testing
+captain:  firstmate
+agent:    
+starred:  false
+
+--- prompt ---
+Rebuild the board so it reads one-handed on a phone.
+
+
+$ bin/fm-dashboard.sh list
+rebuild-the-board-for-one-handed-reading-xmmb	testing	firstmate	-	Rebuild the board for one-handed reading
+rebuild-the-board-for-one-handed-reading-dpbn	working	firstmate	-	Rebuild the board for one-handed reading
+make-the-status-page-readable-on-his-pho-absa	working	firstmate	-	Make the status page readable on his phone
+
+$ bin/fm-dashboard.sh list    # the whole arc, on one board
+rebuild-the-board-for-one-handed-reading-xmmb	testing	firstmate	-	Rebuild the board for one-handed reading
+make-the-status-page-readable-on-his-pho-absa	working	firstmate	-	Make the status page readable on his phone
