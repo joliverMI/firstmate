@@ -372,7 +372,26 @@ PY
     --captain firstmate --prompt "the fleet is testing this right now" --status testing | awk '{print $1}')
   [ -n "$live_id" ] || fail "could not add a genuine post-split testing card"
   assert_contains "$(FM_DASHBOARD_URL="$mig_url" "$DASH" show "$live_id")" "status:   testing" \
-    "a second server start re-ran the migration and rewrote a genuine post-split testing card to review"
+    "the post-split testing card did not come back as testing before any further restart"
+
+  kill "$MIGRATION_SERVER_PID" 2>/dev/null
+  wait "$MIGRATION_SERVER_PID" 2>/dev/null
+  MIGRATION_SERVER_PID=""
+
+  # The card above only crosses a migration boundary NOW: it was created after
+  # the last start, so this third one is the first time an existing, genuinely
+  # in-flight testing card is present while the migration decides whether to
+  # run. An ungated migration rewrites it to review here.
+  FM_HOME="$mig_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$mig_port" FM_DASHBOARD_DB="$mig_db" \
+    "$DASH" start >"$mig_home/restart2.out" 2>&1 \
+    || { cat "$mig_home/restart2.out" >&2; fail "migration-case server did not start a third time"; }
+  MIGRATION_SERVER_PID=$(cat "$mig_home/state/dashboard.pid" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after the third migration-case server start"
+
+  assert_contains "$(FM_DASHBOARD_URL="$mig_url" "$DASH" show "$live_id")" "status:   testing" \
+    "a later server start re-ran the migration and rewrote a genuine post-split testing card to review"
+  assert_contains "$(FM_DASHBOARD_URL="$mig_url" "$DASH" list --status testing)" "$live_id" \
+    "the genuine post-split testing card fell out of the testing list across a restart"
 
   kill "$MIGRATION_SERVER_PID" 2>/dev/null
   wait "$MIGRATION_SERVER_PID" 2>/dev/null
