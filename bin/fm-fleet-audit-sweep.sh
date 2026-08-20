@@ -89,10 +89,10 @@ log_discrepancy() {  # <task_id> <text>
 # against bin/fm-crew-state.sh, and ONLY for a card whose backlog_ref names a
 # task in THIS FM_HOME (skill point 7: a ref naming another home, or no ref at
 # all, is not verifiable from here and is skipped, never logged).
-check_live_crew_status() {  # <status-flag> <label-for-the-discrepancy-text>
-  local status_flag=$1 label=$2 json id ref ref_home ref_task state_line state
+check_live_crew_status() {  # <status-flag>
+  local status_flag=$1 json id ref ref_home ref_task state_line state
   json=$("$DASH" list --status "$status_flag" --json) \
-    || fail_sweep "sweep failed listing $label cards: dashboard unreachable mid-sweep"
+    || fail_sweep "sweep failed listing $status_flag cards: dashboard unreachable mid-sweep"
   while IFS=$'\t' read -r id ref; do
     [ -n "$id" ] || continue
     CHECKED=$((CHECKED + 1))
@@ -107,7 +107,7 @@ check_live_crew_status() {  # <status-flag> <label-for-the-discrepancy-text>
     state=$(printf '%s\n' "$state_line" | sed -n 's/^state: \([a-z]*\).*/\1/p')
     case "$state" in
       working|unknown|"") ;;  # corroborated, or crew-state itself has nothing to say - not a discrepancy
-      *) log_discrepancy "$id" "card claims $label, but the linked crew reads: $state_line" ;;
+      *) log_discrepancy "$id" "card claims $status_flag, but the linked crew reads: $state_line" ;;
     esac
   done < <(printf '%s' "$json" | jq -r '.tasks[] | [.id, (.backlog_ref // "")] | @tsv')
 }
@@ -127,11 +127,11 @@ DISCREPANCIES=0
 HOME_NAME=$(basename "$FM_HOME")
 
 # ---- 1. working: corroborate against a local backlog_ref only ----
-check_live_crew_status working working
+check_live_crew_status working
 
 # ---- 2. testing: the fleet must genuinely be exercising it right now, same
 # corroboration as working - a testing card is not inert the way review is ----
-check_live_crew_status testing testing
+check_live_crew_status testing
 
 # ---- 3. waiting: is the named blocker card actually still open? ----
 WAITING_JSON=$("$DASH" list --status waiting --json) \

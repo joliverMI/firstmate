@@ -167,6 +167,13 @@ class Store:
                 f"(testing/review split): {', '.join(migrated)}"
             )
 
+    # Accepted tradeoff, not an oversight: a phone tab already open across a
+    # server restart keeps the pre-migration app.js in memory, so a migrated
+    # card can transiently render without its Mark Complete action and with the
+    # status dropdown falling back to that old bundle's first option until the
+    # page is reloaded. Non-destructive and self-clearing on reload, so it is
+    # handled operationally (tell the Admiral to refresh after a deploy) rather
+    # than by adding a cache-busting/versioning surface to the board.
     def _migrate_testing_to_review(self, conn: sqlite3.Connection) -> list[str]:
         """One-time split of the old `testing` meaning into `testing` (live
         fleet activity) and `review` (done, awaiting him - the old meaning).

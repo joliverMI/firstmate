@@ -49,7 +49,7 @@ The dashboard does not read or scrape `data/backlog.md`, any secondmate's backlo
 
 This was a deliberate choice among three options - read live from the backlog, own separate records, or both - made for two reasons:
 
-1. **The vocabulary doesn't match.** The board's seven statuses and its four tabs are not a relabeling of `tasks-axi` states; they are the Admiral's own review workflow. Deriving them automatically from backlog state would require a lossy, guessed mapping - exactly the kind of silent inference this fleet's own incident history warns against.
+1. **The vocabulary doesn't match.** The board's eight statuses and its four tabs are not a relabeling of `tasks-axi` states; they are the Admiral's own review workflow. Deriving them automatically from backlog state would require a lossy, guessed mapping - exactly the kind of silent inference this fleet's own incident history warns against.
 2. **The auditor needs something to check.** If the board mechanically mirrored live state, there would be nothing for the fleet auditor to catch - "Working" would always be exactly as true as the source it was copied from, by construction. Because the board is a separate, explicitly-maintained claim, "the card says Working" and "an agent is actually working" are genuinely two different facts, and the auditor's whole job is reconciling them.
 
 **The drift risk this creates is real and explicit, not hidden:** if firstmate (or a crew) forgets to call `bin/fm-dashboard.sh status` after a real change, the card goes stale silently from the board's own point of view - there is no automatic correction.
