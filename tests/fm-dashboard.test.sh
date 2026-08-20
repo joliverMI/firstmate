@@ -356,6 +356,20 @@ PY
   assert_not_contains "$(FM_DASHBOARD_URL="$mig_url" "$DASH" list --status testing)" "premigration-testing-1" \
     "the migrated card is still listed under testing"
 
+  # The migration must also prove what it changed, not just change it. Its two
+  # artifacts are the card's own persisted status_history (served through the
+  # HTTP API) and the startup report the server writes to its log.
+  FM_DASHBOARD_URL="$mig_url" "$DASH" show premigration-testing-1 --json \
+    | jq -e '[.status_history[] | select(.from_status == "testing" and .to_status == "review")] | length == 1' >/dev/null \
+    || fail "the migration left no single testing->review status_history entry proving what it rewrote"
+  FM_DASHBOARD_URL="$mig_url" "$DASH" show premigration-testing-1 --json \
+    | jq -e '[.status_history[] | select(.to_status == "review" and (.note // "") != "")] | length == 1' >/dev/null \
+    || fail "the migration's status_history entry carries no note explaining the rewrite"
+  assert_contains "$(cat "$mig_home/state/dashboard.log")" "migrated 1 card(s) from testing to review" \
+    "the server did not report the migration it performed at startup"
+  assert_contains "$(cat "$mig_home/state/dashboard.log")" "premigration-testing-1" \
+    "the startup migration report does not name the card it rewrote"
+
   kill "$MIGRATION_SERVER_PID" 2>/dev/null
   wait "$MIGRATION_SERVER_PID" 2>/dev/null
   MIGRATION_SERVER_PID=""
@@ -392,6 +406,8 @@ PY
     "a later server start re-ran the migration and rewrote a genuine post-split testing card to review"
   assert_contains "$(FM_DASHBOARD_URL="$mig_url" "$DASH" list --status testing)" "$live_id" \
     "the genuine post-split testing card fell out of the testing list across a restart"
+  assert_not_contains "$(cat "$mig_home/state/dashboard.log")" "from testing to review" \
+    "a later start reported running the migration again over an already-migrated database"
 
   kill "$MIGRATION_SERVER_PID" 2>/dev/null
   wait "$MIGRATION_SERVER_PID" 2>/dev/null
