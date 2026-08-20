@@ -174,6 +174,11 @@ class Store:
     # page is reloaded. Non-destructive and self-clearing on reload, so it is
     # handled operationally (tell the Admiral to refresh after a deploy) rather
     # than by adding a cache-busting/versioning surface to the board.
+    # Deliberately leaves updated_at alone: it means when the Admiral's work
+    # last actually changed, not when a script touched the row, so a mechanical
+    # relabel must not float a dozen finished cards to the top of his default
+    # updated-desc sort. The status_history row and the startup report below are
+    # the migration's record that it ran.
     def _migrate_testing_to_review(self, conn: sqlite3.Connection) -> list[str]:
         """One-time split of the old `testing` meaning into `testing` (live
         fleet activity) and `review` (done, awaiting him - the old meaning).
@@ -191,8 +196,8 @@ class Store:
         if ids:
             ts = now_iso()
             conn.executemany(
-                "UPDATE tasks SET status = 'review', updated_at = ? WHERE id = ?",
-                [(ts, task_id) for task_id in ids],
+                "UPDATE tasks SET status = 'review' WHERE id = ?",
+                [(task_id,) for task_id in ids],
             )
             conn.executemany(
                 """INSERT INTO status_history (task_id, from_status, to_status, changed_at, note)

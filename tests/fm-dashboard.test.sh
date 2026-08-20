@@ -16,15 +16,29 @@ DASH="$ROOT/bin/fm-dashboard.sh"
 SERVER_PID=""
 MIGRATION_SERVER_PID=""
 
+# bin/fm-dashboard.sh starts the server with `nohup ... &` and exits, so the
+# process is orphaned and never a child of this shell: `wait` on its pid returns
+# immediately without waiting for anything. Poll until it is really gone, so a
+# following `start` against the same FM_HOME cannot lose a race with
+# cmd_server_start's "already running" guard on the not-yet-dead pid.
+stop_dashboard_server() {  # <pid>
+  local pid=$1 waited=0
+  [ -n "$pid" ] || return 0
+  kill "$pid" 2>/dev/null
+  while kill -0 "$pid" 2>/dev/null; do
+    waited=$((waited + 1))
+    if [ "$waited" -gt 200 ]; then
+      kill -9 "$pid" 2>/dev/null
+      sleep 0.2
+      return 0
+    fi
+    sleep 0.05
+  done
+}
+
 fm_dashboard_test_cleanup() {
-  if [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
-    kill "$SERVER_PID" 2>/dev/null
-    wait "$SERVER_PID" 2>/dev/null
-  fi
-  if [ -n "$MIGRATION_SERVER_PID" ] && kill -0 "$MIGRATION_SERVER_PID" 2>/dev/null; then
-    kill "$MIGRATION_SERVER_PID" 2>/dev/null
-    wait "$MIGRATION_SERVER_PID" 2>/dev/null
-  fi
+  stop_dashboard_server "$SERVER_PID"
+  stop_dashboard_server "$MIGRATION_SERVER_PID"
   fm_test_cleanup
 }
 trap fm_dashboard_test_cleanup EXIT
@@ -332,7 +346,7 @@ import store
 conn = sqlite3.connect(sys.argv[1])
 conn.executescript(store.SCHEMA)
 conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES ('audit_interval_minutes', '15')")
-ts = store.now_iso()
+ts = "2020-01-02T03:04:05Z"
 conn.execute(
     """INSERT INTO tasks (id, title, agent, captain, status, initial_prompt, created_at, updated_at)
        VALUES ('premigration-testing-1', 'Pre-split testing card', '', 'firstmate', 'testing', 'seed prompt', ?, ?)""",
@@ -369,9 +383,12 @@ PY
     "the server did not report the migration it performed at startup"
   assert_contains "$(cat "$mig_home/state/dashboard.log")" "premigration-testing-1" \
     "the startup migration report does not name the card it rewrote"
+  # A mechanical relabel is not the Admiral's work changing, so it must not
+  # float the card to the top of the board's default updated-desc sort.
+  assert_contains "$(FM_DASHBOARD_URL="$mig_url" "$DASH" show premigration-testing-1 --json | jq -r '.updated_at')" \
+    "2020-01-02T03:04:05Z" "the migration bumped updated_at and would reorder the Admiral's default board view"
 
-  kill "$MIGRATION_SERVER_PID" 2>/dev/null
-  wait "$MIGRATION_SERVER_PID" 2>/dev/null
+  stop_dashboard_server "$MIGRATION_SERVER_PID"
   MIGRATION_SERVER_PID=""
 
   # Restart against the SAME, already-migrated database and add a genuinely
@@ -388,8 +405,7 @@ PY
   assert_contains "$(FM_DASHBOARD_URL="$mig_url" "$DASH" show "$live_id")" "status:   testing" \
     "the post-split testing card did not come back as testing before any further restart"
 
-  kill "$MIGRATION_SERVER_PID" 2>/dev/null
-  wait "$MIGRATION_SERVER_PID" 2>/dev/null
+  stop_dashboard_server "$MIGRATION_SERVER_PID"
   MIGRATION_SERVER_PID=""
 
   # The card above only crosses a migration boundary NOW: it was created after
@@ -409,8 +425,7 @@ PY
   assert_not_contains "$(cat "$mig_home/state/dashboard.log")" "from testing to review" \
     "a later start reported running the migration again over an already-migrated database"
 
-  kill "$MIGRATION_SERVER_PID" 2>/dev/null
-  wait "$MIGRATION_SERVER_PID" 2>/dev/null
+  stop_dashboard_server "$MIGRATION_SERVER_PID"
   MIGRATION_SERVER_PID=""
   pass "the testing-to-review split migration converts only pre-existing testing cards, and runs at most once"
 }
