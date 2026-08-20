@@ -74,8 +74,8 @@
 # link"): when the task's state/<id>.meta carries dashboard_card=<card-id> (written
 # by fm-spawn.sh --card at dispatch), a ship task whose landed-work checks actually
 # ran - not --force, which can discard rather than land - advances that card to
-# testing once cleanup succeeds, unless it is already complete (an Admiral approval
-# is never downgraded back to testing). Scout and secondmate teardowns never touch
+# review once cleanup succeeds, unless it is already complete (an Admiral approval
+# is never downgraded back to review). Scout and secondmate teardowns never touch
 # the card: a scout's worktree is scratch by design and a secondmate is not a
 # backlog item. No card recorded is the normal case and this step is then a no-op.
 # Every dashboard call is guarded exactly like fm-spawn.sh's own link: a missing
@@ -965,12 +965,12 @@ backlog_refresh_reminder() {
 
 # Consumes the identity fm-spawn.sh --card established at dispatch
 # (state/<id>.meta's dashboard_card=), advancing that Admiral's Fleet Dashboard
-# card to testing now that cleanup has actually succeeded. See docs/dashboard.md
+# card to review now that cleanup has actually succeeded. See docs/dashboard.md
 # "The mechanical card link" for the full design; this function only implements
 # it. No card recorded, a scout or secondmate teardown, or a --force teardown
 # (which can discard rather than land) are all silent no-ops - none of those is
 # an error. A card already complete is left alone rather than downgraded back to
-# testing. Every dashboard call is guarded exactly like fm-spawn.sh's own link:
+# review. Every dashboard call is guarded exactly like fm-spawn.sh's own link:
 # a failure only warns on stderr and best-effort records
 # `fm-dashboard.sh audit-log --fleet`, so cleanup that has already finished is
 # never turned into a failure by a board that will not answer.
@@ -989,10 +989,10 @@ dashboard_advance_card() {
   if [ "$current_status" = complete ]; then
     return 0
   fi
-  if out=$("$dash" status "$DASHBOARD_CARD" testing 2>&1); then
-    echo "dashboard: advanced card $DASHBOARD_CARD to testing for $ID"
+  if out=$("$dash" status "$DASHBOARD_CARD" review 2>&1); then
+    echo "dashboard: advanced card $DASHBOARD_CARD to review for $ID"
   else
-    echo "warning: dashboard card advance failed for $ID -> card $DASHBOARD_CARD (status testing): $out" >&2
+    echo "warning: dashboard card advance failed for $ID -> card $DASHBOARD_CARD (status review): $out" >&2
     "$dash" audit-log --fleet "dashboard card advance failed for task $ID -> card $DASHBOARD_CARD at teardown; status may be stale" --kind error >/dev/null 2>&1 || true
   fi
   return 0

@@ -4,7 +4,7 @@
 # "The mechanical card link"): bin/fm-spawn.sh's --card populates the card's
 # ref/agent identity and advances a not_started card to working;
 # bin/fm-teardown.sh consumes that identity from state/<id>.meta and advances
-# the card to testing once cleanup actually succeeds; bin/fm-backlog-handoff.sh's
+# the card to review once cleanup actually succeeds; bin/fm-backlog-handoff.sh's
 # --card gives a handed-off backlog item the same link, with the item/card
 # pairing held in the handing-off home's own state/handoff-cards/<secondmate-id>
 # record - never in the backlog item, which the handoff does not own - since a
@@ -487,7 +487,7 @@ run_teardown_case() {  # <case_dir> <id> [extra args...]
     "$TEARDOWN" "$id" "$@" 2>&1
 }
 
-test_teardown_advances_linked_card_to_testing_on_landed_work() {
+test_teardown_advances_linked_card_to_review_on_landed_work() {
   local id case_dir card out home_name
   id=teardown-link-b1
   card=$(add_card "Teardown-link coverage" --status working)
@@ -498,9 +498,9 @@ test_teardown_advances_linked_card_to_testing_on_landed_work() {
   out=$(run_teardown_case "$case_dir" "$id")
   expect_code 0 "$?" "landed local-only teardown should succeed" "$out"
   assert_contains "$out" "teardown $id complete" "teardown did not report completion"
-  assert_contains "$out" "dashboard: advanced card $card to testing" "teardown did not report the dashboard advance firing"
-  [ "$(card_status "$card")" = testing ] || fail "linked card did not advance to testing on landed teardown"
-  pass "teardown advances a linked card to testing once landed cleanup actually succeeds"
+  assert_contains "$out" "dashboard: advanced card $card to review" "teardown did not report the dashboard advance firing"
+  [ "$(card_status "$card")" = review ] || fail "linked card did not advance to review on landed teardown"
+  pass "teardown advances a linked card to review once landed cleanup actually succeeds"
 }
 
 test_teardown_without_dashboard_card_meta_is_a_noop() {
@@ -536,7 +536,7 @@ test_teardown_never_downgrades_an_already_complete_card() {
   local id case_dir card out
   id=teardown-complete-b4
   card=$(add_card "Already-approved coverage" --status working)
-  "$DASH" status "$card" testing >/dev/null || fail "setup: could not move card to testing"
+  "$DASH" status "$card" review >/dev/null || fail "setup: could not move card to review"
   "$DASH" status "$card" complete >/dev/null || fail "setup: could not move card to complete"
   case_dir=$(make_teardown_case teardown-complete "$id")
   printf 'dashboard_card=%s\n' "$card" >> "$case_dir/state/$id.meta"
@@ -545,7 +545,7 @@ test_teardown_never_downgrades_an_already_complete_card() {
   out=$(run_teardown_case "$case_dir" "$id")
   expect_code 0 "$?" "landed teardown should succeed" "$out"
   assert_not_contains "$out" "dashboard:" "teardown reported advancing an already-complete card"
-  [ "$(card_status "$card")" = complete ] || fail "an already-complete card must never be downgraded back to testing"
+  [ "$(card_status "$card")" = complete ] || fail "an already-complete card must never be downgraded back to review"
   pass "teardown never downgrades a card the Admiral already marked complete"
 }
 
@@ -820,7 +820,7 @@ EOF
 
 # Regression: --resume-pending is not something an operator remembers to run -
 # bin/fm-bootstrap.sh runs it on every session start, and that is the whole
-# "card reaches testing without a human remembering" half of the mechanism. Its
+# "card reaches review without a human remembering" half of the mechanism. Its
 # gate used to require a pending remote outbox, which a purely local secondmate
 # never has, so a link stranded by a board that was down stayed stranded across
 # every subsequent session start. Driven through bin/fm-bootstrap.sh itself
@@ -1854,7 +1854,7 @@ test_spawn_without_card_flag_never_touches_the_dashboard
 test_spawn_with_unreachable_dashboard_still_succeeds_and_warns
 test_spawn_with_unknown_card_id_warns_and_records_a_fleet_finding
 test_spawn_never_confirms_a_link_whose_card_state_it_could_not_read
-test_teardown_advances_linked_card_to_testing_on_landed_work
+test_teardown_advances_linked_card_to_review_on_landed_work
 test_teardown_with_unreachable_dashboard_still_succeeds_and_warns
 test_teardown_without_dashboard_card_meta_is_a_noop
 test_teardown_force_discard_never_advances_the_card

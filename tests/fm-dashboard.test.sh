@@ -14,11 +14,16 @@ command -v curl >/dev/null 2>&1 || { pass "skipped - curl not available"; exit 0
 
 DASH="$ROOT/bin/fm-dashboard.sh"
 SERVER_PID=""
+MIGRATION_SERVER_PID=""
 
 fm_dashboard_test_cleanup() {
   if [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
     kill "$SERVER_PID" 2>/dev/null
     wait "$SERVER_PID" 2>/dev/null
+  fi
+  if [ -n "$MIGRATION_SERVER_PID" ] && kill -0 "$MIGRATION_SERVER_PID" 2>/dev/null; then
+    kill "$MIGRATION_SERVER_PID" 2>/dev/null
+    wait "$MIGRATION_SERVER_PID" 2>/dev/null
   fi
   fm_test_cleanup
 }
@@ -77,6 +82,23 @@ test_status_and_captain_and_title_updates() {
   assert_contains "$("$DASH" show "$id")" "captain:  captain_river" "captain did not persist"
 
   pass "status, title, and captain updates persist through the CLI"
+}
+
+test_testing_and_review_are_distinct_statuses() {
+  local id out
+  id=$("$DASH" add --title "Split status coverage" --captain firstmate --prompt "checking testing/review" | awk '{print $1}')
+
+  "$DASH" status "$id" testing >/dev/null || fail "status transition to testing failed"
+  assert_contains "$("$DASH" show "$id")" "status:   testing" "testing status did not persist"
+  assert_contains "$("$DASH" list --status testing)" "$id" "list --status testing did not include the card"
+  assert_not_contains "$("$DASH" list --status review)" "$id" "a testing card showed up under review"
+
+  "$DASH" status "$id" review >/dev/null || fail "status transition to review failed"
+  assert_contains "$("$DASH" show "$id")" "status:   review" "review status did not persist"
+  assert_contains "$("$DASH" list --status review)" "$id" "list --status review did not include the card"
+  assert_not_contains "$("$DASH" list --status testing)" "$id" "a review card is still listed under testing"
+
+  pass "testing and review are separate, independently settable statuses"
 }
 
 test_waiting_status_carries_target_and_reason() {
@@ -286,9 +308,82 @@ test_bad_input_fails_with_nonzero_exit() {
   pass "invalid input fails loudly with a non-zero exit, not a silent success"
 }
 
+# Regression: the testing/review split (docs/dashboard.md "Why `testing`
+# split into `testing` and `review`") migrates every pre-existing `testing`
+# card to `review` exactly once, the first time the server ever starts
+# against a database that predates the split - never again afterward, or a
+# genuinely new `testing` card would be wrongly rewritten on a later restart.
+# Seeds a database directly via store.py's own schema (never duplicating it
+# by hand) so a `testing` row can exist before any code has ever constructed
+# a Store against this file, which is the only way to simulate "this card
+# predates the split" in a single test run.
+test_testing_to_review_split_migration_runs_once() {
+  local mig_home mig_db mig_port mig_url out live_id
+  mig_home="$FM_HOME/migration-case"
+  mkdir -p "$mig_home/state" "$mig_home/data"
+  mig_db="$mig_home/data/dashboard.db"
+
+  PYTHONPATH="$ROOT/bin/fleet-dashboard/server" python3 - "$mig_db" <<'PY' || fail "could not seed a pre-split database"
+import sqlite3
+import sys
+
+import store
+
+conn = sqlite3.connect(sys.argv[1])
+conn.executescript(store.SCHEMA)
+conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES ('audit_interval_minutes', '15')")
+ts = store.now_iso()
+conn.execute(
+    """INSERT INTO tasks (id, title, agent, captain, status, initial_prompt, created_at, updated_at)
+       VALUES ('premigration-testing-1', 'Pre-split testing card', '', 'firstmate', 'testing', 'seed prompt', ?, ?)""",
+    (ts, ts),
+)
+conn.commit()
+conn.close()
+PY
+
+  mig_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()') \
+    || fail "could not allocate a port for the migration case"
+  mig_url="http://127.0.0.1:$mig_port"
+
+  FM_HOME="$mig_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$mig_port" FM_DASHBOARD_DB="$mig_db" \
+    "$DASH" start >"$mig_home/start.out" 2>&1 || { cat "$mig_home/start.out" >&2; fail "migration-case server did not start"; }
+  MIGRATION_SERVER_PID=$(cat "$mig_home/state/dashboard.pid" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after migration-case server start"
+
+  out=$(FM_DASHBOARD_URL="$mig_url" "$DASH" show premigration-testing-1)
+  assert_contains "$out" "status:   review" "a pre-existing testing card was not migrated to review on first start"
+  assert_not_contains "$(FM_DASHBOARD_URL="$mig_url" "$DASH" list --status testing)" "premigration-testing-1" \
+    "the migrated card is still listed under testing"
+
+  kill "$MIGRATION_SERVER_PID" 2>/dev/null
+  wait "$MIGRATION_SERVER_PID" 2>/dev/null
+  MIGRATION_SERVER_PID=""
+
+  # Restart against the SAME, already-migrated database and add a genuinely
+  # new testing card (the new meaning). If the migration ran a second time it
+  # would wrongly rewrite this card to review too.
+  FM_HOME="$mig_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$mig_port" FM_DASHBOARD_DB="$mig_db" \
+    "$DASH" start >"$mig_home/restart.out" 2>&1 || { cat "$mig_home/restart.out" >&2; fail "migration-case server did not restart"; }
+  MIGRATION_SERVER_PID=$(cat "$mig_home/state/dashboard.pid" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after migration-case server restart"
+
+  live_id=$(FM_DASHBOARD_URL="$mig_url" "$DASH" add --title "Genuinely in-flight testing" \
+    --captain firstmate --prompt "the fleet is testing this right now" --status testing | awk '{print $1}')
+  [ -n "$live_id" ] || fail "could not add a genuine post-split testing card"
+  assert_contains "$(FM_DASHBOARD_URL="$mig_url" "$DASH" show "$live_id")" "status:   testing" \
+    "a second server start re-ran the migration and rewrote a genuine post-split testing card to review"
+
+  kill "$MIGRATION_SERVER_PID" 2>/dev/null
+  wait "$MIGRATION_SERVER_PID" 2>/dev/null
+  MIGRATION_SERVER_PID=""
+  pass "the testing-to-review split migration converts only pre-existing testing cards, and runs at most once"
+}
+
 test_health_and_server_status
 test_add_and_list_round_trip
 test_status_and_captain_and_title_updates
+test_testing_and_review_are_distinct_statuses
 test_waiting_status_carries_target_and_reason
 test_notes_tabs_and_empty_tab_semantics
 test_link_policy_rejects_github_and_localhost
@@ -298,4 +393,5 @@ test_bad_input_fails_with_nonzero_exit
 test_calls_are_bounded_against_a_board_that_never_answers
 test_zero_timeout_override_is_refused_like_any_other_unusable_one
 test_missing_id_and_unreachable_board_have_distinct_exit_codes
+test_testing_to_review_split_migration_runs_once
 test_star_and_delete

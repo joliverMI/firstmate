@@ -48,7 +48,7 @@
 # bin/fm-fleet-audit-sweep.sh are the actual timer and sweep executor); an
 # agent doing ordinary dashboard work never needs them directly.
 #
-# statuses: needs-attention not-started working paused waiting testing complete
+# statuses: needs-attention not-started working paused waiting testing review complete
 # tabs:     interpretation communication needs
 # captain shorthands: dj -> captain_dj, river -> captain_river, firstmate -> firstmate
 #
@@ -167,8 +167,8 @@ canon_status() {
   case "$1" in
     not-started|not_started) printf 'not_started' ;;
     needs-attention|needs_attention) printf 'needs_attention' ;;
-    working|paused|waiting|testing|complete) printf '%s' "$1" ;;
-    *) die "unknown status '$1' - valid: needs-attention not-started working paused waiting testing complete" ;;
+    working|paused|waiting|testing|review|complete) printf '%s' "$1" ;;
+    *) die "unknown status '$1' - valid: needs-attention not-started working paused waiting testing review complete" ;;
   esac
 }
 

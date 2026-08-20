@@ -95,6 +95,35 @@ test_audit_tick_heartbeat_and_due_interval() {
   pass "the tick script heartbeats every invocation and only sweeps once the interval has elapsed"
 }
 
+# Regression: before the testing/review split, `testing` was optional and
+# inert, and the sweep never looked at it at all. It now gets the exact same
+# live-crew corroboration as `working` (docs/dashboard.md "Why `testing`
+# split into `testing` and `review`") - a `testing` card is counted, and a
+# card with no backlog_ref is unverifiable from here and must not be flagged
+# (skill point 7, same rule `working` already gets).
+test_sweep_counts_testing_cards_and_never_flags_an_unverifiable_one() {
+  # Two forced sweeps back to back, with only the new card added in between,
+  # so the checked-count delta is attributable to that one card alone rather
+  # than whatever the rest of the suite has put on the board by this point.
+  "$SWEEP" --forced || fail "baseline sweep exited non-zero"
+  local before_checked before_log id after_checked after_log
+  before_checked=$(audit_status_json | jq -r '.last_run.tasks_checked')
+
+  id=$("$DASH" add --title "Live testing, no ref" --captain firstmate --prompt "testing coverage" \
+    --status testing | awk '{print $1}')
+  [ -n "$id" ] || fail "could not add the testing card"
+  before_log=$(audit_status_json | jq '[.log[] | select(.task_id=="'"$id"'")] | length')
+
+  "$SWEEP" --forced || fail "sweep script exited non-zero"
+
+  after_checked=$(audit_status_json | jq -r '.last_run.tasks_checked')
+  after_log=$(audit_status_json | jq '[.log[] | select(.task_id=="'"$id"'")] | length')
+  [ "$after_checked" -eq $((before_checked + 1)) ] \
+    || fail "expected exactly one more checked card (the new testing one), before=$before_checked after=$after_checked"
+  [ "$after_log" = "$before_log" ] || fail "a testing card with no backlog_ref was flagged, but it is not verifiable from here"
+  pass "the sweep checks testing cards and never flags one it cannot verify"
+}
+
 test_sweep_flags_waiting_on_completed_card() {
   "$DASH" audit-interval 1 >/dev/null || fail "could not reset the interval"
   local done_id waiter_id
@@ -208,6 +237,7 @@ test_claim_is_exclusive_and_release_frees_it
 test_tick_heals_a_stuck_lock_left_by_a_crashed_sweep
 test_audit_run_forced_flag_and_auto_release
 test_audit_tick_heartbeat_and_due_interval
+test_sweep_counts_testing_cards_and_never_flags_an_unverifiable_one
 test_sweep_flags_waiting_on_completed_card
 test_sweep_flags_stale_unreplied_needs_attention_but_not_a_reply
 test_force_button_endpoint_runs_a_real_sweep
