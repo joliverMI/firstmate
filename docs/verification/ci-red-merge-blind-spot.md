@@ -2,7 +2,7 @@
 
 Audience: maintainer verification.
 
-This record answers a report that `joliverMI/firstmate`'s `main` had been failing CI on the portable serial shards for at least 11 hours, with merges continuing to land on top of it.
+This record answers a report that `joliverMI/firstmate`'s `main` had been failing CI on the portable serial shards 3 and 4 for at least 11 hours, with merges continuing to land on top of it.
 The report was already stale by the time it was investigated (2026-08-21): `main` was green, and the underlying test failure had already been root-caused and fixed - see [`arm-readiness-determinism-proof.md`](../arm-readiness-determinism-proof.md) for that cause analysis.
 What survives as durable knowledge is not the fix - it is that nothing in this fork's own configuration tells anyone when `main` goes red, and nothing stops a merge from landing on top of it while it is red.
 That gap is unchanged today and is this record's subject.
@@ -95,6 +95,13 @@ It is the only shard-3 non-success anywhere in window A: all four of window A's 
 It is not, however, the whole of the "shard 3" half of the reported premise, because shard 3 also failed on real assertions twice inside window B: jobs `95755272024` (run `32150616824`, 2026-08-18T14:48Z) and `95990618501` (run `32227657272`, 2026-08-19T07:24Z).
 This timeout also concluded `cancelled` rather than `failure`, so the count of 8 failing serial jobs above excludes it; a maintainer tallying every non-green serial job across the two windows will count 9.
 The second is job `96651633862`, `Behavior portable serial 2` - a shard the report did not name - on 2026-08-21, after both windows and after PR #14, and itself followed by a clean run, which shows the class is still live.
+
+The full shard map for those nine non-green serial jobs is worth stating, because it does not match the shape of the report.
+Window A was shard 4 four times (jobs `95243266311`, `95243272968`, `95249497126`, `95412020616`) plus the shard-3 timeout (`95412020578`).
+Window B was shard 1 once (`95726593907`), shard 3 twice (`95755272024`, `95990618501`), and shard 4 once (`95755272021`).
+The report's "shards 3 and 4" premise was therefore incomplete: window B's first failure - one of the two fleet-lock assertion failures cited above - ran on `Behavior portable serial 1`, a shard neither the report nor window A ever named.
+That is this record's own subject in miniature.
+The report described the part of the failure someone happened to look at, and a shard outside that description had been failing too, unremarked, for exactly the same reason nothing else here was noticed.
 
 ## Current state
 
