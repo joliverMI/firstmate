@@ -554,7 +554,7 @@ main() {
     audit-release) cmd_audit_release "$@" ;;
     start) cmd_server_start ;;
     stop) cmd_server_stop ;;
-    restart) cmd_server_stop 2>/dev/null; cmd_server_start ;;
+    restart) ( cmd_server_stop ) 2>/dev/null || true; cmd_server_start ;;
     server-status) cmd_server_status ;;
     ""|--help|-h|help) sed -n '2,64p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
     *) die "unknown command '$cmd' - run: fm-dashboard.sh --help" ;;

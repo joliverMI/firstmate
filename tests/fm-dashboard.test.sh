@@ -538,6 +538,79 @@ s.close()' "$blk_port" 2>/dev/null; do
   pass "a start that cannot bind leaves the migration pending, and stop waits for the port"
 }
 
+# `restart` is the operator's one command for bringing the live board back, so
+# it must survive every state `stop` can refuse: a stale pidfile left by a
+# crashed server, and no pidfile at all after a clean stop. Both are `die`
+# paths inside cmd_server_stop, and `die` is `exit 1`.
+test_restart_recovers_from_a_crashed_or_stopped_board() {
+  local rst_home rst_db rst_port rst_url crashed_pid revived_pid card_id
+
+  rst_home="$FM_HOME/restart-case"
+  mkdir -p "$rst_home/state" "$rst_home/data"
+  rst_db="$rst_home/data/dashboard.db"
+  rst_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()') \
+    || fail "could not allocate a port for the restart case"
+  rst_url="http://127.0.0.1:$rst_port"
+
+  FM_HOME="$rst_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$rst_port" FM_DASHBOARD_DB="$rst_db" \
+    "$DASH" start >"$rst_home/start.out" 2>&1 \
+    || { cat "$rst_home/start.out" >&2; fail "restart-case server did not start"; }
+  MIGRATION_SERVER_PID=$(cat "$rst_home/state/dashboard.pid" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after the restart-case server start"
+  crashed_pid="$MIGRATION_SERVER_PID"
+
+  card_id=$(FM_DASHBOARD_URL="$rst_url" "$DASH" add --title "Survives a restart" \
+    --captain firstmate --prompt "seeded before the crash" --status review | awk '{print $1}')
+  [ -n "$card_id" ] || fail "could not seed a card before the crash"
+
+  # Crash the server the way an OOM kill or a lost tmux session would: the
+  # process dies without ever removing its own pidfile.
+  kill -9 "$crashed_pid" 2>/dev/null
+  while kill -0 "$crashed_pid" 2>/dev/null; do sleep 0.05; done
+  [ -f "$rst_home/state/dashboard.pid" ] || fail "the crash removed the pidfile, so this is not the stale-pidfile case"
+
+  FM_HOME="$rst_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$rst_port" FM_DASHBOARD_DB="$rst_db" \
+    "$DASH" restart >"$rst_home/restart-after-crash.out" 2>&1 \
+    || { cat "$rst_home/restart-after-crash.out" >&2; fail "restart did not bring the board back after a crash left a stale pidfile"; }
+  MIGRATION_SERVER_PID=$(cat "$rst_home/state/dashboard.pid" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after restarting over a stale pidfile"
+  revived_pid="$MIGRATION_SERVER_PID"
+  [ "$revived_pid" != "$crashed_pid" ] || fail "restart recorded the dead pid instead of a new server"
+  assert_contains "$(FM_DASHBOARD_URL="$rst_url" "$DASH" show "$card_id")" "status:   review" \
+    "the board did not serve its cards again after a restart over a stale pidfile"
+
+  # A clean stop removes the pidfile, so restarting from stopped is the
+  # "no pidfile" die path - it must start the board, not refuse.
+  FM_HOME="$rst_home" "$DASH" stop >"$rst_home/stop.out" 2>&1 \
+    || { cat "$rst_home/stop.out" >&2; fail "stop failed for the restart-case server"; }
+  MIGRATION_SERVER_PID=""
+  if [ -f "$rst_home/state/dashboard.pid" ]; then
+    fail "a clean stop left a pidfile behind, so this is not the no-pidfile case"
+  fi
+
+  FM_HOME="$rst_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$rst_port" FM_DASHBOARD_DB="$rst_db" \
+    "$DASH" restart >"$rst_home/restart-from-stopped.out" 2>&1 \
+    || { cat "$rst_home/restart-from-stopped.out" >&2; fail "restart refused to start an already-stopped board"; }
+  MIGRATION_SERVER_PID=$(cat "$rst_home/state/dashboard.pid" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after restarting an already-stopped board"
+
+  # And the ordinary case: restarting a healthy board hands the same port to a
+  # genuinely new process without losing the board.
+  crashed_pid="$MIGRATION_SERVER_PID"
+  FM_HOME="$rst_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$rst_port" FM_DASHBOARD_DB="$rst_db" \
+    "$DASH" restart >"$rst_home/restart-live.out" 2>&1 \
+    || { cat "$rst_home/restart-live.out" >&2; fail "restart failed against a healthy running board"; }
+  MIGRATION_SERVER_PID=$(cat "$rst_home/state/dashboard.pid" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after restarting a healthy board"
+  [ "$MIGRATION_SERVER_PID" != "$crashed_pid" ] || fail "restart against a healthy board did not replace the process"
+  assert_contains "$(FM_DASHBOARD_URL="$rst_url" "$DASH" show "$card_id")" "status:   review" \
+    "the board did not serve its cards again after restarting a healthy server"
+
+  stop_dashboard_server "$MIGRATION_SERVER_PID"
+  MIGRATION_SERVER_PID=""
+  pass "restart brings the board back from a crash, from stopped, and from healthy"
+}
+
 test_health_and_server_status
 test_add_and_list_round_trip
 test_status_and_captain_and_title_updates
@@ -553,4 +626,5 @@ test_zero_timeout_override_is_refused_like_any_other_unusable_one
 test_missing_id_and_unreachable_board_have_distinct_exit_codes
 test_testing_to_review_split_migration_runs_once
 test_a_start_that_cannot_bind_leaves_the_migration_pending
+test_restart_recovers_from_a_crashed_or_stopped_board
 test_star_and_delete
