@@ -1,0 +1,106 @@
+################################################################
+# Admiral's Fleet Dashboard - what a teardown does to a card that
+# was held for a reason. Real server, real bin/fm-dashboard.sh CLI.
+################################################################
+
+================================================================
+STATUS UNDER TEST: needs_attention   (reason: "approve the $400 vendor renewal")
+================================================================
+
+--- The Admiral's view before the work lands (bin/fm-dashboard.sh show $card) ---
+    title:    Card held at needs_attention (OLD teardown)
+    status:   needs_attention
+    agent:    
+    starred:  false
+    needs attention: approve the $400 vendor renewal
+    
+    --- prompt ---
+    demo
+    
+
+--- OLD behaviour: pre-fix fm-teardown.sh ran exactly this on landing ---
+    $ bin/fm-dashboard.sh status card-held-at-needs-attention-old-teardow-ki6e review
+    card's own status-history entry for that transition:
+      to_status=review  note=[]
+    needs_attention_reason column now: []
+    >>> the answer to what the card was held for is GONE from the record entirely.
+
+--- NEW behaviour: fm_dashboard_advance_after_landing (the shared helper teardown now calls) ---
+    $ fm_dashboard_advance_after_landing <dash> card-held-at-needs-attention-new-teardow-1ezd demo-task review "<audit msg>"
+    dashboard: advanced card card-held-at-needs-attention-new-teardow-1ezd to review for demo-task
+    card's own status-history entry for that transition:
+      to_status=review  note=[approve the $400 vendor renewal]
+    needs_attention_reason column now: []
+    >>> the reason survived the transition, as the note on the very transition that cleared the column.
+
+--- Where the operator can and cannot see it (honest scope) ---
+    retrievable:     $ bin/fm-dashboard.sh show card-held-at-needs-attention-new-teardow-1ezd --json | jq -r '.status_history[-1].note'
+                     approve the $400 vendor renewal
+    NOT surfaced by: bin/fm-dashboard.sh show card-held-at-needs-attention-new-teardow-1ezd   (plain output renders no status history):
+      title:    Card held at needs_attention (NEW teardown)
+      status:   review
+      agent:    
+      starred:  false
+      
+      --- prompt ---
+      demo
+      
+    ...and the web board renders no status history either. Moved from silently
+    destroyed to silently preserved where nobody can see it yet - follow-up work.
+
+================================================================
+STATUS UNDER TEST: waiting   (reason: "the vendor to countersign the renewal")
+================================================================
+
+--- The Admiral's view before the work lands (bin/fm-dashboard.sh show $card) ---
+    title:    Card held at waiting (OLD teardown)
+    status:   waiting
+    agent:    
+    starred:  false
+    waiting on: (no card) - the vendor to countersign the renewal
+    
+    --- prompt ---
+    demo
+    
+
+--- OLD behaviour: pre-fix fm-teardown.sh ran exactly this on landing ---
+    $ bin/fm-dashboard.sh status card-held-at-waiting-old-teardown-bjlh review
+    card's own status-history entry for that transition:
+      to_status=review  note=[]
+    waiting_reason column now: []
+    >>> the answer to what the card was held for is GONE from the record entirely.
+
+--- NEW behaviour: fm_dashboard_advance_after_landing (the shared helper teardown now calls) ---
+    $ fm_dashboard_advance_after_landing <dash> card-held-at-waiting-new-teardown-md1d demo-task review "<audit msg>"
+    dashboard: advanced card card-held-at-waiting-new-teardown-md1d to review for demo-task
+    card's own status-history entry for that transition:
+      to_status=review  note=[the vendor to countersign the renewal]
+    waiting_reason column now: []
+    >>> the reason survived the transition, as the note on the very transition that cleared the column.
+
+--- Where the operator can and cannot see it (honest scope) ---
+    retrievable:     $ bin/fm-dashboard.sh show card-held-at-waiting-new-teardown-md1d --json | jq -r '.status_history[-1].note'
+                     the vendor to countersign the renewal
+    NOT surfaced by: bin/fm-dashboard.sh show card-held-at-waiting-new-teardown-md1d   (plain output renders no status history):
+      title:    Card held at waiting (NEW teardown)
+      status:   review
+      agent:    
+      starred:  false
+      
+      --- prompt ---
+      demo
+      
+    ...and the web board renders no status history either. Moved from silently
+    destroyed to silently preserved where nobody can see it yet - follow-up work.
+
+================================================================
+Both cards ended where they must: advanced to review, not frozen.
+    card-held-at-needs-attention-old-teardow-ki6e	review	firstmate	-	Card held at needs_attention (OLD teardown)
+    card-held-at-needs-attention-new-teardow-1ezd	review	firstmate	-	Card held at needs_attention (NEW teardown)
+    card-held-at-waiting-old-teardown-bjlh	review	firstmate	-	Card held at waiting (OLD teardown)
+    card-held-at-waiting-new-teardown-md1d	review	firstmate	-	Card held at waiting (NEW teardown)
+dashboard: advanced card renewal-paperwork-held-for-the-admiral-8hnl to review for demo-task
+dashboard: advanced card contract-countersign-held-on-the-vendor-n3t2 to review for demo-task
+--- what the record still holds (show --json), per card ---
+renewal-paperwork-held-for-the-admiral-8hnl -> status=review  last-history-note=[approve the $400 vendor renewal]
+contract-countersign-held-on-the-vendor-n3t2 -> status=review  last-history-note=[the vendor to countersign the renewal]

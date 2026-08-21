@@ -1,0 +1,60 @@
+=== test_lib_advance_after_landing_carries_needs_attention_reason_forward  (lib patched to PRE-FIX behavior: no --reason carried forward) ===
+not ok - the needs_attention reason was not carried forward as the advance call's own --reason
+exit=1
+
+=== test_lib_advance_after_landing_carries_waiting_reason_forward  (lib patched to PRE-FIX behavior: no --reason carried forward) ===
+not ok - the waiting reason was not carried forward as the advance call's own --reason
+exit=1
+
+=== test_teardown_preserves_needs_attention_reason_in_history_on_landing  (lib patched to PRE-FIX behavior: no --reason carried forward) ===
+not ok - the needs_attention -> review transition's own history note did not carry the reason forward (got note=[]) - the reason was silently discarded instead of carried into the card's status history
+exit=1
+
+=== test_teardown_preserves_waiting_reason_in_history_on_landing  (lib patched to PRE-FIX behavior: no --reason carried forward) ===
+not ok - the waiting -> review transition's own history note did not carry the reason forward (got note=[]) - the reason was silently discarded instead of carried into the card's status history
+exit=1
+
+=== test_lib_advance_after_landing_advances_an_ordinary_status_with_no_reason  (lib patched to PRE-FIX behavior: no --reason carried forward) ===
+ok - fm_dashboard_advance_after_landing advances an ordinary status with no --reason
+ok - handoff --card links a not_started card's ref/agent and advances it to working
+ok - handoff without --card is a complete dashboard no-op (the normal case)
+ok - handoff --card never fails the handoff when the dashboard is unreachable, but warns loudly
+ok - a card record survives a failed link and completes on the secondmate's next handoff
+ok - --resume-pending never writes the fleet audit log for a transport failure, only stderr
+ok - an operator-initiated handoff caps its fleet audit log write at one per invocation
+ok - a hand-edited record whose last line has no trailing newline loses no pending pair
+ok - --resume-pending completes a local secondmate's stranded card link, not just a remote outbox's
+ok - a session start sweeps a purely local secondmate's stranded card link to completion
+ok - a handoff finishes its own half-written card link instead of retiring it as somebody else's
+ok - an unlinkable card id stays recorded and retriable on stderr only, never reaching the fleet audit log
+ok - a link whose card state could not be read is never confirmed, so its record stays retriable
+ok - a guarded card that could not be read is never written to, and stays recorded for the retry
+ok - only the newest card recorded for an item is linked; the superseded one is reported but never written
+ok - an appended superseded mark neither destroys nor is destroyed by an unterminated last ledger entry
+ok - naming a superseded card again clears the mark, so a typo in the correction is recoverable from the CLI
+ok - one command reports every distinct unlinkable pair it sweeps on stderr, not just the first, and never on the fleet audit log
+ok - a card-record write failure warns without failing a handoff that already landed
+ok - handoff refuses --card with more than one item and moves nothing
+ok - a --card id that would corrupt the tab-delimited pending record is refused before anything moves
+ok - a handoff re-run never overwrites a card link something more precise already claimed
+ok - a handoff into a non-empty destination queue links its card like any other
+ok - --card records the pairing without rewriting a single byte of the handed-off item
+ok - a remote handoff links the card once delivery is confirmed, carrying the card id through the outbox
+ok - a crash-recovered delivery links its card from the staging record alone, with no --card on the command line
+ok - staging into an outbox that already holds an item records and links both cards
+ok - a remote handoff links every card its delivery landed, not only the one it was asked about
+ok - a card-less remote handoff still completes a link an earlier --card call staged
+ok - --resume-pending links a pair whose delivery landed even while a later delivery to the same secondmate is stuck
+ok - one command reports an unlinkable pair once on stderr, even though --resume-pending sweeps its record twice, and never on the fleet audit log
+ok - one command warns about an unreadable card once, even though --resume-pending sweeps its record twice
+exit=0
+
+
+=== Review finding (1): does the ordinary-status assertion actually catch a leaked --reason? ===
+Simulated a leak by making the helper always pass --reason, then ran
+test_lib_advance_after_landing_advances_an_ordinary_status_with_no_reason:
+  not ok - an ordinary status advance carried a --reason it was never given   (exit=1)
+
+Why the old substring assertion would NOT have caught it (grep against the logged command line):
+  assert_grep     (grep -F  "status card-9 review"): MATCHES -> test would have passed despite the leak
+  assert_grep_line(grep -Fx "status card-9 review"): NO MATCH -> test correctly fails on the leak
