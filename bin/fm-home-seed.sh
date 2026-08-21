@@ -726,6 +726,10 @@ initialize_no_mistakes_project() {
     echo "error: failed to initialize no-mistakes for $project at $dst" >&2
     return 1
   }
+  "$SCRIPT_DIR/fm-pr-destination-guard.sh" "$dst" || {
+    echo "error: could not pin the pull-request destination for $project at $dst" >&2
+    return 1
+  }
 }
 
 write_registry() {

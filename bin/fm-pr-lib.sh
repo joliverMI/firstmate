@@ -24,6 +24,8 @@ FM_PR_PATH=
 FM_PR_OWNER=
 FM_PR_REPO=
 FM_PR_NUMBER=
+FM_PR_REMOTE_OWNER=
+FM_PR_REMOTE_REPO=
 FM_PR_DATA_PROVIDER=
 FM_PR_DATA_URL=
 FM_PR_DATA_HOST=
@@ -205,6 +207,29 @@ fm_pr_url_parse() {
   FM_PR_HOST=$host
   FM_PR_PATH=$path
   FM_PR_NUMBER=${BASH_REMATCH[3]}
+}
+
+# fm_pr_github_remote_owner_repo <git-remote-url>: parse a GitHub remote URL
+# (https or ssh form, with or without a trailing .git) into
+# FM_PR_REMOTE_OWNER/FM_PR_REMOTE_REPO. Returns 1 and clears both for any
+# non-GitHub or unparseable URL. Used to compare a task's own project remote
+# against a reported PR's owner/repository (see bin/fm-pr-check.sh), never to
+# construct one.
+fm_pr_github_remote_owner_repo() {
+  local raw=${1-} stripped pattern
+  local LC_ALL=C
+  FM_PR_REMOTE_OWNER=
+  FM_PR_REMOTE_REPO=
+  stripped=${raw%.git}
+  stripped=${stripped%/}
+  pattern='^(https://github\.com/|git@github\.com:)([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9._-]+)$'
+  [[ "$stripped" =~ $pattern ]] || return 1
+  # Consumed by bin/fm-pr-check.sh, which compares this against a reported PR's
+  # owner/repository.
+  # shellcheck disable=SC2034
+  FM_PR_REMOTE_OWNER=${BASH_REMATCH[2]}
+  # shellcheck disable=SC2034
+  FM_PR_REMOTE_REPO=${BASH_REMATCH[3]}
 }
 
 fm_pr_head_valid() {

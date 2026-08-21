@@ -234,6 +234,8 @@ EOF
       command -v no-mistakes >/dev/null 2>&1 || die "no-mistakes is unavailable for project $NAME"
       (cd "$DEST" && no-mistakes init >/dev/null && no-mistakes doctor >/dev/null) \
         || die "no-mistakes initialization failed for project $NAME"
+      "$SCRIPT_DIR/fm-pr-destination-guard.sh" "$DEST" \
+        || die "could not pin the pull-request destination for project $NAME"
     fi
   fi
   printf '%s\n' "$REGISTRY_LINE" >> "$PROJECT_REG"

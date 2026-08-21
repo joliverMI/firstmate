@@ -179,6 +179,28 @@ Independently, `fm-spawn.sh`, `fm-send.sh`, `fm-control.sh`, and `fm-teardown.sh
 A normal primary checkout or crewmate worktree has neither signal and remains unaffected.
 The helper's header owns the exact signal detection, relocated-home limitation, test-harness bypass, and relationship to no-mistakes' HEAD-continuity guard.
 
+## Pull request destination is pinned, never gh's default
+
+`joliverMI/firstmate` is a real GitHub fork of the public `kunchenguid/firstmate` (3,881+ stars, not ours).
+`gh pr create` resolves its base repository from the working directory's git remotes unless a destination is explicitly pinned, and when that resolved remote is a known GitHub fork, `gh` defaults the base repository to the fork's *parent*, not the fork itself.
+This is a property of `gh` itself, resolved through the GitHub API at the moment `gh pr create` runs; it does not depend on what the local `origin` remote URL says, and it does not depend on any target no-mistakes has recorded for the repo.
+In August 2026 this silently opened six pull requests against `kunchenguid/firstmate` before each was caught and closed within minutes; a closed pull request and its closing comment on someone else's public repository stay visible forever.
+Renaming remotes and repointing no-mistakes' recorded target do not touch this mechanism at all, and can appear to fix it by coincidence on a run that never happens to hit the redirect.
+
+The one place firstmate does not control is no-mistakes' own PR step: it calls `gh pr create` without a base-repository override, and no-mistakes exposes no configuration surface to add one for this case (checked against `no-mistakes axi run --help`, `no-mistakes init --help`, the global `~/.no-mistakes/config.yaml` schema, and the repo-level `.no-mistakes.yaml` schema).
+Its `fork_url` setting looks adjacent but solves the opposite workflow - push to a fork, open the PR against the recorded origin, i.e. classic upstream contribution - and does not help a project that pushes and opens PRs against the same repository it lives in.
+
+The fix does not touch the fork relationship on GitHub (deliberately preserved) and does not touch no-mistakes' code (firstmate does not own it).
+It removes the ambiguity `gh` itself is resolving.
+`gh repo set-default origin` (see `gh repo set-default --help`) pins `remote.origin.gh-resolved` in a git directory's own config to the literal configured remote, so any `gh pr create` run from that directory never asks the API which repository is the "real" parent.
+This is a purely local, additive git-config write - no GitHub-side mutation, no daemon restart, safe against a bare repository as well as an ordinary checkout.
+
+`bin/fm-pr-destination-guard.sh <project-dir>` applies and verifies that pin in two places: the project checkout itself, and its no-mistakes gate (the actual git directory no-mistakes' PR step runs `gh` from, discovered through `no-mistakes status`'s `gate:` line - not the checkout a crewmate or firstmate is sitting in).
+It fails loudly - non-zero exit, a diagnostic naming exactly what could not be pinned or verified - rather than proceeding when origin is missing, the gate cannot be discovered, or a pin does not read back after being written; a non-GitHub origin is a deliberate no-op, since this specific default is gh-specific.
+It is invoked everywhere `no-mistakes init` already is - project initialization (the `project-management` skill), secondmate home seeding (`fm-home-seed.sh`, `fm-remote-home-provision.sh`) - and unconditionally in every no-mistakes-mode ship brief's Setup step, so it runs before implementation work and again before every validation run, not only once at first setup.
+`bin/fm-pr-check.sh` adds a second, defense-in-depth layer for GitHub tasks: it refuses to record or arm a merge watch for a reported PR whose owner/repository does not match the task's own project origin, in case a PR is ever reported despite the pin.
+That check cannot recall a PR that already exists - it can only stop firstmate from silently trusting one that landed wrong - so the pin above remains the actual prevention.
+
 ## Two task shapes
 
 Ship tasks change projects and ship by project mode (`no-mistakes`, `direct-PR`, or `local-only`); scout tasks leave standalone investigation reports at `data/<id>/report.md` and never push.

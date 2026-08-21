@@ -41,6 +41,28 @@ if [ ! -f "$META" ] || [ -L "$META" ] || [ "$(fm_pr_file_link_count "$META")" !=
   exit 1
 fi
 
+WT=$(grep '^worktree=' "$META" | tail -1 | cut -d= -f2- || true)
+
+# Refuse a GitHub PR reported for a repository other than this task's own
+# project. This is a defense-in-depth backstop, not the primary defense
+# (bin/fm-pr-destination-guard.sh pins gh's own PR-creation resolution so this
+# never fires in the ordinary case): by the time a URL reaches here the PR may
+# already exist, so this cannot recall it, but it stops firstmate from
+# recording, tracking, or arming a merge watch for the wrong repository - see
+# docs/architecture.md "Pull request destination is pinned, never gh's
+# default". Silently skipped, not refused, when the task's own origin cannot
+# be determined (no recorded worktree, or a non-GitHub remote): this check
+# only ever blocks on a positive, confirmed mismatch.
+if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ]; then
+  OWN_ORIGIN=$(git -C "$WT" config --get remote.origin.url 2>/dev/null || true)
+  if [ -n "$OWN_ORIGIN" ] && fm_pr_github_remote_owner_repo "$OWN_ORIGIN"; then
+    if [ "${FM_PR_REMOTE_OWNER,,}/${FM_PR_REMOTE_REPO,,}" != "${FM_PR_OWNER,,}/${FM_PR_REPO,,}" ]; then
+      echo "error: PR $URL targets $FM_PR_OWNER/$FM_PR_REPO, not this task's own project $FM_PR_REMOTE_OWNER/$FM_PR_REMOTE_REPO; refusing to record or arm it" >&2
+      exit 1
+    fi
+  fi
+fi
+
 # A prior exact merged result may have queued its durable wake immediately
 # before interruption.
 # Finish only its identity-bound receipt before publishing a replacement poll.
@@ -71,7 +93,6 @@ fi
 # bin/fm-teardown.sh reads the head from the forge at teardown rather than from
 # metadata and falls back to its provider-agnostic content check, and
 # bin/fm-review-diff.sh resolves the head from the remote when none is recorded.
-WT=$(grep '^worktree=' "$META" | tail -1 | cut -d= -f2- || true)
 PR_HEAD=
 if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ] && command -v gh >/dev/null 2>&1; then
   if REMOTE_HEAD=$(cd "$WT" && gh pr view "$URL" --json headRefOid -q .headRefOid 2>/dev/null) \

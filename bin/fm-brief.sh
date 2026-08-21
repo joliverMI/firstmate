@@ -360,7 +360,7 @@ case "$MODE" in
 Delivery contract: mode=direct-PR
 This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
 The task is complete only when committed on your branch.
-When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
+When it is implemented and committed, push your branch, then determine this repo's own destination explicitly - never rely on \`gh\`'s default, which targets a fork's parent instead of the fork itself when this repo is a GitHub fork: \`OWNER_REPO=\$(gh repo view --json nameWithOwner -q .nameWithOwner)\` run inside this worktree gives that exact value safely (unlike \`gh pr create\`'s own resolution, it never redirects to a parent). Open the PR against exactly that repository: \`gh-axi pr create --repo "\$OWNER_REPO" ...\`. Then append \`done: PR {url}\` to the status file and stop, after confirming the returned URL's owner/repo matches \$OWNER_REPO.
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
     ;;
@@ -379,7 +379,8 @@ EOF
     ;;
   *)  # no-mistakes
     SETUP2="
-2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`."
+2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`.
+3. Always run \`bin/fm-pr-destination-guard.sh .\`, whether or not step 2 just ran \`no-mistakes init\`. It pins this repo's pull-request destination to its own \`origin\` (never gh's ambient default) and verifies the pin in both this checkout and its no-mistakes gate. Treat a non-zero exit as a blocker: append \`blocked: {its exact error}\` and stop rather than starting \`/no-mistakes\` unpinned."
     RULE1='1. Never push to the default branch. Never merge a PR.'
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done

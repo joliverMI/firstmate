@@ -75,12 +75,13 @@ The captain's request to create that local project authorizes this local initial
 Run no-mistakes initialization only for `no-mistakes` and `no-mistakes-prod-only` projects:
 
 ```sh
-cd projects/<name> && no-mistakes init && no-mistakes doctor
+cd projects/<name> && no-mistakes init && no-mistakes doctor && bin/fm-pr-destination-guard.sh .
 ```
 
 Initialization configures the local gate and does not vendor a no-mistakes skill into the project.
 Do not create a commit merely because initialization ran.
 If doctor reports an environment, authentication, or daemon problem, resolve that blocker before dispatching work and never restart the shared daemon from a project operation.
+`fm-pr-destination-guard.sh` pins gh's pull-request destination for a GitHub-hosted project to its own `origin`, in both the checkout and the no-mistakes gate, and refuses loudly rather than proceeding if that pin cannot be verified; see docs/architecture.md "Pull request destination is pinned, never gh's default" for why a project that is itself a GitHub fork needs this even when its remotes are already correct.
 
 ## Remove
 
