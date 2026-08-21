@@ -192,6 +192,8 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
+# shellcheck source=bin/fm-dashboard-link-lib.sh
+. "$SCRIPT_DIR/fm-dashboard-link-lib.sh"
 if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   echo "error: invalid teardown request" >&2
   exit 2
@@ -966,35 +968,19 @@ backlog_refresh_reminder() {
 # Consumes the identity fm-spawn.sh --card established at dispatch
 # (state/<id>.meta's dashboard_card=), advancing that Admiral's Fleet Dashboard
 # card to review now that cleanup has actually succeeded. See docs/dashboard.md
-# "The mechanical card link" for the full design; this function only implements
-# it. No card recorded, a scout or secondmate teardown, or a --force teardown
-# (which can discard rather than land) are all silent no-ops - none of those is
-# an error. A card already complete is left alone rather than downgraded back to
-# review. Every dashboard call is guarded exactly like fm-spawn.sh's own link:
-# a failure only warns on stderr and best-effort records
-# `fm-dashboard.sh audit-log --fleet`, so cleanup that has already finished is
-# never turned into a failure by a board that will not answer.
+# "The mechanical card link" for the full design, and
+# fm-dashboard-link-lib.sh's fm_dashboard_advance_after_landing for the shared
+# implementation this function only wraps. No card recorded, a scout or
+# secondmate teardown, or a --force teardown (which can discard rather than
+# land) are all silent no-ops - none of those is an error.
 dashboard_advance_card() {
   [ -n "$DASHBOARD_CARD" ] || return 0
   case "$KIND" in scout | secondmate) return 0 ;; esac
   [ "$FORCE" != "--force" ] || return 0
-  local dash out current_status
+  local dash
   dash="$FM_ROOT/bin/fm-dashboard.sh"
-  if ! current_status=$("$dash" show "$DASHBOARD_CARD" --json 2>&1 | jq -r '.status // empty' 2>/dev/null) \
-     || [ -z "$current_status" ]; then
-    echo "warning: dashboard card advance failed for $ID -> card $DASHBOARD_CARD (show): $current_status" >&2
-    "$dash" audit-log --fleet "dashboard card advance failed for task $ID -> card $DASHBOARD_CARD at teardown; status may be stale" --kind error >/dev/null 2>&1 || true
-    return 0
-  fi
-  if [ "$current_status" = complete ]; then
-    return 0
-  fi
-  if out=$("$dash" status "$DASHBOARD_CARD" review 2>&1); then
-    echo "dashboard: advanced card $DASHBOARD_CARD to review for $ID"
-  else
-    echo "warning: dashboard card advance failed for $ID -> card $DASHBOARD_CARD (status review): $out" >&2
-    "$dash" audit-log --fleet "dashboard card advance failed for task $ID -> card $DASHBOARD_CARD at teardown; status may be stale" --kind error >/dev/null 2>&1 || true
-  fi
+  fm_dashboard_advance_after_landing "$dash" "$DASHBOARD_CARD" "$ID" review \
+    "dashboard card advance failed for task $ID -> card $DASHBOARD_CARD at teardown; status may be stale"
   return 0
 }
 

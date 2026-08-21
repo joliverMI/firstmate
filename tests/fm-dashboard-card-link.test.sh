@@ -24,6 +24,9 @@ SPAWN="$ROOT/bin/fm-spawn.sh"
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
 HANDOFF="$ROOT/bin/fm-backlog-handoff.sh"
 DASH="$ROOT/bin/fm-dashboard.sh"
+DASHLIB="$ROOT/bin/fm-dashboard-link-lib.sh"
+# shellcheck source=bin/fm-dashboard-link-lib.sh
+. "$DASHLIB"
 TMP_ROOT=$(fm_test_tmproot fm-dashboard-card-link)
 
 # --- shared dashboard server -------------------------------------------------
@@ -252,6 +255,223 @@ card_field() {  # <card-id> <field>
 }
 add_card() {  # <title> [--status <status>]
   "$DASH" add --title "$1" --captain firstmate --prompt "coverage prompt" "${@:2}" | awk '{print $1}'
+}
+
+# --- direct unit coverage for fm-dashboard-link-lib.sh --------------------
+# The suites above drive the shared helper only indirectly, through its three
+# real call sites against a real dashboard server. These call the two
+# functions it exports directly, against a fake "$dash" that logs every
+# invocation and answers each subcommand from env-var-controlled canned
+# results, to pin the helper's own branching contract in isolation: which
+# calls it makes, in what order, and what it prints, independent of any of
+# the three callers' own surrounding policy (audit-log caps, card-record
+# recovery, KIND/--force gating) that layers on top of it.
+
+FAKE_DASH="$TMP_ROOT/fake-dash.sh"
+FAKE_DASH_LOG="$TMP_ROOT/fake-dash.log"
+cat > "$FAKE_DASH" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$*" >> "$FAKE_DASH_LOG"
+case "$1" in
+  ref)
+    [ "${FAKE_DASH_REF_RC:-0}" -eq 0 ] || { printf '%s\n' "${FAKE_DASH_REF_ERR:-ref failed}" >&2; exit "${FAKE_DASH_REF_RC}"; }
+    ;;
+  agent)
+    [ "${FAKE_DASH_AGENT_RC:-0}" -eq 0 ] || { printf '%s\n' "${FAKE_DASH_AGENT_ERR:-agent failed}" >&2; exit "${FAKE_DASH_AGENT_RC}"; }
+    ;;
+  show)
+    [ "${FAKE_DASH_SHOW_RC:-0}" -eq 0 ] || { printf '%s\n' "${FAKE_DASH_SHOW_ERR:-show failed}" >&2; exit "${FAKE_DASH_SHOW_RC}"; }
+    printf '%s\n' "$FAKE_DASH_SHOW_JSON"
+    ;;
+  status)
+    [ "${FAKE_DASH_STATUS_RC:-0}" -eq 0 ] || { printf '%s\n' "${FAKE_DASH_STATUS_ERR:-status failed}" >&2; exit "${FAKE_DASH_STATUS_RC}"; }
+    ;;
+  audit-log) ;;
+  *) exit 1 ;;
+esac
+exit 0
+SH
+chmod +x "$FAKE_DASH"
+export FAKE_DASH_LOG
+# Exported once by name so a later plain VAR=value assignment in a test stays
+# visible to the fake dash's own process - it runs as a separate script, not a
+# function in this shell, so an unexported control variable would silently
+# read back empty there no matter what this shell just set it to.
+export FAKE_DASH_REF_RC FAKE_DASH_REF_ERR FAKE_DASH_AGENT_RC FAKE_DASH_AGENT_ERR \
+  FAKE_DASH_SHOW_RC FAKE_DASH_SHOW_ERR FAKE_DASH_SHOW_JSON \
+  FAKE_DASH_STATUS_RC FAKE_DASH_STATUS_ERR
+
+reset_fake_dash() {
+  : > "$FAKE_DASH_LOG"
+  FAKE_DASH_REF_RC='' FAKE_DASH_REF_ERR='' FAKE_DASH_AGENT_RC='' FAKE_DASH_AGENT_ERR='' \
+  FAKE_DASH_SHOW_RC='' FAKE_DASH_SHOW_ERR='' FAKE_DASH_SHOW_JSON='{}' \
+  FAKE_DASH_STATUS_RC='' FAKE_DASH_STATUS_ERR=''
+}
+
+# Runs a shared-helper function directly in THIS shell (never inside a $(...)
+# subshell, which would fork before FM_DASHBOARD_LINK_FAILED could be read
+# back) and captures its combined output to $LIB_OUT for assertions.
+LIB_OUT=
+run_lib() {
+  local outfile="$TMP_ROOT/lib-call.out"
+  "$@" >"$outfile" 2>&1
+  LIB_OUT=$(cat "$outfile")
+}
+
+test_lib_link_self_reads_status_and_advances_not_started() {
+  reset_fake_dash
+  FAKE_DASH_SHOW_JSON='{"status":"not_started"}'
+  run_lib fm_dashboard_link_and_advance "$FAKE_DASH" card-1 home:t1 t1 t1 "$FM_DASHBOARD_LINK_SELF_READ"
+  [ "$FM_DASHBOARD_LINK_FAILED" -eq 0 ] || fail "self-read not_started should not report a failure: $LIB_OUT"
+  assert_grep 'show card-1 --json' "$FAKE_DASH_LOG" "the self-read sentinel did not trigger its own show call"
+  assert_contains "$LIB_OUT" "dashboard: linked card card-1 to t1 (ref=home:t1, agent=t1, status not_started -> working)" \
+    "the self-read path did not report the not_started -> working advance"
+  assert_grep_line 'status card-1 working' "$FAKE_DASH_LOG" "the advance did not call status working, or called it with arguments it was never given"
+  pass "fm_dashboard_link_and_advance self-reads status and advances a not_started card"
+}
+
+test_lib_link_known_status_skips_its_own_read() {
+  reset_fake_dash
+  run_lib fm_dashboard_link_and_advance "$FAKE_DASH" card-2 sm:key2 sm key2 not_started
+  [ "$FM_DASHBOARD_LINK_FAILED" -eq 0 ] || fail "a known not_started status should not report a failure: $LIB_OUT"
+  assert_no_grep 'show card-2' "$FAKE_DASH_LOG" "a pre-known status still triggered its own show call"
+  assert_contains "$LIB_OUT" "dashboard: linked card card-2 to key2 (ref=sm:key2, agent=sm, status not_started -> working)" \
+    "a pre-known not_started status did not advance"
+  pass "fm_dashboard_link_and_advance trusts a caller-supplied known status instead of re-reading it"
+}
+
+test_lib_link_already_past_not_started_reports_without_advancing() {
+  reset_fake_dash
+  run_lib fm_dashboard_link_and_advance "$FAKE_DASH" card-3 sm:key3 sm key3 working
+  [ "$FM_DASHBOARD_LINK_FAILED" -eq 0 ] || fail "a card already past not_started should not report a failure: $LIB_OUT"
+  assert_no_grep 'status card-3' "$FAKE_DASH_LOG" "a card already past not_started was advanced anyway"
+  assert_contains "$LIB_OUT" "dashboard: linked card card-3 to key3 (ref=sm:key3, agent=sm)" \
+    "a card already past not_started did not report the link"
+  pass "fm_dashboard_link_and_advance links a card past not_started without touching its status"
+}
+
+test_lib_link_empty_known_status_is_a_failure_with_no_advance_attempt() {
+  reset_fake_dash
+  run_lib fm_dashboard_link_and_advance "$FAKE_DASH" card-4 sm:key4 sm key4 ''
+  [ "$FM_DASHBOARD_LINK_FAILED" -eq 1 ] || fail "an empty known status must be treated as a failure"
+  assert_no_grep 'status card-4' "$FAKE_DASH_LOG" "an unread status was advanced anyway"
+  assert_contains "$LIB_OUT" "warning: dashboard card link failed for key4 -> card card-4 (status):" \
+    "an empty known status did not report the (status) failure"
+  pass "fm_dashboard_link_and_advance never confirms a link whose status was never actually read"
+}
+
+test_lib_link_ref_failure_still_attempts_agent_and_skips_status() {
+  reset_fake_dash
+  FAKE_DASH_REF_RC=1
+  FAKE_DASH_REF_ERR='boom: ref rejected'
+  run_lib fm_dashboard_link_and_advance "$FAKE_DASH" card-5 sm:key5 sm key5 not_started
+  [ "$FM_DASHBOARD_LINK_FAILED" -eq 1 ] || fail "a failed ref write must report a failure"
+  assert_contains "$LIB_OUT" "warning: dashboard card link failed for key5 -> card card-5 (ref): boom: ref rejected" \
+    "a failed ref write did not report its own error text"
+  assert_grep 'agent card-5 sm' "$FAKE_DASH_LOG" "the agent write was skipped after the ref write failed"
+  assert_no_grep 'status card-5' "$FAKE_DASH_LOG" "the status was still advanced after the ref write failed"
+  pass "fm_dashboard_link_and_advance still attempts the agent write after a failed ref write, but never the status advance"
+}
+
+test_lib_link_agent_failure_is_reported() {
+  reset_fake_dash
+  FAKE_DASH_AGENT_RC=1
+  FAKE_DASH_AGENT_ERR='boom: agent rejected'
+  run_lib fm_dashboard_link_and_advance "$FAKE_DASH" card-6 sm:key6 sm key6 not_started
+  [ "$FM_DASHBOARD_LINK_FAILED" -eq 1 ] || fail "a failed agent write must report a failure"
+  assert_contains "$LIB_OUT" "warning: dashboard card link failed for key6 -> card card-6 (agent): boom: agent rejected" \
+    "a failed agent write did not report its own error text"
+  pass "fm_dashboard_link_and_advance reports a failed agent write"
+}
+
+test_lib_link_status_advance_failure_is_reported() {
+  reset_fake_dash
+  FAKE_DASH_STATUS_RC=1
+  FAKE_DASH_STATUS_ERR='boom: status rejected'
+  run_lib fm_dashboard_link_and_advance "$FAKE_DASH" card-7 sm:key7 sm key7 not_started
+  [ "$FM_DASHBOARD_LINK_FAILED" -eq 1 ] || fail "a failed status advance must report a failure"
+  assert_contains "$LIB_OUT" "warning: dashboard card link failed for key7 -> card card-7 (status working): boom: status rejected" \
+    "a failed status advance did not report its own error text"
+  pass "fm_dashboard_link_and_advance reports a failed status advance"
+}
+
+test_lib_advance_after_landing_skips_a_complete_card() {
+  reset_fake_dash
+  FAKE_DASH_SHOW_JSON='{"status":"complete"}'
+  run_lib fm_dashboard_advance_after_landing "$FAKE_DASH" card-8 t8 review "audit msg t8"
+  [ -z "$LIB_OUT" ] || fail "an already-complete card must produce no output at all: $LIB_OUT"
+  assert_no_grep 'status card-8' "$FAKE_DASH_LOG" "an already-complete card was advanced anyway"
+  assert_no_grep 'audit-log' "$FAKE_DASH_LOG" "an already-complete card wrote to the fleet audit log"
+  pass "fm_dashboard_advance_after_landing silently leaves an already-complete card alone"
+}
+
+test_lib_advance_after_landing_advances_an_ordinary_status_with_no_reason() {
+  reset_fake_dash
+  FAKE_DASH_SHOW_JSON='{"status":"working"}'
+  run_lib fm_dashboard_advance_after_landing "$FAKE_DASH" card-9 t9 review "audit msg t9"
+  assert_contains "$LIB_OUT" "dashboard: advanced card card-9 to review for t9" \
+    "an ordinary landed status did not advance to the target"
+  assert_grep_line 'status card-9 review' "$FAKE_DASH_LOG" \
+    "an ordinary status advance carried a --reason it was never given"
+  pass "fm_dashboard_advance_after_landing advances an ordinary status with no --reason"
+}
+
+# The defect this whole extraction was scoped to fix: a card still
+# needs_attention when its work lands must still advance (freezing it is its
+# own stale-card failure), but the status change itself is what discards
+# needs_attention_reason - so the advance call must carry it forward as its
+# own --reason instead of letting it vanish with no trace.
+test_lib_advance_after_landing_carries_needs_attention_reason_forward() {
+  reset_fake_dash
+  FAKE_DASH_SHOW_JSON='{"status":"needs_attention","needs_attention_reason":"approve the new vendor"}'
+  run_lib fm_dashboard_advance_after_landing "$FAKE_DASH" card-10 t10 review "audit msg t10"
+  assert_contains "$LIB_OUT" "dashboard: advanced card card-10 to review for t10" \
+    "a needs_attention card whose work landed was not advanced to review"
+  assert_grep_line "status card-10 review --reason approve the new vendor" "$FAKE_DASH_LOG" \
+    "the needs_attention reason was not carried forward as the advance call's own --reason"
+  pass "fm_dashboard_advance_after_landing carries a needs_attention card's reason forward instead of discarding it"
+}
+
+# The exact same defect on the sibling status: store.py's set_status nulls
+# waiting_reason on any write whose target status is not waiting, by the same
+# unconditional rule that clears needs_attention_reason, and teardown's guard
+# (advance from anything but complete) reaches a waiting card just as readily.
+# Which of the two columns is live is the only thing that differs.
+test_lib_advance_after_landing_carries_waiting_reason_forward() {
+  reset_fake_dash
+  FAKE_DASH_SHOW_JSON='{"status":"waiting","waiting_reason":"the vendor to countersign"}'
+  run_lib fm_dashboard_advance_after_landing "$FAKE_DASH" card-13 t13 review "audit msg t13"
+  assert_contains "$LIB_OUT" "dashboard: advanced card card-13 to review for t13" \
+    "a waiting card whose work landed was not advanced to review"
+  assert_grep_line "status card-13 review --reason the vendor to countersign" "$FAKE_DASH_LOG" \
+    "the waiting reason was not carried forward as the advance call's own --reason"
+  pass "fm_dashboard_advance_after_landing carries a waiting card's reason forward instead of discarding it"
+}
+
+test_lib_advance_after_landing_show_failure_warns_and_audit_logs() {
+  reset_fake_dash
+  FAKE_DASH_SHOW_RC=1
+  run_lib fm_dashboard_advance_after_landing "$FAKE_DASH" card-11 t11 review "audit msg t11"
+  assert_contains "$LIB_OUT" "warning: dashboard card advance failed for t11 -> card card-11 (show):" \
+    "an unreadable card did not report the (show) failure"
+  assert_grep 'audit-log --fleet audit msg t11 --kind error' "$FAKE_DASH_LOG" \
+    "an unreadable card did not record a fleet audit-log finding"
+  assert_no_grep 'status card-11' "$FAKE_DASH_LOG" "an unreadable card was advanced anyway"
+  pass "fm_dashboard_advance_after_landing warns and audit-logs when the card cannot be read"
+}
+
+test_lib_advance_after_landing_status_failure_warns_and_audit_logs() {
+  reset_fake_dash
+  FAKE_DASH_SHOW_JSON='{"status":"working"}'
+  FAKE_DASH_STATUS_RC=1
+  FAKE_DASH_STATUS_ERR='boom: review rejected'
+  run_lib fm_dashboard_advance_after_landing "$FAKE_DASH" card-12 t12 review "audit msg t12"
+  assert_contains "$LIB_OUT" "warning: dashboard card advance failed for t12 -> card card-12 (status review): boom: review rejected" \
+    "a failed advance did not report its own error text"
+  assert_grep 'audit-log --fleet audit msg t12 --kind error' "$FAKE_DASH_LOG" \
+    "a failed advance did not record a fleet audit-log finding"
+  pass "fm_dashboard_advance_after_landing warns and audit-logs when the status advance call itself fails"
 }
 
 # --- spawn-side fake tmux/treehouse (adapted from fm-spawn-worktree-settle.test.sh) ---
@@ -547,6 +767,86 @@ test_teardown_never_downgrades_an_already_complete_card() {
   assert_not_contains "$out" "dashboard:" "teardown reported advancing an already-complete card"
   [ "$(card_status "$card")" = complete ] || fail "an already-complete card must never be downgraded back to review"
   pass "teardown never downgrades a card the Admiral already marked complete"
+}
+
+# Regression: a card still needs_attention when its serving task finally lands
+# used to be advanced to review exactly like any other status - correct, since
+# freezing it at needs_attention forever would just be a different stale-card
+# failure - but the status change itself silently discarded
+# needs_attention_reason with no trace at all (store.py's set_status keeps
+# that column only while status stays needs_attention, and teardown never
+# passed a --reason to carry it anywhere else). The Admiral could no longer
+# tell what he had been asked, even though the card's own status history is
+# exactly where that answer belongs.
+test_teardown_preserves_needs_attention_reason_in_history_on_landing() {
+  local id case_dir card out shown
+  id=teardown-keepreason-b6
+  card=$(add_card "Needs-attention reason coverage" --status working)
+  "$DASH" status "$card" needs_attention --reason "approve the \$400 renewal" >/dev/null \
+    || fail "setup: could not move card to needs_attention"
+  case_dir=$(make_teardown_case teardown-keepreason "$id")
+  printf 'dashboard_card=%s\n' "$card" >> "$case_dir/state/$id.meta"
+  land_teardown_case "$case_dir" "$id"
+
+  out=$(run_teardown_case "$case_dir" "$id")
+  expect_code 0 "$?" "landed teardown should succeed" "$out"
+  assert_contains "$out" "dashboard: advanced card $card to review" "teardown did not advance a needs_attention card whose work had actually landed"
+  [ "$(card_status "$card")" = review ] \
+    || fail "a needs_attention card must still advance once its work has landed - freezing it is its own stale-card bug"
+  [ -z "$(card_field "$card" needs_attention_reason)" ] \
+    || fail "needs_attention_reason must clear once the card leaves needs_attention (store.py's own contract)"
+
+  # The reason text is ALSO present in an earlier status_history row (the
+  # needs_attention transition set up above), regardless of what teardown
+  # does - asserting only "the JSON blob contains this text somewhere" would
+  # pass unchanged against the old code that discarded it, since that earlier
+  # row survives either way. The thing that actually distinguishes old from
+  # new behavior is whether THIS transition - needs_attention -> review, the
+  # one teardown itself just made - carries the reason as its own note.
+  shown=$("$DASH" show "$card" --json)
+  local last_to last_note
+  last_to=$(printf '%s' "$shown" | jq -r '.status_history[-1].to_status // empty')
+  last_note=$(printf '%s' "$shown" | jq -r '.status_history[-1].note // empty')
+  [ "$last_to" = review ] || fail "the most recent status history entry was not the needs_attention -> review transition (got to_status=$last_to)"
+  [ "$last_note" = "approve the \$400 renewal" ] \
+    || fail "the needs_attention -> review transition's own history note did not carry the reason forward (got note=[$last_note]) - the reason was silently discarded instead of carried into the card's status history"
+  pass "teardown preserves a needs_attention card's reason in its status history instead of silently nulling it"
+}
+
+# The same regression on the sibling status, end to end against a real server:
+# `waiting` is the other status with a reason column, store.py's set_status
+# nulls it by the identical unconditional rule, and teardown's advance guard
+# (anything but complete) reaches a waiting card exactly as it reaches a
+# needs_attention one. Asserted the same discriminating way: on the note of the
+# most recent status_history row, which is the waiting -> review transition
+# teardown itself just made, not on the reason text appearing somewhere in the
+# card's JSON (the earlier waiting-setting row carries that either way).
+test_teardown_preserves_waiting_reason_in_history_on_landing() {
+  local id case_dir card out shown
+  id=teardown-keepwait-b7
+  card=$(add_card "Waiting reason coverage" --status working)
+  "$DASH" status "$card" waiting --reason "the vendor to countersign the \$400 renewal" >/dev/null \
+    || fail "setup: could not move card to waiting"
+  case_dir=$(make_teardown_case teardown-keepwait "$id")
+  printf 'dashboard_card=%s\n' "$card" >> "$case_dir/state/$id.meta"
+  land_teardown_case "$case_dir" "$id"
+
+  out=$(run_teardown_case "$case_dir" "$id")
+  expect_code 0 "$?" "landed teardown should succeed" "$out"
+  assert_contains "$out" "dashboard: advanced card $card to review" "teardown did not advance a waiting card whose work had actually landed"
+  [ "$(card_status "$card")" = review ] \
+    || fail "a waiting card must still advance once its work has landed - freezing it is its own stale-card bug"
+  [ -z "$(card_field "$card" waiting_reason)" ] \
+    || fail "waiting_reason must clear once the card leaves waiting (store.py's own contract)"
+
+  shown=$("$DASH" show "$card" --json)
+  local last_to last_note
+  last_to=$(printf '%s' "$shown" | jq -r '.status_history[-1].to_status // empty')
+  last_note=$(printf '%s' "$shown" | jq -r '.status_history[-1].note // empty')
+  [ "$last_to" = review ] || fail "the most recent status history entry was not the waiting -> review transition (got to_status=$last_to)"
+  [ "$last_note" = "the vendor to countersign the \$400 renewal" ] \
+    || fail "the waiting -> review transition's own history note did not carry the reason forward (got note=[$last_note]) - the reason was silently discarded instead of carried into the card's status history"
+  pass "teardown preserves a waiting card's reason in its status history instead of silently nulling it"
 }
 
 test_teardown_with_unreachable_dashboard_still_succeeds_and_warns() {
@@ -1849,6 +2149,19 @@ test_card_less_remote_handoff_completes_a_link_its_delivery_lands() {
   pass "a card-less remote handoff still completes a link an earlier --card call staged"
 }
 
+test_lib_link_self_reads_status_and_advances_not_started
+test_lib_link_known_status_skips_its_own_read
+test_lib_link_already_past_not_started_reports_without_advancing
+test_lib_link_empty_known_status_is_a_failure_with_no_advance_attempt
+test_lib_link_ref_failure_still_attempts_agent_and_skips_status
+test_lib_link_agent_failure_is_reported
+test_lib_link_status_advance_failure_is_reported
+test_lib_advance_after_landing_skips_a_complete_card
+test_lib_advance_after_landing_advances_an_ordinary_status_with_no_reason
+test_lib_advance_after_landing_carries_needs_attention_reason_forward
+test_lib_advance_after_landing_carries_waiting_reason_forward
+test_lib_advance_after_landing_show_failure_warns_and_audit_logs
+test_lib_advance_after_landing_status_failure_warns_and_audit_logs
 test_spawn_links_card_and_advances_not_started_to_working
 test_spawn_without_card_flag_never_touches_the_dashboard
 test_spawn_with_unreachable_dashboard_still_succeeds_and_warns
@@ -1859,6 +2172,8 @@ test_teardown_with_unreachable_dashboard_still_succeeds_and_warns
 test_teardown_without_dashboard_card_meta_is_a_noop
 test_teardown_force_discard_never_advances_the_card
 test_teardown_never_downgrades_an_already_complete_card
+test_teardown_preserves_needs_attention_reason_in_history_on_landing
+test_teardown_preserves_waiting_reason_in_history_on_landing
 # Only the handoff cases move backlog items, which bin/fm-backlog-handoff.sh
 # delegates to tasks-axi; the spawn/teardown cases above need none of it, so
 # they keep running on a machine without it.

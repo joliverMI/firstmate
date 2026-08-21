@@ -78,6 +78,10 @@ make_fake_root() {
   ln -s "$ROOT/bin/fm-x-lib.sh" "$fake/bin/fm-x-lib.sh"
   ln -s "$ROOT/bin/fm-secondmate-registry-lib.sh" "$fake/bin/fm-secondmate-registry-lib.sh"
   ln -s "$ROOT/bin/fm-secondmate-parent-lib.sh" "$fake/bin/fm-secondmate-parent-lib.sh"
+  # fm-dashboard-link-lib.sh: teardown sources it for the shared dashboard
+  # card-link helpers. Inert in this fixture (no dashboard_card= in meta), but a
+  # real sibling teardown now requires at source time.
+  ln -s "$ROOT/bin/fm-dashboard-link-lib.sh" "$fake/bin/fm-dashboard-link-lib.sh"
   # fm-guard.sh: stub (teardown calls it with `|| true`).
   cat > "$fake/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
@@ -156,6 +160,10 @@ test_teardown_skips_gracefully_without_tasktmp() {
   ln -s "$ROOT/bin/fm-x-lib.sh" "$fake/bin/fm-x-lib.sh"
   ln -s "$ROOT/bin/fm-secondmate-registry-lib.sh" "$fake/bin/fm-secondmate-registry-lib.sh"
   ln -s "$ROOT/bin/fm-secondmate-parent-lib.sh" "$fake/bin/fm-secondmate-parent-lib.sh"
+  # fm-dashboard-link-lib.sh: teardown sources it for the shared dashboard
+  # card-link helpers. Inert in this fixture (no dashboard_card= in meta), but a
+  # real sibling teardown now requires at source time.
+  ln -s "$ROOT/bin/fm-dashboard-link-lib.sh" "$fake/bin/fm-dashboard-link-lib.sh"
   cat > "$fake/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
 exit 0

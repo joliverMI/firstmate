@@ -31,7 +31,12 @@
 #   fm-dashboard.sh ref <id> <backlog-ref>
 #   fm-dashboard.sh status <id> <status> [--waiting-on <id>] [--reason <text>]
 #       --reason is what the card is waiting on for `waiting`, or what is
-#       being asked of him for `needs-attention`; ignored for other statuses.
+#       being asked of him for `needs-attention`. For every other status it
+#       is not stored on the card at all, only as that transition's
+#       status-history note - not ignored, and load-bearing:
+#       bin/fm-dashboard-link-lib.sh's advance-on-landing passes a held
+#       reason back this way so the status change does not destroy it (see
+#       docs/dashboard.md "The mechanical card link").
 #       needs-attention REQUIRES --reason: the server refuses the status
 #       change with no reason, and refuses a reason it can mechanically
 #       tell is only a progress report rather than an ask (see
