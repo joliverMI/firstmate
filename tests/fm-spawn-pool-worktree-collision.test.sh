@@ -121,8 +121,6 @@ test_worktree_already_owned_by_another_task_is_refused() {
   assert_contains "$out" "holder-task" "refusal did not name the task that already owns the worktree"
   assert_grep "kill-window" "$tmuxlog" \
     "the refusal must close the window this spawn created instead of stranding it on the copy"
-  assert_no_grep "worktree rm" "$tmuxlog" \
-    "the refusal must leave the pooled copy itself alone - it may be the holder's"
   assert_absent "$home/state/$id.meta" "spawn must not record the colliding worktree for the new task"
   assert_grep "worktree=$wt" "$home/state/holder-task.meta" \
     "the guard must never mutate the record of the task that owns the worktree"

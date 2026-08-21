@@ -1744,6 +1744,17 @@ spawn_kill_collision_window() {
   case "$BACKEND" in
     zellij) fm_backend_kill zellij "$T" "${ZELLIJ_TAB_ID:-}" "$W" ;;
     cmux) fm_backend_kill cmux "$T" '' "$W" ;;
+    herdr)
+      # fm_backend_herdr_kill takes the presentation-order lock itself, and
+      # since it runs in this same process fm_lock_try_acquire would treat the
+      # lock this spawn already holds as its own to reclaim and then release -
+      # leaving HERDR_PRESENTATION_ORDER_LOCK_HELD claiming a lock that is gone,
+      # so the EXIT trap would skip re-acquisition and close the projection
+      # panes unlocked. Hand the lock back first: the kill then acquires it on
+      # its own terms, and the trap re-acquires legitimately afterwards.
+      spawn_herdr_presentation_order_lock_release
+      fm_backend_kill herdr "$T"
+      ;;
     *) fm_backend_kill "$BACKEND" "$T" ;;
   esac
 }
@@ -1771,11 +1782,10 @@ refuse_spawn_worktree_collision() {  # <source> <inspect-target> <other-id>
   else
     hint="the isolated-copy pool may be exhausted (a hard cap, a stale lease, or a crashed holder can all look like room when there is none) - free it (inspect $other_id, then 'treehouse status') before retrying"
     if [ -n "${T:-}" ]; then
-      if spawn_kill_collision_window; then
-        hint="$hint; this attempt's own window $W was closed, so retrying strands nothing, while the copy itself is left alone because it may be $other_id's"
-      else
-        hint="$hint; this attempt's own window $W could not be closed and is still open on that copy - close it yourself before retrying"
-      fi
+      # Every backend's kill is best-effort and reports success even when it
+      # closed nothing, so this can only claim the request, never the outcome.
+      spawn_kill_collision_window || true
+      hint="$hint; a close was requested for this attempt's own window $W (verify it is gone - a failed close is silent), while the copy itself is left alone because it may be $other_id's"
     fi
   fi
   echo "error: $source resolved to worktree '$WT', already recorded as task $other_id's own isolated copy; refusing to spawn $ID onto a copy another task may still be using. ${hint}. Inspect target $inspect_target" >&2
@@ -1801,12 +1811,23 @@ validate_spawn_worktree() {  # <source> <inspect-target>
   fi
   # The pool provider is trusted to hand back a worktree nobody else is using,
   # but that trust has no independent check on this side: a hard cap, a stale
-  # lease, a crashed holder, or a race between two spawns could all end with
-  # $source reporting a worktree this SAME home already recorded for a
-  # different, still-tracked task. Accepting it silently would let this task's
-  # freshen/reset step or eventual teardown tear down that other task's
-  # unlanded work - the exact thing hard rule 3 forbids. Cross-check every
-  # other tracked task's own recorded worktree before trusting this one.
+  # lease, or a crashed holder could all end with $source reporting a worktree
+  # this SAME home already recorded for a different, still-tracked task.
+  # Accepting it silently would let this task's freshen/reset step or eventual
+  # teardown tear down that other task's unlanded work - the exact thing hard
+  # rule 3 forbids. Cross-check every other tracked task's own recorded
+  # worktree before trusting this one.
+  #
+  # What this check does and does not cover against concurrent spawns, since a
+  # record-only check cannot see a spawn that has not published its record yet:
+  # within ONE home it needs no such visibility, because $STATE/.task-set.lock
+  # (fm_task_set_lock_path) is taken by every fresh spawn before it acquires any
+  # backend container or worktree and is only released after that spawn's own
+  # record is published, and it is taken with fm_lock_try_acquire, so a second
+  # concurrent fresh spawn in the same home refuses outright rather than racing
+  # this one. That lock is per-home, so two spawns in DIFFERENT homes drawing
+  # from the same pool are not serialized by it and neither can see the other's
+  # not-yet-published record; nothing here claims to cover that case.
   for other_meta in "$STATE"/*.meta; do
     [ -e "$other_meta" ] || continue
     other_id=$(basename "$other_meta" .meta)
