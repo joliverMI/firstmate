@@ -30,19 +30,29 @@ SH
   chmod +x "$fakebin/$tool"
 }
 
-make_spawn_fakebin() {
-  local dir=$1 fakebin
-  fakebin=$(fm_fakebin "$dir")
-  cat > "$fakebin/tmux" <<'SH'
+# write_spawn_fake_tmux <fakebin> <behavior-file>: the one fake tmux every case
+# in this suite runs. Everything that is the same for a single spawn and for a
+# batch lives here; the two behaviors that genuinely differ - what `new-window`
+# echoes and what `#{pane_current_path}` answers - come from <behavior-file>,
+# which each builder writes with its own fm_fake_new_window/fm_fake_pane_path.
+write_spawn_fake_tmux() {  # <fakebin> <behavior-file>
+  local fakebin=$1 behavior=$2
+  cat > "$fakebin/tmux" <<SH
 #!/usr/bin/env bash
 set -u
+. '$behavior'
+SH
+  cat >> "$fakebin/tmux" <<'SH'
+case "${1:-}" in
+  new-window) fm_fake_new_window; exit 0 ;;
+esac
 case "$*" in
-  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
+  *"#{pane_current_path}"*) fm_fake_pane_path; exit 0 ;;
 esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
   list-windows) exit 0 ;;
-  has-session|new-session|new-window|kill-window) exit 0 ;;
+  has-session|new-session|kill-window) exit 0 ;;
   send-keys)
     if [ -n "${FM_FAKE_LAUNCH_LOG:-}" ]; then
       prev=
@@ -59,6 +69,10 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+}
+
+write_spawn_fake_stubs() {  # <fakebin>
+  local fakebin=$1
   fm_fake_exit0 "$fakebin" treehouse
   cat > "$fakebin/timeout" <<'SH'
 #!/usr/bin/env bash
@@ -76,72 +90,52 @@ SH
   chmod +x "$fakebin/timeout" "$fakebin/cursor-agent"
   make_spawn_pi_probe "$fakebin" pi
   make_spawn_pi_probe "$fakebin" pi-signed
+}
+
+make_spawn_fakebin() {
+  local dir=$1 fakebin behavior
+  fakebin=$(fm_fakebin "$dir")
+  behavior="$dir/fake-tmux-behavior.sh"
+  cat > "$behavior" <<'SH'
+fm_fake_new_window() { :; }
+fm_fake_pane_path() { printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; }
+SH
+  write_spawn_fake_tmux "$fakebin" "$behavior"
+  write_spawn_fake_stubs "$fakebin"
   printf '%s\n' "$fakebin"
 }
 
-# make_batch_fakebin <dir> <wt1> <wt2>: like make_spawn_fakebin, but a real
-# pool never hands the same worktree to two tasks in one batch (verified
-# empirically against a live treehouse pool: concurrent gets always resolve to
-# distinct worktrees or a clean refusal, never a shared one -
-# tests/fm-spawn-pool-worktree-collision.test.sh guards fm-spawn.sh's own side
-# of that contract). Give each created window its own counted id and answer
-# `#{pane_current_path}` with <wt1> for the first window and <wt2> for every
-# window after, so a batch of two tasks settles into two distinct worktrees
-# exactly as the real pool would.
+# make_batch_fakebin <dir> <wt1> <wt2>: make_spawn_fakebin with the pool
+# behavior a real pool actually has - it never hands the same worktree to two
+# tasks in one batch (verified empirically against a live treehouse pool:
+# concurrent gets always resolve to distinct worktrees or a clean refusal, never
+# a shared one - tests/fm-spawn-pool-worktree-collision.test.sh guards
+# fm-spawn.sh's own side of that contract). Each created window gets its own
+# counted id and `#{pane_current_path}` answers <wt1> for the first window and
+# <wt2> for every window after, so a batch of two tasks settles into two
+# distinct worktrees exactly as the real pool would.
 make_batch_fakebin() {
   local dir=$1 wt1=$2 wt2=$3 fakebin idxfile
-  fakebin=$(fm_fakebin "$dir")
+  fakebin=$(make_spawn_fakebin "$dir")
   idxfile="$dir/window-index"
   printf '0\n' > "$idxfile"
-  cat > "$fakebin/tmux" <<SH
-#!/usr/bin/env bash
-set -u
+  cat > "$dir/fake-tmux-behavior.sh" <<SH
 IDXFILE='$idxfile'
 WT1='$wt1'
 WT2='$wt2'
-case "\${1:-}" in
-  new-window)
-    n=\$(cat "\$IDXFILE")
-    n=\$((n + 1))
-    printf '%s\n' "\$n" > "\$IDXFILE"
-    printf '@%s\n' "\$n"
-    exit 0
-    ;;
-esac
-case "\$*" in
-  *"#{pane_current_path}"*)
-    n=\$(cat "\$IDXFILE")
-    if [ "\$n" -le 1 ]; then printf '%s\n' "\$WT1"; else printf '%s\n' "\$WT2"; fi
-    exit 0
-    ;;
-esac
-case "\${1:-}" in
-  display-message) printf 'firstmate\n'; exit 0 ;;
-  list-windows) exit 0 ;;
-  has-session|new-session|kill-window) exit 0 ;;
-  send-keys)
-    if [ -n "\${FM_FAKE_LAUNCH_LOG:-}" ]; then
-      prev=
-      for a in "\$@"; do
-        if [ "\$prev" = "-l" ]; then
-          printf '%s\n' "\$a" >> "\$FM_FAKE_LAUNCH_LOG"
-        fi
-        prev=\$a
-      done
-    fi
-    exit 0
-    ;;
-esac
-exit 0
+fm_fake_new_window() {
+  local n
+  n=\$(cat "\$IDXFILE")
+  n=\$((n + 1))
+  printf '%s\n' "\$n" > "\$IDXFILE"
+  printf '@%s\n' "\$n"
+}
+fm_fake_pane_path() {
+  local n
+  n=\$(cat "\$IDXFILE")
+  if [ "\$n" -le 1 ]; then printf '%s\n' "\$WT1"; else printf '%s\n' "\$WT2"; fi
+}
 SH
-  chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse
-  cat > "$fakebin/timeout" <<'SH'
-#!/usr/bin/env bash
-shift
-exec "$@"
-SH
-  chmod +x "$fakebin/timeout"
   printf '%s\n' "$fakebin"
 }
 
