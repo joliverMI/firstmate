@@ -1,0 +1,39 @@
+==================================================================
+ AFTER the fix (this change, 4995fc4)   (tmux 3.4)
+==================================================================
+
+--- 1. kill a task window whose NAME contains a dot -----------------
+windows before kill:
+  bash
+  fm-rel-1
+  fm-rel-1.2
+$ fm_backend_tmux_kill demo:fm-rel-1.2      # remove ONLY the dotted-name window
+windows after kill:
+  bash
+  fm-rel-1
+RESULT: OK - only the addressed window 'fm-rel-1.2' was removed
+
+--- 2. spawn-time typing at a destroyed prefix-colliding window ------
+live windows:
+  bash
+  fm-alpha-2
+'demo:fm-alpha' does NOT exist; it is only a PREFIX of live 'demo:fm-alpha-2'.
+$ fm_backend_tmux_send_text_line demo:fm-alpha "echo SETUP-COMMAND-FOR-ALPHA"
+  stderr: error: refusing to send text line: tmux target 'demo:fm-alpha' does not resolve to exactly one live endpoint
+  (send exit status: 1)
+$ fm_backend_tmux_send_literal demo:fm-alpha "echo LAUNCH-COMMAND-FOR-ALPHA"
+  stderr: error: refusing to send literal text: tmux target 'demo:fm-alpha' does not resolve to exactly one live endpoint
+  (send exit status: 1)
+pane contents of the innocent live neighbour demo:fm-alpha-2:
+  | joliv@Desktop2023:~$
+RESULT: OK - nothing addressed to the dead window reached the live neighbour
+
+--- 3. recovery-grade liveness read of a nonexistent session ---------
+live sessions:
+  crew-9-2
+  demo
+session 'crew-9' does NOT exist; it is only a PREFIX of live 'crew-9-2'.
+$ fm_backend_agent_state tmux crew-9:fm-7
+  -> missing
+RESULT: OK - nonexistent endpoint reported missing; recovery is licensed correctly
+

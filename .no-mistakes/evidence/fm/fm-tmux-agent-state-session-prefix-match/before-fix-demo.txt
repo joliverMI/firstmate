@@ -1,0 +1,39 @@
+==================================================================
+ BEFORE the fix (bin/backends/tmux.sh at base e2786ac)   (tmux 3.4)
+==================================================================
+
+--- 1. kill a task window whose NAME contains a dot -----------------
+windows before kill:
+  bash
+  fm-rel-1
+  fm-rel-1.2
+$ fm_backend_tmux_kill demo:fm-rel-1.2      # remove ONLY the dotted-name window
+windows after kill:
+  bash
+  fm-rel-1.2
+RESULT: DEFECT - the unrelated live sibling window 'fm-rel-1' was DESTROYED
+
+--- 2. spawn-time typing at a destroyed prefix-colliding window ------
+live windows:
+  bash
+  fm-alpha-2
+'demo:fm-alpha' does NOT exist; it is only a PREFIX of live 'demo:fm-alpha-2'.
+$ fm_backend_tmux_send_text_line demo:fm-alpha "echo SETUP-COMMAND-FOR-ALPHA"
+  (send exit status: 0)
+$ fm_backend_tmux_send_literal demo:fm-alpha "echo LAUNCH-COMMAND-FOR-ALPHA"
+  (send exit status: 0)
+pane contents of the innocent live neighbour demo:fm-alpha-2:
+  | joliv@Desktop2023:~$ echo SETUP-COMMAND-FOR-ALPHA
+  | SETUP-COMMAND-FOR-ALPHA
+  | joliv@Desktop2023:~$ echo LAUNCH-COMMAND-FOR-ALPHA
+RESULT: DEFECT - input addressed to a dead window landed in a LIVE neighbour's pane
+
+--- 3. recovery-grade liveness read of a nonexistent session ---------
+live sessions:
+  crew-9-2
+  demo
+session 'crew-9' does NOT exist; it is only a PREFIX of live 'crew-9-2'.
+$ fm_backend_agent_state tmux crew-9:fm-7
+  -> alive
+RESULT: DEFECT - a nonexistent endpoint reported ALIVE (read from the live sibling session)
+
