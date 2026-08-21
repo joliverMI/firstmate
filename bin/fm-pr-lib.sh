@@ -254,8 +254,9 @@ fm_pr_redact_remote_url() {
 # can actually carry (compare bin/fm-project-origin-lib.sh, which owns the
 # wider no-forge-allowlist question): the https/http/ssh/git scheme forms and
 # the scp-style [user@]host:path form, each with optional userinfo, an optional
-# port, and an optional trailing slash and .git. GitHub's documented
-# ssh.github.com:443 endpoint is the same host for this purpose. Refusing a
+# port, an optional leading slash on an scp-style path, and an optional
+# trailing slash and .git. GitHub's documented ssh.github.com:443 endpoint is
+# the same host for this purpose. Refusing a
 # legitimate form here blocks every task on that project, so the host - never
 # the spelling of the URL - is what decides.
 fm_pr_github_remote_owner_repo() {
@@ -275,7 +276,8 @@ fm_pr_github_remote_owner_repo() {
     *:*)
       authority=${stripped%%:*}
       path=${stripped#*:}
-      case "$path" in ''|/*) return 1 ;; esac
+      path=${path#/}
+      case "$path" in '') return 1 ;; esac
       ;;
     *) return 1 ;;
   esac

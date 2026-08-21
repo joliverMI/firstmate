@@ -38,26 +38,43 @@
 # into every refusal, because that diagnostic is what a blocked crewmate
 # records and what an operator recovers from.
 #
-# Usage: fm-pr-destination-guard.sh <project-dir>
+# --print-destination is the machine-readable half of the same determination,
+# for a caller that must NAME the destination rather than pin it - a direct-PR
+# task, which never runs no-mistakes and so never has a pin to rely on. It
+# prints exactly "owner/repo" on stdout and nothing else, or prints nothing on
+# stdout, a diagnostic on stderr, and exits non-zero. It is a local git-config
+# read and a string parse: no gh, no network, no pin, and no dependence on
+# ambient state an earlier step may or may not have left behind. That matters
+# because its caller substitutes the result straight into
+# `gh-axi pr create --repo`, where an empty value would be dropped and fall
+# back to exactly the fork-parent default this whole script exists to close.
+#
+# Usage: fm-pr-destination-guard.sh <project-dir> [--print-destination]
 # Exit 0: the destination is pinned and verified to be this project's own
-#         repository (or origin is not GitHub, so this guard's fork-parent
-#         default does not apply).
+#         repository (or, without --print-destination, origin is not GitHub so
+#         this guard's fork-parent default does not apply). With
+#         --print-destination, that repository is on stdout.
 # Exit 1: origin is missing or unparseable, the gate cannot be discovered, or
 #         the destination could not be read back and confirmed to name this
-#         project's own repository. Never silently proceeds.
+#         project's own repository. With --print-destination, a non-GitHub
+#         origin also refuses, because no GitHub destination can be named for
+#         it. Never silently proceeds.
+# Exit 2: the arguments themselves are wrong.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-pr-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 
-GH_ERR=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-pr-destination-guard.XXXXXX") || {
-  echo "error: could not allocate a scratch file to capture gh's diagnostics" >&2
-  exit 1
-}
-trap 'rm -f "$GH_ERR"' EXIT INT TERM
+DIR=${1:?usage: fm-pr-destination-guard.sh <project-dir> [--print-destination]}
+MODE=verify
+case "${2-}" in
+  '') ;;
+  --print-destination) MODE=print ;;
+  *) echo "error: unknown option: $2 (usage: fm-pr-destination-guard.sh <project-dir> [--print-destination])" >&2; exit 2 ;;
+esac
+[ "$#" -le 2 ] || { echo "error: too many arguments (usage: fm-pr-destination-guard.sh <project-dir> [--print-destination])" >&2; exit 2; }
 
-DIR=${1:?usage: fm-pr-destination-guard.sh <project-dir>}
 [ -d "$DIR" ] || { echo "error: not a directory: $DIR" >&2; exit 1; }
 
 ORIGIN_URL=$(git -C "$DIR" config --get remote.origin.url 2>/dev/null || true)
@@ -69,6 +86,10 @@ fi
 case "$ORIGIN_URL" in
   *github.com*) ;;
   *)
+    if [ "$MODE" = print ]; then
+      echo "error: $DIR's origin is not on github.com; no GitHub pull-request destination can be named for it" >&2
+      exit 1
+    fi
     echo "skip: $DIR's origin is not on github.com; gh's fork-parent default this guard closes is GitHub-specific"
     exit 0
     ;;
@@ -83,7 +104,19 @@ if ! fm_pr_github_remote_owner_repo "$ORIGIN_URL"; then
   exit 1
 fi
 EXPECTED="$FM_PR_REMOTE_OWNER/$FM_PR_REMOTE_REPO"
+
+if [ "$MODE" = print ]; then
+  printf '%s\n' "$EXPECTED"
+  exit 0
+fi
+
 EXPECTED_LC=$(fm_pr_lower "$EXPECTED")
+
+GH_ERR=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-pr-destination-guard.XXXXXX") || {
+  echo "error: could not allocate a scratch file to capture gh's diagnostics" >&2
+  exit 1
+}
+trap 'rm -f "$GH_ERR"' EXIT INT TERM
 
 gh_reason() {
   sed -n '/[^[:space:]]/{s/\r$//;p;q;}' "$GH_ERR" 2>/dev/null || true

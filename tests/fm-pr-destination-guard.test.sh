@@ -55,8 +55,10 @@ EOF
   printf '%s\n' "$proj"
 }
 
-run_guard() {  # <proj-dir> <fakebin-dir>
-  PATH="$2:$PATH" "$GUARD" "$1"
+run_guard() {  # <proj-dir> <fakebin-dir> [<guard-arg>...]
+  local proj=$1 fakebin=$2
+  shift 2
+  PATH="$fakebin:$PATH" "$GUARD" "$proj" "$@"
 }
 
 # new_stub_case: like new_case, but with a fakebin `gh` shadowing the real one,
@@ -327,6 +329,74 @@ test_accepts_every_legitimate_github_origin_form() {
   pass "guard accepts every legitimate spelling of the project's own GitHub origin"
 }
 
+# --print-destination is the machine-readable contract a direct-PR task
+# substitutes straight into `gh-axi pr create --repo`, where an empty value is
+# dropped and falls back to gh's fork-parent default. So stdout must carry the
+# destination and nothing else on success, and nothing at all on failure - a
+# blank line or a stray diagnostic on stdout would be substituted as a
+# destination. It must also work with no gh at all, since it is a local config
+# read: the fixture puts a gh on PATH that fails loudly if it is ever called.
+new_print_case() {  # <name> <origin-or-"-">
+  local name=$1 origin=$2 case_dir proj fakebin
+  case_dir="$TMP_ROOT/$name"
+  proj="$case_dir/proj"
+  mkdir -p "$proj"
+  git -C "$proj" init -q
+  [ "$origin" = - ] || git -C "$proj" remote add origin "$origin"
+  fakebin=$(fm_fakebin "$case_dir")
+  cat > "$fakebin/gh" <<EOF
+#!/usr/bin/env bash
+: > "$case_dir/gh-was-called"
+echo "gh must never be called to name a destination" >&2
+exit 1
+EOF
+  chmod +x "$fakebin/gh"
+  printf '%s\n' "$proj"
+}
+
+test_print_destination_names_the_origin_repository() {
+  local form proj out code n=0
+  for form in \
+    'https://github.com/joliverMI/firstmate.git' \
+    'git@github.com:joliverMI/firstmate.git' \
+    'git@github.com:/joliverMI/firstmate.git' \
+    'https://x-access-token:s3cr3t@github.com/joliverMI/firstmate.git' \
+    'ssh://git@ssh.github.com:443/joliverMI/firstmate.git' \
+    'git://github.com/joliverMI/firstmate.git'; do
+    n=$((n + 1))
+    proj=$(new_print_case "print-ok-$n" "$form")
+    out=$(run_guard "$proj" "$(dirname "$proj")/fakebin" --print-destination 2>/dev/null)
+    code=$?
+    expect_code 0 "$code" "origin form $n must name a destination" "$out"
+    [ "$out" = joliverMI/firstmate ] \
+      || fail "origin form $n printed '$out', not exactly joliverMI/firstmate"
+    assert_absent "$(dirname "$proj")/gh-was-called" \
+      "naming a destination must not call gh for origin form $n"
+  done
+  pass "guard --print-destination names the project's own repository from origin alone"
+}
+
+test_print_destination_prints_nothing_when_it_cannot_name_one() {
+  local name proj stdout stderr code
+  for name in no-origin non-github unparseable; do
+    case $name in
+      no-origin) proj=$(new_print_case print-no-origin -) ;;
+      non-github) proj=$(new_print_case print-non-github https://gitlab.com/owner/repo.git) ;;
+      unparseable) proj=$(new_print_case print-unparseable 'https://x-access-token:s3cr3tt0ken@github.com/') ;;
+    esac
+    stderr="$(dirname "$proj")/stderr"
+    stdout=$(run_guard "$proj" "$(dirname "$proj")/fakebin" --print-destination 2>"$stderr")
+    code=$?
+    [ "$code" -ne 0 ] || fail "$name must not exit 0 when no destination can be named"
+    [ -z "$stdout" ] \
+      || fail "$name printed '$stdout' on stdout; a caller would substitute that as a destination"
+    [ -s "$stderr" ] || fail "$name must explain on stderr why no destination could be named"
+    assert_not_contains "$(cat "$stderr")" "s3cr3tt0ken" \
+      "$name must not publish an origin credential"
+  done
+  pass "guard --print-destination refuses with an empty stdout instead of naming a guess"
+}
+
 # A remote can legitimately carry a credential, and this guard's stderr is
 # copied verbatim into a crewmate's `blocked:` status line and into
 # provisioning logs, so a refusal must never publish one.
@@ -378,3 +448,5 @@ test_writes_the_pin_when_the_destination_is_not_yet_set
 test_refusal_carries_ghs_own_reason
 test_accepts_every_legitimate_github_origin_form
 test_refusal_never_echoes_an_origin_credential
+test_print_destination_names_the_origin_repository
+test_print_destination_prints_nothing_when_it_cannot_name_one
