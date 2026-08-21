@@ -38,6 +38,13 @@
 # into every refusal, because that diagnostic is what a blocked crewmate
 # records and what an operator recovers from.
 #
+# An origin whose host this script does not recognize as GitHub is out of scope
+# rather than protected or blocked - but it says so out loud, naming the host,
+# in both modes. That announcement is the whole safeguard for the case it
+# cannot decide: a GitHub Enterprise Server host carries the same fork-parent
+# default and is not recognized here, so the first project on such a host
+# reports the gap itself instead of quietly proceeding unpinned.
+#
 # One authority decides both "is this GitHub?" and "which repository?": the
 # parse in fm_pr_github_remote_owner_repo. A second, independent scope test
 # (a substring glob over the URL, say) can disagree with it, and every
@@ -104,11 +111,12 @@ if ! fm_pr_github_remote_owner_repo "$ORIGIN_URL"; then
     echo "error: $DIR's origin ($(fm_pr_redact_remote_url "$ORIGIN_URL")) is on a GitHub host but names no owner/repository; the pull-request destination cannot be verified" >&2
     exit 1
   fi
+  UNRECOGNIZED=${FM_PR_REMOTE_HOST:-<none>}
   if [ "$MODE" = print ]; then
-    echo "note: $DIR's origin is not on a GitHub host; gh's fork-parent default cannot apply to it and there is no GitHub destination to name" >&2
+    echo "note: $DIR's origin host ($UNRECOGNIZED) is not a recognized GitHub host, so there is no GitHub pull-request destination to name and gh's fork-parent default cannot apply" >&2
     exit 3
   fi
-  echo "skip: $DIR's origin is not on a GitHub host; gh's fork-parent default this guard closes is GitHub-specific"
+  echo "skip: $DIR's origin host ($UNRECOGNIZED) is not a recognized GitHub host, so nothing here is pinned or verified; gh's fork-parent default this guard closes is GitHub-specific"
   exit 0
 fi
 EXPECTED="$FM_PR_REMOTE_OWNER/$FM_PR_REMOTE_REPO"

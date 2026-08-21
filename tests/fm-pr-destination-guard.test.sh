@@ -402,11 +402,13 @@ test_print_destination_prints_nothing_when_it_cannot_name_one() {
 # not be blocked as though it were. Its caller distinguishes the two by exit
 # code, so the codes are the contract.
 test_a_non_github_origin_is_not_applicable_rather_than_blocked() {
-  local form proj out code n=0
-  for form in \
-    'https://gitlab.com/owner/repo.git' \
-    'https://gitlab.com/me/github.com-mirror.git' \
-    'git@git.example.invalid:owner/repo.git'; do
+  local entry form host proj out code n=0
+  for entry in \
+    'https://gitlab.com/owner/repo.git|gitlab.com' \
+    'https://gitlab.com/me/github.com-mirror.git|gitlab.com' \
+    'git@git.example.invalid:owner/repo.git|git.example.invalid'; do
+    form=${entry%|*}
+    host=${entry#*|}
     n=$((n + 1))
     proj=$(new_print_case "not-applicable-$n" "$form")
     out=$(run_guard "$proj" "$(dirname "$proj")/fakebin" --print-destination 2>/dev/null)
@@ -418,34 +420,75 @@ test_a_non_github_origin_is_not_applicable_rather_than_blocked() {
     code=$?
     expect_code 0 "$code" "origin $n must be skipped, not refused, when pinning" "$out"
     assert_contains "$out" "skip:" "origin $n must say it is out of scope rather than fail"
+    assert_contains "$out" "$host" \
+      "the skip must name the host it did not recognize, so the gap is audible on first use"
   done
   pass "guard treats a non-GitHub origin as out of scope, never as a blocked project"
 }
 
 # git@github.com-work:owner/repo.git is the ~/.ssh/config Host-alias pattern for
-# holding several GitHub accounts on one machine. It is this project's own
-# GitHub repository, so it must verify - refusing it would block every task on
-# the project, and skipping it would leave the fork-parent hazard wide open.
-test_an_ssh_host_alias_origin_is_this_projects_own_github_repository() {
-  local proj out code gate
+# holding several GitHub accounts on one machine. Naming its repository is a
+# text parse, so --print-destination answers it; verifying the pin is not, and
+# real gh refuses an alias host outright ("none of the git remotes configured
+# for this repository point to a known GitHub host", gh 2.97.0), so the two
+# halves legitimately disagree and each is asserted against what its own tool
+# can actually do.
+test_print_destination_names_an_ssh_host_alias_origin() {
+  local proj out code
   proj=$(new_print_case alias-print 'git@github.com-work:joliverMI/firstmate.git')
   out=$(run_guard "$proj" "$(dirname "$proj")/fakebin" --print-destination 2>/dev/null)
   code=$?
   expect_code 0 "$code" "an ssh-alias origin names this project's own repository" "$out"
   [ "$out" = joliverMI/firstmate ] \
     || fail "an ssh-alias origin printed '$out', not joliverMI/firstmate"
+  assert_absent "$(dirname "$proj")/gh-was-called" \
+    "naming an ssh-alias destination is a parse, so it must not need gh at all"
+  pass "guard --print-destination names an ssh-alias GitHub origin from the URL alone"
+}
 
+# The stub here models what real gh does for an alias host - it cannot resolve
+# one, so both the write and the read-back fail - and the assertion is that the
+# guard refuses rather than reporting an unverified destination as pinned.
+test_verify_refuses_an_ssh_host_alias_gh_cannot_resolve() {
+  local proj gate out code
   proj=$(new_stub_case alias-verify \
-    'git@github.com-work:joliverMI/firstmate.git' joliverMI/firstmate \
-    'git@github.com-work:joliverMI/firstmate.git' joliverMI/firstmate)
+    'git@github.com-work:joliverMI/firstmate.git' - \
+    'git@github.com-work:joliverMI/firstmate.git' -)
   gate="$(dirname "$proj")/gate.git"
+  : > "$proj/.fake-gh-pin-fails"
+  : > "$gate/.fake-gh-pin-fails"
   out=$(run_guard "$proj" "$(dirname "$proj")/fakebin" 2>&1)
   code=$?
-  expect_code 0 "$code" "an ssh-alias origin must be pinned and verified, not skipped" "$out"
-  assert_present "$gate/.fake-gh-wrote" \
-    "an ssh-alias origin must still be pinned; skipping it would leave the hazard open"
-  pass "guard reads an ssh-alias GitHub origin as this project's own repository"
+  expect_code 1 "$code" "a destination gh cannot resolve must be refused, not assumed" "$out"
+  assert_not_contains "$out" "sole pull-request destination" \
+    "an unverifiable destination must never be reported as pinned"
+  pass "guard refuses to call an ssh-alias destination verified when gh cannot resolve it"
 }
+
+# A host that merely starts with "github.com-" is not an alias, it is a
+# different domain: naming owner/repo for github.com-mirror.example.net would
+# aim a pull request at an unrelated repository on github.com itself.
+test_a_github_lookalike_host_is_not_a_github_destination() {
+  local form proj out code n=0
+  for form in \
+    'https://github.com-mirror.example.net/owner/repo.git' \
+    'git@github.com-eu.gitlab-mirror.io:owner/repo.git' \
+    'https://github.com.example.invalid/owner/repo.git'; do
+    n=$((n + 1))
+    proj=$(new_print_case "lookalike-$n" "$form")
+    out=$(run_guard "$proj" "$(dirname "$proj")/fakebin" --print-destination 2>/dev/null)
+    code=$?
+    [ "$code" = 3 ] \
+      || fail "lookalike host $n must not be named as a GitHub destination (exit $code, printed '$out')"
+    [ -z "$out" ] || fail "lookalike host $n printed '$out'; that would target github.com"
+    out=$(run_guard "$proj" "$(dirname "$proj")/fakebin" 2>&1)
+    code=$?
+    expect_code 0 "$code" "lookalike host $n is out of scope, not a failure" "$out"
+    assert_contains "$out" "skip:" "lookalike host $n must be skipped rather than pinned"
+  done
+  pass "guard does not read a github.com-lookalike domain as a GitHub destination"
+}
+
 
 # A remote can legitimately carry a credential, and this guard's stderr is
 # copied verbatim into a crewmate's `blocked:` status line and into
@@ -501,4 +544,6 @@ test_refusal_never_echoes_an_origin_credential
 test_print_destination_names_the_origin_repository
 test_print_destination_prints_nothing_when_it_cannot_name_one
 test_a_non_github_origin_is_not_applicable_rather_than_blocked
-test_an_ssh_host_alias_origin_is_this_projects_own_github_repository
+test_print_destination_names_an_ssh_host_alias_origin
+test_verify_refuses_an_ssh_host_alias_gh_cannot_resolve
+test_a_github_lookalike_host_is_not_a_github_destination

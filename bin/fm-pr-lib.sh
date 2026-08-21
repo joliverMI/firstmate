@@ -220,15 +220,28 @@ fm_pr_lower() {
 
 # fm_pr_github_host <host>: 0 when <host> is a GitHub host for pull-request
 # purposes. github.com and GitHub's documented ssh.github.com:443 endpoint are
-# the same repository namespace. A "github.com-<suffix>" or
-# "ssh.github.com-<suffix>" host is an ~/.ssh/config Host alias - the standard
+# the same repository namespace. A "github.com-<alias>" or
+# "ssh.github.com-<alias>" host is an ~/.ssh/config Host alias - the standard
 # way to hold several GitHub accounts on one machine - and resolves to GitHub
-# for the user who configured it, so it is GitHub here too. The "-" is what
-# keeps that narrow: a genuinely different domain such as
-# github.com.example.invalid is dot-separated and does not match.
+# for the user who configured it, so it is GitHub here too.
+#
+# The alias suffix must be one dotless label, because saying yes here means a
+# pull request is aimed at github.com: "github.com-mirror.example.net" is a
+# different domain that happens to start with the same characters, and naming
+# its owner/repo as a GitHub destination would point a pull request at an
+# unrelated repository on github.com. A dot in the suffix is what tells the two
+# apart, so "github.com-work" is an alias and anything dot-separated is not.
 fm_pr_github_host() {
-  case "$(fm_pr_lower "${1-}")" in
-    github.com|ssh.github.com|github.com-*|ssh.github.com-*) return 0 ;;
+  local host
+  host=$(fm_pr_lower "${1-}")
+  case "$host" in
+    github.com|ssh.github.com) return 0 ;;
+    github.com-*|ssh.github.com-*)
+      case "${host#*-}" in
+        ''|*.*) return 1 ;;
+        *) return 0 ;;
+      esac
+      ;;
   esac
   return 1
 }
