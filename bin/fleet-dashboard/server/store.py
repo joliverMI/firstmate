@@ -67,7 +67,10 @@ CREATE TABLE IF NOT EXISTS audit_log (
   task_id TEXT,
   kind TEXT NOT NULL,
   text TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  key TEXT,
+  occurrences INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  last_seen_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS audit_runs (
@@ -98,6 +101,17 @@ _TASK_COLUMN_MIGRATIONS = (
 
 _AUDIT_RUN_COLUMN_MIGRATIONS = (
     ("forced", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+# key/occurrences/last_seen_at back a database created before the general
+# collapse mechanism existed (see record_audit_finding). last_seen_at has no
+# SQL default because it must mirror each existing row's own created_at, not
+# a single fixed value, so it needs the one-time backfill below rather than a
+# column DEFAULT.
+_AUDIT_LOG_COLUMN_MIGRATIONS = (
+    ("key", "TEXT"),
+    ("occurrences", "INTEGER NOT NULL DEFAULT 1"),
+    ("last_seen_at", "TEXT"),
 )
 
 # Settings keys used for the auditor's own liveness, distinct from the
@@ -156,6 +170,11 @@ class Store:
             for name, coltype in _AUDIT_RUN_COLUMN_MIGRATIONS:
                 if name not in existing_run_columns:
                     conn.execute(f"ALTER TABLE audit_runs ADD COLUMN {name} {coltype}")
+            existing_log_columns = {row[1] for row in conn.execute("PRAGMA table_info(audit_log)")}
+            for name, coltype in _AUDIT_LOG_COLUMN_MIGRATIONS:
+                if name not in existing_log_columns:
+                    conn.execute(f"ALTER TABLE audit_log ADD COLUMN {name} {coltype}")
+            conn.execute("UPDATE audit_log SET last_seen_at = created_at WHERE last_seen_at IS NULL")
             conn.execute(
                 "INSERT OR IGNORE INTO settings(key, value) VALUES ('audit_interval_minutes', ?)",
                 (str(DEFAULT_AUDIT_INTERVAL_MINUTES),),
@@ -446,14 +465,48 @@ class Store:
             )
         return minutes
 
-    def record_audit_finding(self, kind: str, text: str, task_id: str | None = None) -> None:
+    def record_audit_finding(self, kind: str, text: str, task_id: str | None = None,
+                              key: str | None = None) -> dict:
+        """Record a discrepancy or error, collapsing a recurring one into its
+        existing row instead of appending a new one every time it recurs.
+
+        `key` is the caller's own fingerprint for the *condition*, not the
+        wording - a check that keeps re-detecting the same standing problem
+        passes the same `key` every time even if `text` itself changes (an
+        elapsed age, a different observed state). Collapsing is scoped to the
+        exact (task_id, kind, key) triple: a card with no `key` never
+        collapses at all (every call inserts, the pre-existing behavior), and
+        two different checks must use different keys so a finding from one
+        check can never be mistaken for - and so silence - a finding from
+        another check on the same task. See docs/dashboard.md "Auditor
+        integration" for the caller-side contract (why the count must still
+        be tracked by the sweep script itself, independent of collapsing).
+        """
         if kind not in ("discrepancy", "error"):
             raise ValueError(f"unknown audit finding kind: {kind!r}")
+        ts = now_iso()
         with self._cursor(write=True) as cur:
+            if key:
+                cur.execute(
+                    """SELECT id, occurrences FROM audit_log
+                       WHERE task_id IS ? AND kind = ? AND key = ?
+                       ORDER BY id DESC LIMIT 1""",
+                    (task_id, kind, key),
+                )
+                existing = cur.fetchone()
+                if existing is not None:
+                    occurrences = existing["occurrences"] + 1
+                    cur.execute(
+                        "UPDATE audit_log SET text = ?, last_seen_at = ?, occurrences = ? WHERE id = ?",
+                        (text, ts, occurrences, existing["id"]),
+                    )
+                    return {"collapsed": True, "occurrences": occurrences}
             cur.execute(
-                "INSERT INTO audit_log (task_id, kind, text, created_at) VALUES (?, ?, ?, ?)",
-                (task_id, kind, text, now_iso()),
+                """INSERT INTO audit_log (task_id, kind, text, key, occurrences, created_at, last_seen_at)
+                   VALUES (?, ?, ?, ?, 1, ?, ?)""",
+                (task_id, kind, text, key, ts, ts),
             )
+            return {"collapsed": False, "occurrences": 1}
 
     def record_audit_run(self, duration_seconds: float, tasks_checked: int,
                           discrepancies_found: int = 0, started_at: str | None = None,
@@ -519,8 +572,12 @@ class Store:
                 "SELECT * FROM audit_runs ORDER BY completed_at DESC, id DESC LIMIT 1"
             )
             last_run = cur.fetchone()
+            # last_seen_at, not created_at: a collapsed row that keeps getting
+            # reconfirmed must keep reading as current, not sink toward
+            # eviction under its own original first-seen timestamp while a
+            # long-resolved one-off entry outranks it.
             cur.execute(
-                "SELECT * FROM audit_log ORDER BY created_at DESC, id DESC LIMIT ?",
+                "SELECT * FROM audit_log ORDER BY last_seen_at DESC, id DESC LIMIT ?",
                 (log_limit,),
             )
             log = [dict(r) for r in cur.fetchall()]

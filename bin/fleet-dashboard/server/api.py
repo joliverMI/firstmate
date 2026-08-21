@@ -241,11 +241,12 @@ def audit_log(store: Store, match, query, body):
     task_id = body.get("task_id") or None
     if task_id and not store.task_exists(task_id):
         raise ApiError(404, f"no such task: {task_id!r}")
+    key = (body.get("key") or "").strip() or None
     try:
-        store.record_audit_finding(kind, text, task_id=task_id)
+        result = store.record_audit_finding(kind, text, task_id=task_id, key=key)
     except ValueError as exc:
         raise ApiError(400, str(exc)) from exc
-    return 201, {"recorded": True}
+    return 201, {"recorded": True, **result}
 
 
 @route("POST", r"/api/audit/run")
