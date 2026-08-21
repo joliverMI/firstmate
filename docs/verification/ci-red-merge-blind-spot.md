@@ -41,7 +41,7 @@ Either nobody was told, which is a tooling gap, or somebody probably was told an
 Anyone checking "is `main` red" that way - human or agent - can be shown a different repository's CI entirely, in either direction: missing a real problem here, or mistaking upstream's unrelated failures for this fork's.
 
 This does not reproduce from a local checkout today.
-As of 2026-08-21, `remote.origin.gh-resolved=base` is already set in both `/home/joliv/firstmate` and this task's worktree, so an unqualified `gh run list --branch main` / `gh-axi run list --branch main` returns this fork's runs and `gh repo set-default --view` reports `joliverMI/firstmate`.
+As of 2026-08-21, `remote.origin.gh-resolved=base` is already set in the clones this investigation ran from, so an unqualified `gh run list --branch main` / `gh-axi run list --branch main` returns this fork's runs and `gh repo set-default --view` reports `joliverMI/firstmate`.
 The hazard is unchanged for any clone of this fork that has not been pinned that way, which is the default state of a fresh clone.
 
 ## How long it went unnoticed
@@ -81,10 +81,9 @@ The remaining two jobs, both in one run, are outside that suite's attributed cau
   The failure predates that merge and has not recurred since it.
   That job also logged `not ok - OpenCode watch plugin must not treat external healthy output as an owned arm`, which is in `tests/fm-pi-watch-extension.test.sh` but is not one of the assertions PR #14's cause table covers.
   No mechanism has been found for it.
-  An earlier revision of this record proposed one - PR #14's suite-wide `export FM_WATCH_ARM_NO_LOGIN_SHELL=1` stripping a profile-sourcing cost out of this case's bounded wait - and it is wrong on inspection, on two independent grounds.
+  The one candidate mechanism considered - PR #14's suite-wide `export FM_WATCH_ARM_NO_LOGIN_SHELL=1` stripping a profile-sourcing cost out of this case's bounded wait - is wrong on inspection, on two independent grounds.
   The 250-by-20ms guard-log loop runs only after `await guardHooks.event(...)` has already resolved, and the arm spawn lives inside that awaited call via `letWatchArmRun` into `coordinator.ensureArmed`, so a slow profile lengthens the await rather than expiring the later loop.
   And overrunning the readiness budget (the 12s default, which this case does not override) resolves `"timeout"`, which `letWatchArmRun` does not accept, so the guard would have run rather than been suppressed - the opposite of the failure actually logged.
-  This is the second such withdrawal in drafting this record: an earlier round made the same kind of unsupported-mechanism claim about a load-dependent `FM_HOME` failure and dropped it once the reasoning was checked, with the detail kept in this task's PR evidence.
   The corrected practice is to record that no mechanism is known rather than reason toward a plausible one, since a story that merely sounds right is the same substitute for verification this record exists to name.
 - `not ok - next bounded scan did not resume with the following child` in `tests/fm-inactive-reconcile.test.sh` remains genuinely unattributed to any cause, and has not recurred.
 
