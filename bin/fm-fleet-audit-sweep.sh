@@ -35,7 +35,11 @@
 #      it is a structural fact that live work is genuinely blocked on this
 #      one, not a guess. Age alone is never the signal here - most
 #      not-started cards are legitimately queued, and unlike needs_attention
-#      above this check applies no age threshold at all.
+#      above this check applies no age threshold at all. Flagged once per
+#      pairing, not once per sweep: an existing discrepancy entry for the
+#      card dated at or after the waiting card's last transition into
+#      `waiting` means it has already been reported and the sweep stays quiet
+#      until that pairing clears or changes.
 #   review is optional to him by design (the skill's own asymmetry), so it is
 #   never checked here at all - see "Why `needs-attention` is a separate
 #   status from `review`" in docs/dashboard.md.
@@ -185,16 +189,48 @@ done < <(printf '%s' "$NA_JSON" | jq -r '.tasks[].id')
 # ---- 6. not_started: counted for every not-started card, but flagged only
 # when a currently-waiting card's own waiting_on_id names it (see header).
 # Reuses the waiting snapshot already fetched in step 3 above rather than
-# re-listing it, since that is the exact same live-ness fact either way.
+# re-listing it, since that is the exact same live-ness fact either way. The
+# match is one jq pass over the two snapshots, so a board with thousands of
+# queued cards never becomes a rescan of the whole id list per waiting card.
 NOT_STARTED_JSON=$("$DASH" list --status not-started --json) \
   || fail_sweep "sweep failed listing not-started cards: dashboard unreachable mid-sweep"
 CHECKED=$((CHECKED + $(printf '%s' "$NOT_STARTED_JSON" | jq '.tasks | length')))
-NOT_STARTED_IDS=$(printf '%s' "$NOT_STARTED_JSON" | jq -r '.tasks[].id')
-while IFS=$'\t' read -r waiter_id target_id; do
-  [ -n "$waiter_id" ] && [ -n "$target_id" ] || continue
-  printf '%s\n' "$NOT_STARTED_IDS" | grep -qx "$target_id" || continue
-  log_discrepancy "$target_id" "still not_started, but $waiter_id is waiting specifically on it"
-done < <(printf '%s' "$WAITING_JSON" | jq -r '.tasks[] | [.id, (.waiting_on_id // "")] | @tsv')
+BLOCKED_PAIRS=$(jq -nr --argjson ns "$NOT_STARTED_JSON" --argjson w "$WAITING_JSON" '
+  ($ns.tasks | map(.id)) as $ids
+  | $w.tasks[]
+  | (.waiting_on_id // "") as $wo
+  | select($wo != "" and ($ids | index($wo)) != null)
+  | [.id, $wo] | @tsv') \
+  || fail_sweep "sweep failed matching waiting cards against the not-started snapshot"
+if [ -n "$BLOCKED_PAIRS" ]; then
+  # Say it once per pairing, the same stop-once-reported shape the
+  # needs_attention check above uses. Unlike a stale blocker (a board bug that
+  # gets corrected), "nothing has begun on this yet" legitimately persists for
+  # days, and at the default cadence an unsuppressed re-log would fill the
+  # Admiral's whole 100-entry log inside a day and push every other finding
+  # out of it - the exact always-red-marker failure this sweep exists to
+  # avoid. The pairing's own start boundary is the waiting card's last
+  # transition into `waiting`, so clearing or repointing the block moves that
+  # boundary past the old entry and the sweep speaks again.
+  AUDIT_LOG_JSON=$("$DASH" audit-status --json) \
+    || fail_sweep "sweep failed reading the audit log: dashboard unreachable mid-sweep"
+  while IFS=$'\t' read -r waiter_id target_id; do
+    [ -n "$waiter_id" ] && [ -n "$target_id" ] || continue
+    waiter_json=$("$DASH" show "$waiter_id" --json 2>/dev/null) || continue
+    waiting_since=$(printf '%s' "$waiter_json" \
+      | jq -r '[.status_history[] | select(.to_status=="waiting")] | last | .changed_at // empty')
+    # No readable boundary means no way to tell an already-reported pairing
+    # from a fresh one, which is skill point 8's unverifiable case: stay quiet.
+    [ -n "$waiting_since" ] || continue
+    # Inclusive on the boundary itself: both timestamps are whole seconds, and
+    # the first flag for a pairing is normally written in the same second the
+    # block was recorded, so a strict > would let that first entry re-log.
+    already=$(printf '%s' "$AUDIT_LOG_JSON" | jq -r --arg t "$target_id" --arg since "$waiting_since" \
+      '([.log[] | select(.task_id==$t and .kind=="discrepancy" and .created_at >= $since)] | length) > 0')
+    [ "$already" = "true" ] && continue
+    log_discrepancy "$target_id" "still not_started, but $waiter_id is waiting specifically on it"
+  done <<<"$BLOCKED_PAIRS"
+fi
 
 COMPLETED_EPOCH=$(date +%s)
 DURATION=$((COMPLETED_EPOCH - START_EPOCH))

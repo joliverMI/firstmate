@@ -48,6 +48,13 @@ SERVER_PID=$(cat "$FM_HOME/state/dashboard.pid" 2>/dev/null)
 
 audit_status_json() { "$DASH" audit-status --json; }
 
+# How many discrepancy entries the Admiral-facing log currently carries for one
+# card - the log is the observable output of the sweep, so the count is what a
+# "flagged once, not once per sweep" claim actually means.
+discrepancy_count_for() {  # <task_id>
+  audit_status_json | jq --arg t "$1" '[.log[] | select(.task_id==$t and .kind=="discrepancy")] | length'
+}
+
 test_claim_is_exclusive_and_release_frees_it() {
   "$DASH" audit-claim --json >"$FM_HOME/claim1.json" || fail "first claim failed"
   assert_contains "$(cat "$FM_HOME/claim1.json")" '"claimed": true' "first claim was not granted"
@@ -250,6 +257,52 @@ test_sweep_flags_a_not_started_card_that_live_work_is_waiting_on() {
   pass "the sweep flags a not-started card that a currently-waiting card is blocked on"
 }
 
+# Regression: a blocked not-started card is exactly the condition that
+# legitimately persists for days, so flagging it on every sweep would fill the
+# Admiral's 100-entry log with one repeating finding and bury every other one -
+# the always-red-marker failure the fleet-dashboard skill exists to prevent.
+# The sweep must speak once per pairing and then stay quiet while nothing
+# changes, and speak again for a genuinely new pairing.
+test_sweep_flags_a_blocked_not_started_card_once_not_once_per_sweep() {
+  local target_id waiter_id second_target_id after_first after_second final_first final_second
+  target_id=$("$DASH" add --title "Approved, never started, swept twice" --captain firstmate \
+    --prompt "not-started target of a repeated sweep" | awk '{print $1}')
+  [ -n "$target_id" ] || fail "could not add the not-started target card"
+  waiter_id=$("$DASH" add --title "Blocked across two sweeps" --captain firstmate \
+    --prompt "blocked" | awk '{print $1}')
+  [ -n "$waiter_id" ] || fail "could not add the waiting card"
+  "$DASH" status "$waiter_id" waiting --waiting-on "$target_id" --reason "needs that work first" >/dev/null \
+    || fail "could not set waiting status"
+
+  "$SWEEP" --forced || fail "first sweep exited non-zero"
+  after_first=$(discrepancy_count_for "$target_id")
+  [ "$after_first" -ge 1 ] || fail "the first sweep did not flag the blocked not-started card at all"
+
+  # Nothing at all changes between the two sweeps: same target, same waiter,
+  # same block.
+  "$SWEEP" --forced || fail "second sweep exited non-zero"
+  after_second=$(discrepancy_count_for "$target_id")
+  [ "$after_second" -eq "$after_first" ] \
+    || fail "an unchanged not-started/waiting pairing was re-logged on the next sweep (was $after_first, now $after_second)"
+
+  # ...but a genuinely different pairing is its own finding and must still be
+  # heard, so the suppression is per-pairing rather than a blanket silence.
+  second_target_id=$("$DASH" add --title "A second approved, never-started card" --captain firstmate \
+    --prompt "the new blocker" | awk '{print $1}')
+  [ -n "$second_target_id" ] || fail "could not add the second not-started target"
+  "$DASH" status "$waiter_id" waiting --waiting-on "$second_target_id" --reason "actually blocked on this one" >/dev/null \
+    || fail "could not repoint the waiting card"
+
+  "$SWEEP" --forced || fail "third sweep exited non-zero"
+  final_second=$(discrepancy_count_for "$second_target_id")
+  final_first=$(discrepancy_count_for "$target_id")
+  [ "$final_second" -ge 1 ] \
+    || fail "repointing the block at a different not-started card was never flagged"
+  [ "$final_first" -eq "$after_first" ] \
+    || fail "the no-longer-referenced not-started card was flagged again (was $after_first, now $final_first)"
+  pass "the sweep flags a blocked not-started card once per pairing, not once per sweep"
+}
+
 test_sweep_flags_stale_unreplied_needs_attention_but_not_a_reply() {
   local id
   id=$("$DASH" add --title "Needs a call" --captain firstmate --prompt "needs-attention aging" | awk '{print $1}')
@@ -348,6 +401,7 @@ test_sweep_flags_a_live_crew_status_whose_linked_crew_is_not_working
 test_sweep_flags_waiting_on_completed_card
 test_sweep_counts_not_started_cards_and_never_flags_an_unverifiable_one
 test_sweep_flags_a_not_started_card_that_live_work_is_waiting_on
+test_sweep_flags_a_blocked_not_started_card_once_not_once_per_sweep
 test_sweep_flags_stale_unreplied_needs_attention_but_not_a_reply
 test_force_button_endpoint_runs_a_real_sweep
 test_force_button_refuses_while_a_sweep_is_already_running
