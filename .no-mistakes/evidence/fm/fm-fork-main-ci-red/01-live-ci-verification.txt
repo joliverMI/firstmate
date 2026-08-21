@@ -1,0 +1,186 @@
+# Live re-verification of docs/verification/ci-red-merge-blind-spot.md
+# host date (UTC): 2026-08-21T16:01:14Z   repo: joliverMI/firstmate
+
+== CLAIM 1: main has no branch protection / required status checks ==
+$ gh api repos/joliverMI/firstmate/branches/main/protection
+{"message":"Branch not protected","documentation_url":"https://docs.github.com/rest/branches/branch-protection#get-branch-protection","status":"404"}gh: Branch not protected (HTTP 404)
+
+== CLAIM 1b: PR #1 post-merge checks started AFTER the merge landed ==
+$ gh api repos/joliverMI/firstmate/pulls/1 --jq '{merged_at, merge_commit_sha}'
+{"merge_commit_sha":"2f973eb7c1189f827d056ffef2eaeadf25104e79","merged_at":"2026-08-16T23:28:25Z"}
+$ gh api repos/joliverMI/firstmate/commits/<merge_sha>/check-runs  (earliest started_at)
+earliest check started_at: 2026-08-16T23:28:30Z
+   -> merged 2026-08-16T23:28:25Z, first check started 23:28:30Z = 5s AFTER the merge
+
+== CLAIM 1c: a PR run does see main (checkout of refs/pull/N/merge) ==
+$ (PR #12 pre-merge run 32226547720, shard 3 log)
+HEAD is now at 1f76678 Merge 7e9828226b1462e0606fb65bfa34ab7826ae349c into 3c8f796bcb3c0393127432bf984e45cb1544fff2
+$ (PR #6 pre-merge run 32068680937, shard 3 log)
+HEAD is now at b57e38c Merge 213584ddd307e2eed5f7921220f8bcb4da848900 into 4f0a4f544dc0051dfaa06436a7d5e8e6ea0b4689
+$ PR #12 pre-merge run 32226547720: all four serial shards + conclusion/updated_at vs merge time
+Behavior portable serial 1	success
+Behavior portable serial 2	success
+Behavior portable serial 3	success
+Behavior portable serial 4	success
+run concluded: success at 2026-08-19T07:22:15Z
+PR #12 merged_at:  2026-08-19T07:24:07Z   (base sha 3c8f796 = main red tip)
+$ PR #6 merged while its own run was still in progress
+PR #6 merged_at: 2026-08-17T21:03:36Z
+its run 32068680937 completed: 2026-08-17T21:11:16Z  (7m40s after the merge)
+
+== CLAIM 2: two red windows, not one continuous 11h incident ==
+$ gh api 'repos/joliverMI/firstmate/actions/runs?branch=main&event=push' (since 2026-08-16)
+2026-08-16T23:28:16Z	31979216418	a93dae5	success
+2026-08-16T23:28:28Z	31979227412	2f973eb	failure
+2026-08-16T23:28:31Z	31979230132	c67c73d	failure
+2026-08-17T00:19:39Z	31981693511	e9e3d0c	failure
+2026-08-17T14:08:07Z	32037964172	4f0a4f5	failure
+2026-08-17T21:03:40Z	32069112707	3a972e3	success
+2026-08-18T00:52:37Z	32086156100	f23b7a4	success
+2026-08-18T13:22:30Z	32141985026	e242ce4	failure
+2026-08-18T14:48:40Z	32150616824	3c8f796	failure
+2026-08-19T07:24:10Z	32227657272	b19134b	failure
+2026-08-19T13:06:48Z	32256268913	882004e	success
+2026-08-19T15:43:27Z	32271754621	45bd292	success
+2026-08-19T22:11:33Z	32307642003	b98e098	success
+2026-08-21T02:46:52Z	32441040308	01f42a4	cancelled
+2026-08-21T03:32:14Z	32443727353	e2786ac	success
+2026-08-21T14:40:37Z	32493420147	5a53eee	success
+
+   window A: 2026-08-16T23:28 -> 2026-08-17T21:03   (4 red runs), 2 fully green runs follow
+   window B: 2026-08-18T13:22 -> 2026-08-19T13:06   (3 red runs)
+   7 red push runs total; ~45h red across a ~62h span; longest no-push gap inside A:
+     e9e3d0c 2026-08-17T00:19 -> 4f0a4f5 2026-08-17T14:08 = ~13h49m red with nobody pushing
+
+== CLAIM: shard map of the 9 non-green serial jobs ==
+  run 31979227412  job 95243266311  Behavior portable serial 4 failure
+  run 31979230132  job 95243272968  Behavior portable serial 4 failure
+  run 31981693511  job 95249497126  Behavior portable serial 4 failure
+  run 32037964172  job 95412020578  Behavior portable serial 3 cancelled
+  run 32037964172  job 95412020616  Behavior portable serial 4 failure
+  run 32141985026  job 95726593907  Behavior portable serial 1 failure
+  run 32150616824  job 95755272021  Behavior portable serial 4 failure
+  run 32150616824  job 95755272024  Behavior portable serial 3 failure
+  run 32227657272  job 95990618501  Behavior portable serial 3 failure
+  run 32441040308  job 96651633862  Behavior portable serial 2 cancelled
+   -> window A: shard 4 x4 + shard 3 cancelled(timeout); window B: shard 1, 3, 3, 4
+   -> the report's 'shards 3 and 4' premise is incomplete: 95726593907 ran on shard 1
+
+== CLAIM: only two distinct assertions across the six attributed failures ==
+  --- job 95243266311
+      not ok - Pi must deliver the actionable wake after bounded hung-successor recovery: expected exit 0, got 1
+  --- job 95243272968
+      not ok - Pi must deliver the actionable wake after bounded hung-successor recovery: expected exit 0, got 1
+  --- job 95249497126
+      not ok - Pi must deliver the actionable wake after bounded hung-successor recovery: expected exit 0, got 1
+  --- job 95412020616
+      not ok - Pi must deliver the actionable wake after bounded hung-successor recovery: expected exit 0, got 1
+  --- job 95726593907
+      not ok - OpenCode watch plugin must arm only when this session owns the fleet lock: expected exit 0, got 1
+  --- job 95755272021
+      not ok - next bounded scan did not resume with the following child
+  --- job 95755272024
+      not ok - OpenCode watch plugin must not treat external healthy output as an owned arm: expected exit 0, got 1
+      not ok - spawn with --card should succeed: expected exit 0, got 1
+  --- job 95990618501
+      not ok - OpenCode watch plugin must arm only when this session owns the fleet lock: expected exit 0, got 1
+
+== CLAIM: two jobs hit ci.yml's 15-minute tests-portable-serial cap ==
+  job 95412020578  Behavior portable serial 3  cancelled  2026-08-17T14:08:10Z -> 2026-08-17T14:23:26Z
+      annotation: The job has exceeded the maximum execution time of 15m0s
+  job 96651633862  Behavior portable serial 2  cancelled  2026-08-21T02:46:55Z -> 2026-08-21T03:02:11Z
+      annotation: The job has exceeded the maximum execution time of 15m0s
+
+== CLAIM: ci.yml has no gate of its own (semantic parse of the workflow model) ==
+  triggers: ['pull_request', 'push']
+  tests-portable-serial timeout-minutes: 15
+  shard matrix: {'shard': [1, 2, 3, 4]}
+  checkout step: [('actions/checkout@v6', {'fetch-depth': 0})] (no ref: -> refs/pull/N/merge on PRs)
+  any step mentioning notification/issue-filing/alert: none
+
+== CLAIM 3: unqualified gh / gh-axi targets the UPSTREAM parent, not this fork ==
+  this repo is a fork of: kunchenguid/firstmate
+  simulated fresh unpinned fork clone (origin=fork, upstream=parent, no remote.origin.gh-resolved):
+  $ gh run list --branch main -L 2   # NO --repo
+      https://github.com/kunchenguid/firstmate/actions/runs/31349447826
+      https://github.com/kunchenguid/firstmate/actions/runs/31332443776
+  $ gh-axi run list --branch main    # NO --repo
+        32491999845,"fix(bin): re-arm after an abandoned auto-arm claim and defer a wedge …",completed,success,CI,main,push,1h ago
+        32491934944,"fix(bin): surface captain-call record divergence (#2744)",completed,success,CI,main,push,1h ago
+        32461171314,"fix: bound recovery announcements and preserve supervision (#2733)",completed,failure,CI,main,push,8h ago
+  $ gh run list --repo joliverMI/firstmate --branch main -L 2   # explicit
+      https://github.com/joliverMI/firstmate/actions/runs/32493420147
+      https://github.com/joliverMI/firstmate/actions/runs/32443727353
+  pinned state in the working checkouts today (why it does not reproduce there):
+      /home/joliv/firstmate           remote.origin.gh-resolved=base
+      this worktree                    remote.origin.gh-resolved=base
+
+== CLAIM: current state - main green, fixed code untouched since PR #14 ==
+  run 32443727353 (e2786ac, PR #17): success
+  jobs: 12/12 success, incl. Behavior portable serial 3=success, Behavior portable serial 4=success
+  run 32493420147 (5a53eee, 2026-08-21T14:40Z): success
+
+  $ git diff --stat b98e098..e2786ac -- .opencode .pi tests/fm-pi-watch-extension.test.sh
+      (empty - nothing has touched the fixed code since PR #14)
+
+== REPO-SIDE: the inventory's real consumer accepts the new record and its links ==
+$ bin/fm-doc-audience-check.sh
+fm-doc-audience-check: ok surfaces=72 local_links=270
+$ bash tests/fm-documentation-audiences.test.sh
+ok - documentation inventory classifies every maintained prose surface exactly once
+ok - classification, setup routing, and maintained-prose scope fail safely
+ok - required documentation owner pointers cannot silently disappear
+ok - local links resolve while dates, versions, commands, and incident prose remain semantically reviewed
+$ python3 -c 'audience routing for the new record'
+  inventory entry: docs/verification/ci-red-merge-blind-spot.md -> audience=maintainer-verification (in allowedAudiences: True)
+
+== REPO-SIDE: the wrongly-scoped arm-readiness addendum is reverted ==
+$ git diff --stat e2786ac..HEAD -- docs/arm-readiness-determinism-proof.md
+      (empty - byte-identical to its state on main)
+$ git diff --stat e2786ac..HEAD   (the complete change under test)
+ docs/documentation-audiences.json            |   4 +
+ docs/verification/ci-red-merge-blind-spot.md | 122 +++++++++++++++++++++++++++
+ 2 files changed, 126 insertions(+)
+      (no production or test code touched)
+
+== CLAIM: window A closed by luck - PR #6 (3a972e3) touched none of the failing code/tests ==
+$ git show --stat --oneline 3a972e3 | head
+3a972e3 feat(dashboard): add the Admiral's Fleet Dashboard task board (#6)
+ .agents/skills/decision-hold-lifecycle/SKILL.md    |   9 +-
+ .agents/skills/fleet-dashboard/SKILL.md            |  87 +++
+ .agents/skills/process-event-sources/SKILL.md      |  10 +
+ .agents/skills/stow/SKILL.md                       |  20 +-
+ .agents/skills/updatefirstmate/SKILL.md            |   2 +-
+ .github/workflows/ci.yml                           |  10 +-
+ AGENTS.md                                          |   6 +-
+ CLAUDE.md                                          |   3 +-
+ CONTRIBUTING.md                                    |   7 +-
+ README.md                                          |   3 +-
+ bin/fleet-dashboard/server/api.py                  | 342 +++++++++++
+$ git show --stat 3a972e3 -- .opencode .pi tests/fm-pi-watch-extension.test.sh
+      (empty - PR #6 touched none of it)
+
+== CLAIM: window B closed because PR #11 (882004e) removed the witness, not the defect ==
+$ git show 882004e -- tests/fm-pi-watch-extension.test.sh | grep -E '^[-+].*(sleep 0.12|ensureArmed)'
+219:-await new Promise((resolve) => setTimeout(resolve, 120));
+223:+// handle the plugin itself exposes: ensureArmed joins a launch that is still in
+227:+const denied = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+
+== CLAIM: PR #12 (b19134b) raised the arm-ready timeouts 250ms -> 2000ms in that suite ==
++# (FM_PI_ARM_READY_TIMEOUT_MS / FM_OPENCODE_ARM_READY_TIMEOUT_MS = 2000).
+-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
++  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_PI_ARM_READY_TIMEOUT_MS=2000 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
++// Three unready attempts now cost 3 x FM_PI_ARM_READY_TIMEOUT_MS, so this
+-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_RELEASE_FILE="$release" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
++  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_RELEASE_FILE="$release" FM_PI_ARM_READY_TIMEOUT_MS=2000 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+
+== CLAIM: PR #14 is what actually fixed the race, after both windows closed ==
+  PR #14 merged_at: 2026-08-19T22:11:31Z  merge_commit b98e098  title: fix(watcher): re-evaluate arm coalescing when the fleet lock changes
+
+== NEGATIVE CONTROL: the inventory check really gates this change ==
+$ (temporarily drop the new record's inventory entry) && bin/fm-doc-audience-check.sh
+fm-doc-audience-check: unclassified: docs/verification/ci-red-merge-blind-spot.md
+  exit: 1
+$ (entry restored) && bin/fm-doc-audience-check.sh
+fm-doc-audience-check: ok surfaces=72 local_links=270
+  exit: 0
