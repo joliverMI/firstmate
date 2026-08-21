@@ -1,0 +1,18 @@
+### bin/fm-pr-check.sh - defense-in-depth backstop
+Disposable fixtures; gh/gh-axi are stubs. No real pull request exists or is touched.
+
+=== A. A PR reported against the fork parent ===
+task origin:  https://github.com/joliverMI/firstmate.git
+$ fm-pr-check.sh task-a https://github.com/kunchenguid/firstmate/pull/1
+error: PR https://github.com/kunchenguid/firstmate/pull/1 targets kunchenguid/firstmate, not this task's own project joliverMI/firstmate; refusing to record or arm it
+exit=1
+pr= lines recorded in task metadata: 0
+merge-watch poll armed:             no
+
+=== B. A PR reported against the task's own project ===
+task origin:  https://github.com/joliverMI/firstmate.git
+$ fm-pr-check.sh task-a https://github.com/joliverMI/firstmate/pull/1
+armed: state/task-a.check.sh
+exit=0
+pr= lines recorded in task metadata: 1
+merge-watch poll armed:             yes

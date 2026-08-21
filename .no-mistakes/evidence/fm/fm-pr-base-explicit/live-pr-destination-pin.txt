@@ -1,0 +1,35 @@
+### Live PR-destination pin, checked read-only before this change's own PR is created
+
+--- 1. The fork relationship that creates the hazard (unchanged, as required) ---
+$ gh repo view joliverMI/firstmate --json nameWithOwner,isFork,parent
+{"isFork":true,"nameWithOwner":"joliverMI/firstmate","parent":{"id":"R_kgDOS4Me3Q","name":"firstmate","owner":{"id":"MDQ6VXNlcjMyMzMwMDY=","login":"kunchenguid"}}}
+
+gh's documented default for a fork is the PARENT above, so an unpinned 'gh pr create' lands there.
+
+--- 2. The no-mistakes gate worktree (the git dir no-mistakes' PR step runs gh from) ---
+$ pwd
+/home/joliv/.no-mistakes/worktrees/4cc5c0885385/01M0J6SC513A1A0EA908CB7Q60
+$ git rev-parse --absolute-git-dir
+/home/joliv/.no-mistakes/repos/4cc5c0885385.git/worktrees/01M0J6SC513A1A0EA908CB7Q60
+$ git config --get remote.origin.url
+https://github.com/joliverMI/firstmate.git
+$ git config --get remote.origin.gh-resolved
+base
+$ gh repo set-default --view
+joliverMI/firstmate
+
+--- 3. The shared no-mistakes gate (bare) ---
+$ git -C /home/joliv/.no-mistakes/repos/4cc5c0885385.git config --get remote.origin.url
+https://github.com/joliverMI/firstmate.git
+$ git -C /home/joliv/.no-mistakes/repos/4cc5c0885385.git config --get remote.origin.gh-resolved
+base
+$ (cd /home/joliv/.no-mistakes/repos/4cc5c0885385.git && gh repo set-default --view)
+joliverMI/firstmate
+
+--- 4. The project checkout ---
+$ git -C /home/joliv/firstmate config --get remote.origin.url
+https://github.com/joliverMI/firstmate.git
+$ git -C /home/joliv/firstmate config --get remote.origin.gh-resolved
+base
+$ (cd /home/joliv/firstmate && gh repo set-default --view)
+joliverMI/firstmate

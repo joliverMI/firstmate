@@ -1,0 +1,30 @@
+### bin/fm-pr-destination-guard.sh - what an operator sees
+
+Fixtures are disposable local git repos with origin=joliverMI/firstmate.
+gh is stubbed ONLY so a wrong destination can be staged without naming
+kunchenguid/firstmate to a live API; no pull request is created anywhere.
+
+=== A. The reported incident: the gate resolves to the fork parent ===
+error: the no-mistakes gate (/tmp/fm-guard-demo.Mi2Mim/parent-gate/gate.git) resolves pull requests to kunchenguid/firstmate, not this project's own joliverMI/firstmate; refusing to proceed
+exit=1
+
+=== B. The project checkout itself resolves to the fork parent ===
+error: the project checkout (/tmp/fm-guard-demo.Mi2Mim/parent-checkout/proj) resolves pull requests to kunchenguid/firstmate, not this project's own joliverMI/firstmate; refusing to proceed
+exit=1
+
+=== C. Both locations name the project's own repository ===
+pinned: joliverMI/firstmate is the sole pull-request destination for /tmp/fm-guard-demo.Mi2Mim/correct/proj and its no-mistakes gate
+exit=0
+
+=== D. No 'origin' remote at all ===
+error: /tmp/fm-guard-demo.Mi2Mim/no-origin has no 'origin' remote; cannot pin a pull-request destination
+exit=1
+
+=== E. A non-GitHub origin: out of scope, said out loud, nothing pinned ===
+skip: /tmp/fm-guard-demo.Mi2Mim/gitlab's origin host (gitlab.com) is not a recognized GitHub host, so nothing here is pinned or verified; gh's fork-parent default this guard closes is GitHub-specific
+exit=0
+
+=== F. --print-destination, the machine-readable half used by direct-PR tasks ===
+$ fm-pr-destination-guard.sh <checkout-with-origin-joliverMI/firstmate> --print-destination
+joliverMI/firstmate
+exit=0

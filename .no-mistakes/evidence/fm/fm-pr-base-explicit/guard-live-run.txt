@@ -1,0 +1,10 @@
+### The guard run live, as an operator runs it, against the real checkout and the real gate
+
+$ bin/fm-pr-destination-guard.sh /home/joliv/firstmate
+pinned: joliverMI/firstmate is the sole pull-request destination for /home/joliv/firstmate and its no-mistakes gate
+exit=0
+
+Both destinations were already correct, so the guard confirmed them without
+re-writing (its idempotent path). git config unchanged in both places:
+  project checkout config: UNCHANGED
+  no-mistakes gate config: UNCHANGED
