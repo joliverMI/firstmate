@@ -308,6 +308,20 @@ if [ -n "${FM_FAKE_TMUX_LOG:-}" ]; then
   printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
 fi
 case "$*" in
+  list-windows*'#{window_id}'*)
+    # The exact-NAME resolver behind a recorded-target send compares only the
+    # NAME half of '#{window_id} #{window_name}' and then addresses the ID half,
+    # so this arm pairs each recorded window with a synthetic @N id that is
+    # deliberately NOT the name; the bare-name arm below is unchanged. The
+    # inventory is read from the EFFECTIVE state dir, which is what a nudge
+    # aimed at a secondmate recorded outside $FM_HOME/state depends on.
+    fm_fake_n=0
+    for fm_fake_win in $(sed -n 's/^window=[^:]*://p' "${FM_STATE_OVERRIDE:-${FM_HOME:?}/state}"/*.meta); do
+      fm_fake_n=$((fm_fake_n + 1))
+      printf '@%s %s\n' "$fm_fake_n" "$fm_fake_win"
+    done
+    exit 0
+    ;;
   list-windows*)
     sed -n 's/^window=[^:]*://p' "${FM_HOME:?}"/state/*.meta
     exit 0

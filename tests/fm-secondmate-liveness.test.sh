@@ -55,7 +55,9 @@ case "\${1:-}" in
   display-message)
     for a in "\$@"; do case "\$a" in *pane_current_command*) printf '%s\n' '$comm'; exit 0 ;; esac; done
     exit 0 ;;
-  list-windows) printf '%s\n' win; exit 0 ;;
+  list-windows)
+    for a in "\$@"; do case "\$a" in *'#{window_id}'*) printf '%s\n' '@1 win'; exit 0 ;; esac; done
+    printf '%s\n' win; exit 0 ;;
 esac
 exit 0
 SH
@@ -65,7 +67,11 @@ SH
 
 # make_failed_probe_tmux <dir> <inventory>: missing and present fail the pane
 # read, while unreadable returns a misleading fallback node process but fails
-# the inventory that must be authoritative.
+# the inventory that must be authoritative. Only list-windows needs stubbing:
+# fm_backend_tmux_agent_state resolves existence through
+# fm_backend_tmux_exact_target_named, which matches the window component
+# byte-exactly against that same exact-pinned session inventory and never
+# re-reads it as a pane address.
 make_failed_probe_tmux() {
   local dir=$1 inventory=$2 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -78,12 +84,24 @@ case "\${1:-}" in
     exit 1
     ;;
   list-windows)
+    # Emit the two-field '#{window_id} #{window_name}' shape real tmux answers
+    # the resolver's own listing with, and the bare name for the plain
+    # '#{window_name}' inventory read agent_state classifies a refusal with, so
+    # the fake cannot mask an id-for-name mix-up in either caller.
+    win_fmt=name
+    for a in "\$@"; do case "\$a" in *'#{window_id}'*) win_fmt=id ;; esac; done
+    emit_window() {  # <name> <window-id>
+      case "\$win_fmt" in
+        id) printf '%s %s\n' "\$2" "\$1" ;;
+        *) printf '%s\n' "\$1" ;;
+      esac
+    }
     case '$inventory' in
-      missing) printf '%s\n' main ; exit 0 ;;
+      missing) emit_window main @2 ; exit 0 ;;
       missing-session) printf '%s\n' "can't find session: sess" >&2; exit 1 ;;
       missing-server) printf '%s\n' "no server running on /tmp/tmux-test/default" >&2; exit 1 ;;
       missing-socket) printf '%s\n' "error connecting to /tmp/tmux-test/default (No such file or directory)" >&2; exit 1 ;;
-      present) printf '%s\n' fm-sm1 ; exit 0 ;;
+      present) emit_window fm-sm1 @1 ; exit 0 ;;
       *) printf '%s\n' "permission denied" >&2; exit 1 ;;
     esac
     ;;
@@ -263,7 +281,10 @@ SH
 
 # make_liveness_tmux <dir>: a controllable tmux stub. FM_TEST_PANE_CMD may be
 # a foreground command, `missing` (readable inventory omits the window), or
-# `unreadable` (both pane and inventory reads fail).
+# `unreadable` (both pane and inventory reads fail). A `new-window` call always
+# makes the window read back as present (a `.created` marker, cleared by a
+# later `kill-window`) regardless of FM_TEST_PANE_CMD's initial mode, so a
+# relaunch that creates a fresh window can still type into it.
 make_liveness_tmux() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -287,17 +308,54 @@ case "${1:-}" in
     exit 0
     ;;
   list-windows)
+    # Answer '#{window_id} #{window_name}' with both fields, as real tmux does
+    # for the resolver's own listing, and the bare name for the plain
+    # '#{window_name}' inventory read - so a caller that kills or re-targets
+    # what the resolver printed is exercised against a real window ID here,
+    # not against a name the fake happened to echo back twice.
+    win_fmt=name
+    for a in "$@"; do case "$a" in *'#{window_id}'*) win_fmt=id ;; esac; done
+    emit_window() {  # <name> <window-id>
+      case "$win_fmt" in
+        id) printf '%s %s\n' "$2" "$1" ;;
+        *) printf '%s\n' "$1" ;;
+      esac
+    }
+    if [ -e "${FM_TMUX_CALL_LOG:?}.created" ] && [ ! -e "${FM_TMUX_CALL_LOG}.killed" ]; then
+      emit_window fm-sm1 @1; exit 0
+    fi
     case "$mode" in
-      missing) printf '%s\n' main; exit 0 ;;
+      missing) emit_window main @2; exit 0 ;;
       unreadable) exit 1 ;;
-      *) [ -e "${FM_TMUX_CALL_LOG:?}.killed" ] || printf '%s\n' fm-sm1; exit 0 ;;
+      *) [ -e "${FM_TMUX_CALL_LOG:?}.killed" ] || emit_window fm-sm1 @1; exit 0 ;;
+    esac
+    ;;
+  list-panes)
+    # The gated send primitives a relaunch types into a freshly created window
+    # with resolve existence through fm_backend_tmux_exact_target, which probes
+    # the exact pane the same way fm_backend_target_exists does; mirror
+    # list-windows's created/killed state (below the initial mode-driven probe
+    # outcome) so the resolver sees the same live-or-gone window the rest of
+    # this fixture already models, including the window a relaunch just
+    # created. (fm_backend_tmux_agent_state itself reads only list-windows,
+    # through the name-only resolver.)
+    if [ -e "${FM_TMUX_CALL_LOG:?}.created" ] && [ ! -e "${FM_TMUX_CALL_LOG}.killed" ]; then
+      exit 0
+    fi
+    case "$mode" in
+      missing) exit 1 ;;
+      unreadable) exit 1 ;;
+      *) [ -e "${FM_TMUX_CALL_LOG:?}.killed" ] && exit 1; exit 0 ;;
     esac
     ;;
   new-window|kill-window)
     printf '%s\n' "$*" >> "${FM_TMUX_CALL_LOG:?}"
     [ "${1:-}" = kill-window ] && : > "${FM_TMUX_CALL_LOG}.killed"
     [ "${FM_TEST_FAIL_NEW_WINDOW:-0}" = 1 ] && [ "${1:-}" = new-window ] && exit 1
-    [ "${1:-}" = new-window ] && rm -f "${FM_TMUX_CALL_LOG}.killed"
+    if [ "${1:-}" = new-window ]; then
+      rm -f "${FM_TMUX_CALL_LOG}.killed"
+      : > "${FM_TMUX_CALL_LOG}.created"
+    fi
     exit 0
     ;;
   has-session) exit 0 ;;
@@ -363,7 +421,12 @@ test_sweep_respawns_confirmed_dead_secondmate() {
 
   assert_not_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: respawned" \
     "a successfully respawned secondmate should be handled silently"
-  assert_contains "$(cat "$log")" "kill-window -t =firstmate:=fm-sm1" \
+  # @1 is the window id the fake's session inventory carries for fm-sm1:
+  # fm_backend_tmux_kill addresses what fm_backend_tmux_exact_target_named
+  # printed - the id read out of the very listing that matched the recorded
+  # window NAME - rather than re-deriving a `=session:=window` string tmux
+  # would re-parse (and, for a dotted name, re-parse into a sibling's pane).
+  assert_contains "$(cat "$log")" "kill-window -t @1" \
     "the stale endpoint must be killed before respawn (tmux refuses a same-named window over a live one)"
   assert_contains "$(cat "$log")" "new-window" \
     "a confirmed-dead secondmate should actually be relaunched"

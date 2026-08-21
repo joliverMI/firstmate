@@ -2124,9 +2124,14 @@ fi
 # WT_TARGET to $T for them (and for any future backend) - the shared treehouse-get +
 # worktree-detection steps below must never reference an unbound WT_TARGET under set -u.
 : "${WT_TARGET:=$T}"
+# Every tmux send below declares target-kind `named`. Spawn only ever types
+# into the window it created moments earlier in this same run and holds the id
+# of, so its target is a self-created NAME, never an operator-declared pane
+# address - the same scoping fm_backend_tmux_send_text_line and
+# fm_backend_tmux_send_literal already document in their own headers.
 spawn_send_text_line() {  # <target> <text>
   case "$BACKEND" in
-    tmux) fm_backend_tmux_send_text_line "$1" "$2" ;;
+    tmux) fm_backend_tmux_send_text_line "$1" "$2" named ;;
     herdr) fm_backend_herdr_send_text_line "$1" "$2" ;;
     zellij) fm_backend_zellij_send_text_line "$1" "$2" "$W" ;;
     orca) fm_backend_orca_send_text_line "$1" "$2" ;;
@@ -2143,7 +2148,7 @@ spawn_current_path() {  # <target>
 }
 spawn_send_literal() {  # <target> <text>
   case "$BACKEND" in
-    tmux) fm_backend_tmux_send_literal "$1" "$2" ;;
+    tmux) fm_backend_tmux_send_literal "$1" "$2" named ;;
     herdr) fm_backend_herdr_send_literal "$1" "$2" ;;
     zellij) fm_backend_zellij_send_literal "$1" "$2" "$W" ;;
     orca) fm_backend_orca_send_literal "$1" "$2" ;;
@@ -2152,7 +2157,7 @@ spawn_send_literal() {  # <target> <text>
 }
 spawn_send_key() {  # <target> <key>
   case "$BACKEND" in
-    tmux) fm_backend_tmux_send_key "$1" "$2" ;;
+    tmux) fm_backend_tmux_send_key "$1" "$2" named ;;
     herdr) fm_backend_herdr_send_key "$1" "$2" ;;
     zellij) fm_backend_zellij_send_key "$1" "$2" "$W" ;;
     orca) fm_backend_orca_send_key "$1" "$2" ;;
@@ -2849,7 +2854,7 @@ if [ "$HARNESS" = kimi ]; then
   KIMI_SUBMIT_SETTLE=${FM_KIMI_SUBMIT_SETTLE:-0}
   KIMI_SUBMIT_VERDICT=$(fm_backend_send_text_submit \
     "$BACKEND" "$T" "$KIMI_POINTER" "$KIMI_SUBMIT_RETRIES" \
-    "$KIMI_SUBMIT_SLEEP" "$KIMI_SUBMIT_SETTLE" "$W") || {
+    "$KIMI_SUBMIT_SLEEP" "$KIMI_SUBMIT_SETTLE" "$W" named) || {
     kimi_spawn_fail "kimi brief pointer could not be submitted"
     exit 1
   }

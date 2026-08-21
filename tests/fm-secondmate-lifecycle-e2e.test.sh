@@ -136,17 +136,24 @@ phase_spawn() {
 phase_send() {
   : > "$LOG"
   printf '❯\n' > "$PANE"
-  # The meta window (firstmate:fm-design) must win over a foreign same-named
-  # window returned by list-windows.
-  PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" FM_FAKE_TMUX_WINDOW="other-session:fm-design" \
+  # Two same-named windows are live, one per session, and the meta window
+  # (firstmate:fm-design) must win over the foreign one. The recorded target is
+  # resolved by exact name inside its own session's listing and addressed by the
+  # window id that listing carried, so the assertions are on ids: the foreign
+  # window is declared FIRST so it holds @1, and a resolver that ignored the
+  # session scoping - matching the first same-named window in the whole server -
+  # would deliver into @1 rather than the meta window's @2.
+  PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" \
+    FM_FAKE_TMUX_WINDOW=$'other-session:fm-design\nfirstmate:fm-design' \
     FM_FAKE_TMUX_LOG="$LOG" FM_FAKE_TMUX_CAPTURE="$PANE" \
     "$ROOT/bin/fm-send.sh" fm-design 'route this work' >/dev/null 2>&1 \
     || fail "fm-send failed for a bare firstmate window with home metadata"
   # design is a kind=secondmate target, so the request is prefixed with the
   # from-firstmate marker (bin/fm-marker-lib.sh): the send targets the meta window
   # AND carries the marker label, and the original payload still follows it.
-  assert_grep 'send-keys -t =firstmate:=fm-design -l [fm-from-firstmate]' "$LOG" "send did not use the window recorded in this home's meta (exact-pinned), or did not mark the secondmate request"
+  assert_grep 'send-keys -t @2 -l [fm-from-firstmate]' "$LOG" "send did not use the window recorded in this home's meta (exactly resolved), or did not mark the secondmate request"
   assert_grep 'route this work' "$LOG" "the original request text did not survive the marker"
+  assert_no_grep 'send-keys -t @1' "$LOG" "send targeted a foreign same-named window"
   assert_no_grep 'send-keys -t =other-session:=fm-design' "$LOG" "send targeted a foreign same-named window"
   assert_no_grep 'send-keys -t other-session:fm-design' "$LOG" "send targeted a foreign same-named window"
   pass "send: a bare fm-<id> secondmate routes to the meta window with the from-firstmate marker"

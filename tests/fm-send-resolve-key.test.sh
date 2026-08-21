@@ -63,7 +63,41 @@ case "${1:-}" in
     for a in "$@"; do case "$a" in *cursor_y*) printf '1\n'; exit 0 ;; esac; done
     printf 'fakepane\n'; exit 0 ;;
   capture-pane) printf '╭────╮\n│    │\n╰────╯\n'; exit 0 ;;
-  list-windows) exit 0 ;;
+  list-windows)
+    # Two different formats reach this stub, and they are not interchangeable.
+    # A bare-selector lookup asks for '#{session_name}:#{window_name}' across
+    # every session; the exact-NAME resolver behind a recorded-target send asks
+    # `-t "=<session>"` for '#{window_id} #{window_name}' and then compares only
+    # the NAME half before addressing the ID half. Answering the second with a
+    # bare name would let its `id`/`rest` split succeed by coincidence - both
+    # halves of a space-less line are the whole line - so a regression that
+    # addressed the name where the id belongs would pass unnoticed. The live
+    # inventory modelled here is the recorded task windows in this home, which
+    # is exactly what this stub's unconditional pane answers already assume is
+    # live; a window no task recorded is correctly absent.
+    ses=
+    prev=
+    win_fmt=name
+    for arg in "$@"; do
+      [ "$prev" = -t ] && ses=${arg#=}
+      prev=$arg
+      case "$arg" in *'#{window_id}'*) win_fmt=id ;; esac
+    done
+    if [ "$win_fmt" != id ]; then
+      exit 0
+    fi
+    ses=${ses%%:*}
+    n=0
+    for m in "${FM_HOME:-/nonexistent}"/state/*.meta; do
+      [ -f "$m" ] || continue
+      w=$(sed -n 's/^window=//p' "$m" | head -1)
+      case "$w" in "$ses":*) ;; *) continue ;; esac
+      w=${w#*:}
+      case "$w" in *:*|'') continue ;; esac
+      n=$((n + 1))
+      printf '@%s %s\n' "$n" "$w"
+    done
+    exit 0 ;;
 esac
 exit 0
 SH

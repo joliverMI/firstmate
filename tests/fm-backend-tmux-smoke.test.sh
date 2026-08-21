@@ -249,12 +249,11 @@ fi
 pass "real tmux: fm_backend_target_exists rejects a nonexistent dotted window name"
 
 fm_backend_tmux_kill "$SESSION:$DOTTED_WINDOW"
-# Kill by window id as well: fm_backend_tmux_kill addresses the window with the
-# same `=$session:=$window` pin whose pane-split flaw is described above, so it
-# cannot remove a dotted window name and is best-effort (it reports success
-# either way). That is a pre-existing sibling gap, tracked separately and NOT
-# fixed here; this line only stops the leaked window from perturbing the
-# pane-addressing assertions below.
+# Kill by window id as well, belt and braces: fm_backend_tmux_kill now resolves
+# a dotted window NAME through fm_backend_tmux_exact_target_named and really
+# does remove it (asserted directly further below), but it is best-effort and
+# reports success either way, so this fallback guarantees the window cannot
+# leak and perturb the pane-addressing assertions that follow.
 dotted_wid=$(tmux list-windows -t "=$SESSION" -F '#{window_name} #{window_id}' \
   | while read -r n i; do [ "$n" = "$DOTTED_WINDOW" ] && printf '%s' "$i" && break; done)
 kill_window_id "$dotted_wid"
@@ -676,6 +675,367 @@ pass "real tmux: a bare window name live in two sessions is refused rather than 
 
 tmux kill-session -t "=$AMBIG_SESSION" 2>/dev/null || true
 kill_window_id "$ambig_wid"
+
+# --- fm_backend_tmux_exact_target (the resolver itself), from inside a client -
+# fm_backend_target_exists is a thin wrapper around fm_backend_tmux_exact_target
+# (bin/fm-backend.sh); every other gated primitive in this file - the sends,
+# the kill, and the recovery-grade agent-state read below - shares that exact
+# same resolver call, so this proves the resolver itself, not just one of its
+# callers, refuses a nonexistent target from inside a live tmux client. Run
+# from outside a client this passes today and proves nothing, exactly like the
+# fm_backend_target_exists case above (same discipline: the fallback needs a
+# live session to fall back TO).
+fm_backend_tmux_send_text_line "$TARGET" \
+  "export PATH=\"$SHIM_DIR:\$PATH\" && . \"$ROOT/bin/fm-backend.sh\" && if fm_backend_tmux_exact_target nosuchsession2:nosuchwindow2 >/dev/null 2>&1; then printf 'RESOLVER-RESULT:%s\\n' EXISTS; else printf 'RESOLVER-RESULT:%s\\n' MISSING; fi" \
+  || fail "fm_backend_tmux_send_text_line failed for the in-pane resolver probe"
+wait_for_capture_text "$TARGET" "RESOLVER-RESULT:MISSING" 150
+out=$(fm_backend_tmux_capture "$TARGET" 20) || fail "fm_backend_tmux_capture failed after the in-pane resolver probe"
+case "$out" in
+  *RESOLVER-RESULT:MISSING*) : ;;
+  *RESOLVER-RESULT:EXISTS*) fail "fm_backend_tmux_exact_target resolved a nonexistent session:window when run from inside a live tmux client"$'\n'"$out" ;;
+  *) fail "fm_backend_tmux_exact_target's in-pane resolver probe produced an unexpected result"$'\n'"$out" ;;
+esac
+pass "real tmux: fm_backend_tmux_exact_target (the resolver itself) refuses a nonexistent target even when run from inside a live tmux client"
+
+# --- fm_backend_tmux_agent_state: no session-component prefix fallback -------
+# fm_backend_tmux_agent_state used to validate existence with unpinned
+# `list-windows -t "$session"`, and tmux resolves a target-session by PREFIX
+# exactly like it resolves a target-window (proven above for
+# fm_backend_target_exists), so a dead `dead-sess:fm-x` fell through to a live
+# PREFIX-colliding `dead-sess-2`'s own window inventory, found a same-named
+# window there, and read THAT window's foreground process under the dead
+# session's label. This is the defect fm-tmux-agent-state-session-prefix-match
+# exists to fix: a fleet that acts on "endpoint: alive" for an endpoint that
+# was never actually verified.
+# The fixture makes the misdelivery provable rather than theoretical: the live
+# sibling's pane runs a process whose ARGV[0] the classifier recognizes as a
+# harness (`exec -a claude sleep 300` - argv[0]=claude, comm=sleep, exactly
+# the shape fm_backend_tmux_foreground_argv0s exists to catch when a title is
+# rewritten), so the old code's misdelivery would read back a false ALIVE, not
+# merely something non-missing.
+AGENT_DEAD_SESSION="agent-dead"
+AGENT_LIVE_SESSION="agent-dead-2"
+AGENT_WINDOW="fm-x"
+tmux new-session -d -s "$AGENT_LIVE_SESSION" -x 200 -y 50 \
+  || fail "could not create the live prefix-colliding sibling session"
+fm_backend_tmux_create_task "$AGENT_LIVE_SESSION" "$AGENT_WINDOW" "$HOME" >/dev/null \
+  || fail "could not create the sibling's window"
+if tmux has-session -t "=$AGENT_DEAD_SESSION" 2>/dev/null; then
+  fail "fixture is invalid: the supposedly dead '$AGENT_DEAD_SESSION' session actually exists"
+fi
+
+fm_backend_tmux_send_text_line "$AGENT_LIVE_SESSION:$AGENT_WINDOW" "exec -a claude sleep 300" \
+  || fail "could not start the fake harness process (argv0=claude) in the live sibling pane"
+AGENT_READY=false
+for _ in $(seq 1 50); do
+  case "$(fm_backend_tmux_foreground_argv0s "$AGENT_LIVE_SESSION:$AGENT_WINDOW" 2>/dev/null)" in
+    *claude*) AGENT_READY=true; break ;;
+  esac
+  sleep 0.1
+done
+[ "$AGENT_READY" = true ] || fail "the fake harness process (argv0=claude) never became the sibling pane's foreground process"
+
+agent_state_out=$(fm_backend_agent_state tmux "$AGENT_DEAD_SESSION:$AGENT_WINDOW")
+[ "$agent_state_out" != alive ] \
+  || fail "fm_backend_agent_state reported '$AGENT_DEAD_SESSION:$AGENT_WINDOW' alive by reading the live prefix-colliding sibling '$AGENT_LIVE_SESSION:$AGENT_WINDOW'"
+[ "$agent_state_out" = missing ] \
+  || fail "fm_backend_agent_state should classify a session that does not exist as missing, got '$agent_state_out'"
+pass "real tmux: fm_backend_agent_state does not fall through to a live prefix-colliding sibling session, and reports the dead session missing rather than reading the sibling alive"
+
+fm_backend_tmux_kill "$AGENT_LIVE_SESSION:$AGENT_WINDOW"
+tmux kill-session -t "=$AGENT_LIVE_SESSION" 2>/dev/null || true
+
+# --- fm_backend_tmux_kill and a dotted window NAME: never a sibling ----------
+# fm_backend_tmux_kill used to hand-build `=$session:=$window`, and tmux splits
+# a dotted window component's trailing `.` off as a PANE specifier before
+# matching the name, so `kill-window -t '=sess:=fm-killsib.2'` could remove the
+# SIBLING window `fm-killsib` (whichever one owns pane 2) instead of the
+# dotted-name window it was actually asked to remove - a destructive misfire,
+# not merely a failed removal. The fixture is the failing shape itself: a live
+# sibling window that really owns the pane index the dotted string reads as,
+# beside the dotted-name window kill is actually asked to remove.
+KILL_SIBLING="fm-killsib"
+kill_sib_wid=$(fm_backend_tmux_create_task "$SESSION" "$KILL_SIBLING" "$HOME") \
+  || fail "could not create the kill-safety sibling window"
+tmux split-window -t "$kill_sib_wid" || fail "could not split a second pane in the kill-safety sibling"
+kill_pane_idx=$(tmux list-panes -t "$kill_sib_wid" -F '#{pane_index}' | tail -1)
+[ -n "$kill_pane_idx" ] || fail "could not read the kill-safety sibling's pane index"
+KILL_DOTTED="$KILL_SIBLING.$kill_pane_idx"
+kill_dotted_wid=$(fm_backend_tmux_create_task "$SESSION" "$KILL_DOTTED" "$HOME") \
+  || fail "could not create the dotted-name window to kill"
+
+fm_backend_tmux_kill "$SESSION:$KILL_DOTTED"
+
+if ! tmux list-windows -t "=$SESSION" -F '#{window_name}' 2>/dev/null | grep -Fqx "$KILL_SIBLING"; then
+  fail "fm_backend_tmux_kill removed the SIBLING window '$KILL_SIBLING' instead of the dotted-name window '$KILL_DOTTED' it was asked to remove"
+fi
+if tmux list-windows -t "=$SESSION" -F '#{window_name}' 2>/dev/null | grep -Fqx "$KILL_DOTTED"; then
+  fail "fm_backend_tmux_kill did not remove the dotted-name window '$KILL_DOTTED' it was asked to remove"
+fi
+pass "real tmux: fm_backend_tmux_kill removes a window named with a dot without destroying a same-pane-indexed sibling window"
+
+kill_window_id "$kill_sib_wid"
+kill_window_id "$kill_dotted_wid"
+
+# --- an ALREADY-GONE dotted name is never read as, nor killed as, its sibling -
+# The residual half of the same defect, and the more dangerous one: when the
+# dotted window is already gone, a resolver that falls back to reading
+# `<window>.<pane>` answers with a real pane of the truncated sibling, because
+# the sibling's FIRST pane index always exists - no split needed. A recorded
+# `sess:fm-<id>.0` whose window has since been removed then resolves to pane 0
+# of the live `fm-<id>`, and the two consumers that resolve a RECORDED
+# session:window field escalate that from there: fm_backend_tmux_agent_state
+# reads the sibling task's foreground process and reports the dead endpoint
+# `alive`, and fm_backend_tmux_kill destroys the sibling's ENTIRE window,
+# because `kill-window` on a pane id removes the window that pane belongs to
+# (verified on tmux 3.4). Task ids admit dots (fm_task_id_path_safe allows
+# [A-Za-z0-9._-]) and fm-spawn.sh records `window=<session>:fm-<id>`, so a
+# recorded name ending `.0` needs nothing exotic to occur.
+# As in the prefix-collision proof above, the sibling pane runs a process the
+# classifier recognizes as a harness by ARGV[0] (`exec -a claude sleep 300`),
+# so a misresolved read would come back a false ALIVE rather than merely
+# something non-missing.
+GONE_SIBLING="fm-gonesib"
+gone_sib_wid=$(fm_backend_tmux_create_task "$SESSION" "$GONE_SIBLING" "$HOME") \
+  || fail "could not create the already-gone-dotted-target sibling window"
+gone_pane_idx=$(tmux list-panes -t "$gone_sib_wid" -F '#{pane_index}' | head -1)
+[ -n "$gone_pane_idx" ] || fail "could not read the already-gone-dotted-target sibling's first pane index"
+GONE_DOTTED="$GONE_SIBLING.$gone_pane_idx"
+if tmux list-windows -t "=$SESSION" -F '#{window_name}' | grep -Fqx "$GONE_DOTTED"; then
+  fail "fixture is invalid: the supposedly already-gone window '$GONE_DOTTED' actually exists"
+fi
+
+fm_backend_tmux_send_text_line "$SESSION:$GONE_SIBLING" "exec -a claude sleep 300" \
+  || fail "could not start the fake harness process (argv0=claude) in the already-gone-dotted-target sibling pane"
+GONE_READY=false
+for _ in $(seq 1 50); do
+  case "$(fm_backend_tmux_foreground_argv0s "$gone_sib_wid" 2>/dev/null)" in
+    *claude*) GONE_READY=true; break ;;
+  esac
+  sleep 0.1
+done
+[ "$GONE_READY" = true ] || fail "the fake harness process (argv0=claude) never became the already-gone-dotted-target sibling's foreground process"
+
+gone_state=$(fm_backend_agent_state tmux "$SESSION:$GONE_DOTTED")
+[ "$gone_state" != alive ] \
+  || fail "fm_backend_agent_state reported the already-gone '$SESSION:$GONE_DOTTED' alive by reading pane $gone_pane_idx of the live sibling '$GONE_SIBLING'"
+[ "$gone_state" = missing ] \
+  || fail "fm_backend_agent_state should classify an already-gone dotted window in a readable session as missing, got '$gone_state'"
+pass "real tmux: fm_backend_agent_state reads an already-gone dotted window name as missing, never as its same-pane-indexed sibling's live harness"
+
+fm_backend_tmux_kill "$SESSION:$GONE_DOTTED" \
+  || fail "fm_backend_tmux_kill on an already-gone dotted target must stay best-effort (never fail)"
+if ! tmux list-windows -t "=$SESSION" -F '#{window_name}' 2>/dev/null | grep -Fqx "$GONE_SIBLING"; then
+  fail "fm_backend_tmux_kill destroyed the live sibling '$GONE_SIBLING' when asked to remove the already-gone '$GONE_DOTTED'"
+fi
+pass "real tmux: fm_backend_tmux_kill leaves a live sibling intact when the dotted-name window it is asked to remove is already gone"
+
+kill_window_id "$gone_sib_wid"
+
+# --- target-kind `named`: an already-gone dotted RECORDED window never sends --
+# The send half of the same defect, and the worst-consequence half. A recorded
+# `sess:fm-<id>.0` whose window is gone, beside a live `fm-<id>` whose first
+# pane index always exists, resolved through the general resolver's
+# pane-qualified fallback to a real pane of that live sibling - so an ordinary
+# steer was TYPED AND SUBMITTED into a different crew's composer while that
+# crew was mid-turn, and if their composer then cleared, the verdict read
+# `empty`, reporting delivery CONFIRMED for a task that never received it.
+# The four sends take both kinds of target, so the kind is declared by the
+# caller, never inferred from the string: fm-send.sh's recorded-metadata paths,
+# fm-control.sh's validated endpoint and fm-spawn.sh's just-created window are
+# `named`, and `named` is the default so an unclassified caller refuses.
+# The fixture is a decoy shell that would EXECUTE a misdelivered line, and the
+# ordering sentinel below drives a real send through the same primitives to
+# completion afterwards - tmux delivers in order, so a sentinel that has run
+# means any misdelivered earlier byte would already have run too. Marker tokens
+# are never typed contiguously in their own command line, so the echo of a
+# typed-but-unsubmitted command cannot false-positive.
+SEND_GONE_LIVE="fm-sendgone"
+send_gone_wid=$(fm_backend_tmux_create_task "$SESSION" "$SEND_GONE_LIVE" "$HOME") \
+  || fail "could not create the live sibling window for the already-gone dotted send check"
+send_gone_pane=$(tmux list-panes -t "$send_gone_wid" -F '#{pane_index}' | head -1)
+[ -n "$send_gone_pane" ] || fail "could not read the already-gone dotted send sibling's first pane index"
+SEND_GONE_DOTTED="$SESSION:$SEND_GONE_LIVE.$send_gone_pane"
+if tmux list-windows -t "=$SESSION" -F '#{window_name}' | grep -Fqx "$SEND_GONE_LIVE.$send_gone_pane"; then
+  fail "fixture is invalid: the supposedly already-gone window '$SEND_GONE_LIVE.$send_gone_pane' actually exists"
+fi
+
+SEND_GONE_READY=false
+for _ in $(seq 1 100); do
+  tmux send-keys -t "$send_gone_wid" C-c
+  tmux send-keys -t "$send_gone_wid" -l "printf 'sendgone-%s\\n' ready"
+  tmux send-keys -t "$send_gone_wid" Enter
+  if wait_for_capture_text "$send_gone_wid" "sendgone-ready" 10; then
+    SEND_GONE_READY=true
+    break
+  fi
+done
+[ "$SEND_GONE_READY" = true ] || fail "the already-gone dotted send decoy shell never became ready to execute a misdelivered line"
+
+# Every call below omits the kind, so it also proves the DEFAULT is the safe
+# one: a call site that was never classified refuses rather than reinterpreting.
+if fm_backend_tmux_send_text_line "$SEND_GONE_DOTTED" "printf 'GONELINELEAK-%s\\n' ARRIVED" 2>/dev/null; then
+  fail "fm_backend_tmux_send_text_line accepted the already-gone '$SEND_GONE_DOTTED' instead of refusing it"
+fi
+if fm_backend_tmux_send_literal "$SEND_GONE_DOTTED" "printf 'GONELITERALLEAK-%s\\n' ARRIVED" 2>/dev/null; then
+  fail "fm_backend_tmux_send_literal accepted the already-gone '$SEND_GONE_DOTTED' instead of refusing it"
+fi
+send_gone_verdict=$(fm_backend_tmux_send_text_submit "$SEND_GONE_DOTTED" "printf 'GONETEXTLEAK-%s\\n' ARRIVED" 2 0.1 0.1 2>/dev/null)
+send_gone_rc=$?
+[ "$send_gone_rc" -ne 0 ] \
+  || fail "fm_backend_tmux_send_text_submit accepted the already-gone '$SEND_GONE_DOTTED' instead of refusing it"
+[ "$send_gone_verdict" != empty ] \
+  || fail "fm_backend_tmux_send_text_submit reported delivery CONFIRMED (verdict 'empty') for the already-gone '$SEND_GONE_DOTTED'"
+
+# send_key's misdelivery is only observable if there is something for a stray
+# Enter to submit, so a marker command is typed into the live sibling first.
+fm_backend_tmux_send_literal "$send_gone_wid" "printf 'GONEKEYLEAK-%s\\n' ARRIVED" \
+  || fail "could not type the unsubmitted marker command into the already-gone dotted send decoy pane"
+if fm_backend_tmux_send_key "$SEND_GONE_DOTTED" Enter 2>/dev/null; then
+  fail "fm_backend_tmux_send_key accepted the already-gone '$SEND_GONE_DOTTED' instead of refusing it"
+fi
+pass "real tmux: all four send primitives refuse an already-gone dotted recorded window rather than resolving it to a live sibling's pane"
+
+tmux send-keys -t "$send_gone_wid" C-u
+fm_backend_tmux_send_text_line "$SESSION:$SEND_GONE_LIVE" "printf 'sendgone-%s\\n' sentinel" named \
+  || fail "fm_backend_tmux_send_text_line refused the LIVE '$SESSION:$SEND_GONE_LIVE' under target-kind named; the guard must not block a resolvable recorded window"
+wait_for_capture_text "$send_gone_wid" "sendgone-sentinel" \
+  || fail "the named-kind sentinel never executed, so the misdelivery assertion below would prove nothing"
+send_gone_out=$(fm_backend_tmux_capture "$send_gone_wid" 200) \
+  || fail "fm_backend_tmux_capture failed for the already-gone dotted send decoy pane"
+case "$send_gone_out" in
+  *GONELINELEAK-ARRIVED*|*GONELITERALLEAK-ARRIVED*|*GONETEXTLEAK-ARRIVED*|*GONEKEYLEAK-ARRIVED*)
+    fail "input addressed to the already-gone '$SEND_GONE_DOTTED' was delivered into the live sibling '$SEND_GONE_LIVE'"$'\n'"$send_gone_out" ;;
+esac
+pass "real tmux: nothing addressed to an already-gone dotted recorded window ever lands in its same-pane-indexed live sibling"
+
+kill_window_id "$send_gone_wid"
+
+# --- target-kind `general`: pane-qualified delivery must keep working --------
+# The other side of the same boundary, and the one that must NOT regress. An
+# operator-declared FM_SUPERVISOR_TARGET ("firstmate:0.1") legitimately
+# addresses pane N of window W, and it is how the away-mode escalation channel
+# reaches the Admiral. `named` is the default precisely because it refuses that
+# reading, so bin/fm-supervise-daemon.sh opts in to `general` explicitly - and
+# this asserts the whole chain that path uses, including the dispatcher's
+# argument positions, by sending through fm_backend_send_text_submit exactly as
+# the injector does and checking the bytes land in the ADDRESSED pane and not
+# its sibling.
+PANEGEN_WINDOW="fm-panegen"
+panegen_wid=$(fm_backend_tmux_create_task "$SESSION" "$PANEGEN_WINDOW" "$HOME") \
+  || fail "could not create the pane-qualified general-kind window"
+tmux split-window -t "$panegen_wid" || fail "could not split a second pane for the general-kind check"
+panegen_first_pid=$(tmux list-panes -t "$panegen_wid" -F '#{pane_id}' | head -1)
+panegen_target_idx=$(tmux list-panes -t "$panegen_wid" -F '#{pane_index}' | tail -1)
+panegen_target_pid=$(tmux list-panes -t "$panegen_wid" -F '#{pane_id}' | tail -1)
+[ -n "$panegen_first_pid" ] && [ -n "$panegen_target_idx" ] && [ -n "$panegen_target_pid" ] \
+  || fail "could not read the general-kind window's pane index/ids"
+[ "$panegen_first_pid" != "$panegen_target_pid" ] \
+  || fail "the general-kind fixture needs two distinct panes to prove delivery landed in the addressed one"
+PANEGEN_TARGET="$SESSION:$PANEGEN_WINDOW.$panegen_target_idx"
+
+PANEGEN_READY=false
+for _ in $(seq 1 100); do
+  tmux send-keys -t "$panegen_target_pid" C-c
+  tmux send-keys -t "$panegen_target_pid" -l "printf 'panegen-%s\\n' ready"
+  tmux send-keys -t "$panegen_target_pid" Enter
+  if wait_for_capture_text "$panegen_target_pid" "panegen-ready" 10; then
+    PANEGEN_READY=true
+    break
+  fi
+done
+[ "$PANEGEN_READY" = true ] || fail "the pane-qualified general-kind shell never became ready"
+
+if fm_backend_tmux_send_text_line "$PANEGEN_TARGET" "printf 'panegen-%s\\n' refused" 2>/dev/null; then
+  fail "the default target-kind accepted the pane-qualified '$PANEGEN_TARGET'; the named kind must refuse a pane reading so that opting in to general is a real, explicit decision"
+fi
+pass "real tmux: a pane-qualified target is refused under the default target-kind, so the general kind is an explicit opt-in rather than an accident"
+
+fm_backend_tmux_send_text_line "$PANEGEN_TARGET" "printf 'panegen-%s\\n' vialine" general \
+  || fail "fm_backend_tmux_send_text_line refused the pane-qualified '$PANEGEN_TARGET' under target-kind general"
+wait_for_capture_text "$panegen_target_pid" "panegen-vialine" \
+  || fail "target-kind general did not deliver a line to the addressed pane '$PANEGEN_TARGET'"
+
+# The away-mode injector's exact call shape: through the generic dispatcher,
+# with an empty expected-label and an explicit `general` kind.
+panegen_verdict=$(fm_backend_send_text_submit tmux "$PANEGEN_TARGET" "printf 'panegen-%s\\n' viasubmit" 2 0.1 0.1 "" general) \
+  || fail "fm_backend_send_text_submit refused the pane-qualified '$PANEGEN_TARGET' under target-kind general (verdict '$panegen_verdict'); this is the away-mode escalation channel"
+[ "$panegen_verdict" != target-unresolved ] \
+  || fail "fm_backend_send_text_submit reported the live pane-qualified '$PANEGEN_TARGET' unresolved under target-kind general"
+wait_for_capture_text "$panegen_target_pid" "panegen-viasubmit" \
+  || fail "the away-mode dispatcher shape did not deliver to the addressed pane '$PANEGEN_TARGET'"
+
+tmux send-keys -t "$panegen_target_pid" -l "printf 'panegen-%s\\n' viakey"
+fm_backend_tmux_send_key "$PANEGEN_TARGET" Enter general \
+  || fail "fm_backend_tmux_send_key refused the pane-qualified '$PANEGEN_TARGET' under target-kind general"
+wait_for_capture_text "$panegen_target_pid" "panegen-viakey" \
+  || fail "target-kind general did not deliver a key to the addressed pane '$PANEGEN_TARGET'"
+
+panegen_other=$(fm_backend_tmux_capture "$panegen_first_pid" 200) \
+  || fail "fm_backend_tmux_capture failed for the general-kind window's other pane"
+case "$panegen_other" in
+  *panegen-vialine*|*panegen-viasubmit*|*panegen-viakey*)
+    fail "general-kind delivery addressed to pane $panegen_target_idx landed in the window's OTHER pane"$'\n'"$panegen_other" ;;
+esac
+pass "real tmux: target-kind general still delivers text, a submit through the away-mode dispatcher shape, and a key to an explicitly pane-qualified target, and only to that pane"
+
+kill_window_id "$panegen_wid"
+
+# --- fm_backend_tmux_send_text_line / fm_backend_tmux_send_literal: gated too -
+# These two were the last unpinned senders, used only by bin/fm-spawn.sh to
+# type setup commands and the harness launch command into a pane it just
+# created. Same shape as the send_key/send_text_submit refusal proofs above: a
+# destroyed session:window whose name is only a PREFIX of a live sibling must
+# not deliver into that sibling.
+LINE_DECOY_LIVE="fm-linedecoy-2"
+LINE_DECOY_DEAD="$SESSION:fm-linedecoy"
+line_decoy_wid=$(fm_backend_tmux_create_task "$SESSION" "$LINE_DECOY_LIVE" "$HOME") \
+  || fail "could not create the live decoy window for the send_text_line/send_literal refusal check"
+if tmux list-windows -t "=$SESSION" -F '#{window_name}' | grep -Fqx "fm-linedecoy"; then
+  fail "decoy fixture is invalid: the supposedly destroyed 'fm-linedecoy' window actually exists"
+fi
+
+LINE_DECOY_READY=false
+for _ in $(seq 1 100); do
+  tmux send-keys -t "$line_decoy_wid" C-c
+  tmux send-keys -t "$line_decoy_wid" -l "printf 'linedecoy-%s\\n' ready"
+  tmux send-keys -t "$line_decoy_wid" Enter
+  if wait_for_capture_text "$line_decoy_wid" "linedecoy-ready" 10; then
+    LINE_DECOY_READY=true
+    break
+  fi
+done
+[ "$LINE_DECOY_READY" = true ] || fail "the line/literal decoy shell never became ready"
+
+if fm_backend_tmux_send_text_line "$LINE_DECOY_DEAD" "printf 'LINELEAK-%s\\n' ARRIVED" 2>/dev/null; then
+  fail "fm_backend_tmux_send_text_line accepted '$LINE_DECOY_DEAD', a destroyed target whose name is only a prefix of the live '$LINE_DECOY_LIVE'"
+fi
+if fm_backend_tmux_send_literal "$LINE_DECOY_DEAD" "printf 'LITERALLEAK-%s\\n' ARRIVED" 2>/dev/null; then
+  fail "fm_backend_tmux_send_literal accepted '$LINE_DECOY_DEAD', a destroyed target whose name is only a prefix of the live '$LINE_DECOY_LIVE'"
+fi
+pass "real tmux: fm_backend_tmux_send_text_line and fm_backend_tmux_send_literal refuse a target that does not resolve exactly"
+
+tmux send-keys -t "$line_decoy_wid" C-c
+tmux send-keys -t "$line_decoy_wid" -l "printf 'linedecoy-%s\\n' sentinel"
+fm_backend_tmux_send_key "$line_decoy_wid" Enter \
+  || fail "fm_backend_tmux_send_key refused the LIVE line/literal decoy window id; the guard must not block a resolvable target"
+wait_for_capture_text "$line_decoy_wid" "linedecoy-sentinel" \
+  || fail "the line/literal decoy sentinel never executed, so the misdelivery assertion below would prove nothing"
+line_decoy_out=$(fm_backend_tmux_capture "$line_decoy_wid" 200) \
+  || fail "fm_backend_tmux_capture failed for the line/literal decoy pane"
+case "$line_decoy_out" in
+  *LINELEAK-ARRIVED*|*LITERALLEAK-ARRIVED*)
+    fail "text addressed to the destroyed '$LINE_DECOY_DEAD' was delivered into the live '$LINE_DECOY_LIVE' pane"$'\n'"$line_decoy_out" ;;
+esac
+pass "real tmux: a message addressed to a destroyed prefix-colliding target via send_text_line/send_literal never lands in the live sibling's pane"
+
+fm_backend_tmux_send_text_line "$SESSION:$LINE_DECOY_LIVE" "printf 'linedecoy-%s\\n' vialine" \
+  || fail "fm_backend_tmux_send_text_line refused the LIVE '$SESSION:$LINE_DECOY_LIVE'; the guard must not block a resolvable target"
+wait_for_capture_text "$line_decoy_wid" "linedecoy-vialine" \
+  || fail "fm_backend_tmux_send_text_line did not deliver to an exactly resolvable target"
+pass "real tmux: fm_backend_tmux_send_text_line still delivers to an exactly resolvable session:window target"
+
+kill_window_id "$line_decoy_wid"
 
 # --- kill and recovery-grade missing-window classification ------------------
 

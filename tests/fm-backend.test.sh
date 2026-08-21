@@ -649,7 +649,36 @@ case "${1:-}" in
       printf '╭────╮\n│    │\n╰────╯\n'
     fi
     exit 0 ;;
-  list-windows) exit 0 ;;
+  list-windows)
+    # A recorded-target send, the window kill and the agent-state read all
+    # resolve through an exact-NAME match: they ask `-t "=<session>"` for
+    # '#{window_id} #{window_name}' and compare only the NAME half before
+    # addressing the ID half. This stub's other answers model "the recorded
+    # task endpoints are live", so that is the inventory it reports here, and
+    # the synthetic @N id it pairs with each name is deliberately NOT the name,
+    # so a regression that addressed the name where the id belongs cannot pass
+    # by coincidence. Any other -F keeps the previous silent success.
+    fm_fake_ses=
+    fm_fake_prev=
+    fm_fake_fmt=name
+    for fm_fake_arg in "$@"; do
+      [ "$fm_fake_prev" = -t ] && fm_fake_ses=${fm_fake_arg#=}
+      fm_fake_prev=$fm_fake_arg
+      case "$fm_fake_arg" in *'#{window_id}'*) fm_fake_fmt=id ;; esac
+    done
+    [ "$fm_fake_fmt" = id ] || exit 0
+    fm_fake_ses=${fm_fake_ses%%:*}
+    fm_fake_n=0
+    for fm_fake_meta in "${FM_STATE_OVERRIDE:-${FM_HOME:-/nonexistent}/state}"/*.meta; do
+      [ -f "$fm_fake_meta" ] || continue
+      fm_fake_win=$(sed -n 's/^window=//p' "$fm_fake_meta" | head -1)
+      case "$fm_fake_win" in "$fm_fake_ses":*) ;; *) continue ;; esac
+      fm_fake_win=${fm_fake_win#*:}
+      case "$fm_fake_win" in *:*|'') continue ;; esac
+      fm_fake_n=$((fm_fake_n + 1))
+      printf '@%s %s\n' "$fm_fake_n" "$fm_fake_win"
+    done
+    exit 0 ;;
 esac
 exit 0
 SH
@@ -790,7 +819,46 @@ case "\${1:-}" in
   display-message)
     for a in "\$@"; do case "\$a" in *pane_current_path*) printf '%s\\n' "$wt"; exit 0 ;; esac; done
     printf 'firstmate\\n'; exit 0 ;;
-  list-windows) exit 0 ;;
+  list-windows)
+    # A recorded-target send, the window kill and the agent-state read all
+    # resolve through an exact-NAME match: they ask \`-t "=<session>"\` for
+    # '#{window_id} #{window_name}' and compare only the NAME half before
+    # addressing the ID half. This stub's other answers model "the recorded
+    # task endpoints are live", so that is the inventory it reports here, and
+    # the synthetic @N id it pairs with each name is deliberately NOT the name,
+    # so a regression that addressed the name where the id belongs cannot pass
+    # by coincidence. Any other -F keeps the previous silent success.
+    fm_fake_ses=
+    fm_fake_prev=
+    fm_fake_fmt=name
+    for fm_fake_arg in "\$@"; do
+      [ "\$fm_fake_prev" = -t ] && fm_fake_ses=\${fm_fake_arg#=}
+      fm_fake_prev=\$fm_fake_arg
+      case "\$fm_fake_arg" in *'#{window_id}'*) fm_fake_fmt=id ;; esac
+    done
+    [ "\$fm_fake_fmt" = id ] || exit 0
+    fm_fake_ses=\${fm_fake_ses%%:*}
+    fm_fake_n=0
+    for fm_fake_meta in "\${FM_STATE_OVERRIDE:-\${FM_HOME:-/nonexistent}/state}"/*.meta; do
+      [ -f "\$fm_fake_meta" ] || continue
+      fm_fake_win=\$(sed -n 's/^window=//p' "\$fm_fake_meta" | head -1)
+      case "\$fm_fake_win" in "\$fm_fake_ses":*) ;; *) continue ;; esac
+      fm_fake_win=\${fm_fake_win#*:}
+      case "\$fm_fake_win" in *:*|'') continue ;; esac
+      fm_fake_n=\$((fm_fake_n + 1))
+      printf '@%s %s\\n' "\$fm_fake_n" "\$fm_fake_win"
+    done
+    exit 0 ;;
+  new-window)
+    # Real tmux answers \`new-window -dP -F '#{window_id}'\` with the new
+    # window's id, which fm_backend_tmux_create_task captures as the rename-safe
+    # handle spawn-time typing then addresses. A stub that printed nothing left
+    # that handle empty, so spawn silently fell back to the name form for reads
+    # the id exists to make rename-proof.
+    for fm_fake_arg in "\$@"; do
+      case "\$fm_fake_arg" in -*P*) printf '@1\\n'; break ;; esac
+    done
+    exit 0 ;;
 esac
 exit 0
 SH
@@ -860,7 +928,46 @@ case "\${1:-}" in
       exit 0
     ;; esac; done
     printf 'firstmate\\n'; exit 0 ;;
-  list-windows) exit 0 ;;
+  list-windows)
+    # A recorded-target send, the window kill and the agent-state read all
+    # resolve through an exact-NAME match: they ask \`-t "=<session>"\` for
+    # '#{window_id} #{window_name}' and compare only the NAME half before
+    # addressing the ID half. This stub's other answers model "the recorded
+    # task endpoints are live", so that is the inventory it reports here, and
+    # the synthetic @N id it pairs with each name is deliberately NOT the name,
+    # so a regression that addressed the name where the id belongs cannot pass
+    # by coincidence. Any other -F keeps the previous silent success.
+    fm_fake_ses=
+    fm_fake_prev=
+    fm_fake_fmt=name
+    for fm_fake_arg in "\$@"; do
+      [ "\$fm_fake_prev" = -t ] && fm_fake_ses=\${fm_fake_arg#=}
+      fm_fake_prev=\$fm_fake_arg
+      case "\$fm_fake_arg" in *'#{window_id}'*) fm_fake_fmt=id ;; esac
+    done
+    [ "\$fm_fake_fmt" = id ] || exit 0
+    fm_fake_ses=\${fm_fake_ses%%:*}
+    fm_fake_n=0
+    for fm_fake_meta in "\${FM_STATE_OVERRIDE:-\${FM_HOME:-/nonexistent}/state}"/*.meta; do
+      [ -f "\$fm_fake_meta" ] || continue
+      fm_fake_win=\$(sed -n 's/^window=//p' "\$fm_fake_meta" | head -1)
+      case "\$fm_fake_win" in "\$fm_fake_ses":*) ;; *) continue ;; esac
+      fm_fake_win=\${fm_fake_win#*:}
+      case "\$fm_fake_win" in *:*|'') continue ;; esac
+      fm_fake_n=\$((fm_fake_n + 1))
+      printf '@%s %s\\n' "\$fm_fake_n" "\$fm_fake_win"
+    done
+    exit 0 ;;
+  new-window)
+    # Real tmux answers \`new-window -dP -F '#{window_id}'\` with the new
+    # window's id, which fm_backend_tmux_create_task captures as the rename-safe
+    # handle spawn-time typing then addresses. A stub that printed nothing left
+    # that handle empty, so spawn silently fell back to the name form for reads
+    # the id exists to make rename-proof.
+    for fm_fake_arg in "\$@"; do
+      case "\$fm_fake_arg" in -*P*) printf '@1\\n'; break ;; esac
+    done
+    exit 0 ;;
 esac
 exit 0
 SH
@@ -921,6 +1028,30 @@ make_teardown_fakebin() {  # <dir> -> echoes fakebin dir; logs tmux+treehouse ca
 #!/usr/bin/env bash
 set -u
 { printf 'tmux'; for a in "$@"; do printf '\x1f%s' "$a"; done; printf '\n'; } >> "${FM_TMUX_LOG:?}"
+# Model the one live window named by FM_TMUX_FAKE_WINDOW. The tmux adapter's
+# window kill resolves a recorded session:window through an exact-pinned
+# list-windows read and a byte-exact NAME comparison, so a fake that answers
+# every subcommand with silence leaves it nothing to match and the kill is
+# (correctly) skipped as already-gone. Real tmux answers the resolver's
+# '#{window_id} #{window_name}' listing with BOTH fields and the plain
+# '#{window_name}' inventory read with just the name; the resolver prints back
+# the id it read, so the id here is deliberately distinct from the name rather
+# than the name echoed twice.
+case "${1:-}" in
+  list-windows)
+    [ -n "${FM_TMUX_FAKE_WINDOW:-}" ] || exit 0
+    for a in "$@"; do
+      case "$a" in
+        *'#{window_id}'*)
+          printf '%s %s\n' "${FM_TMUX_FAKE_WINDOW_ID:-@1}" "$FM_TMUX_FAKE_WINDOW"
+          exit 0
+          ;;
+      esac
+    done
+    printf '%s\n' "$FM_TMUX_FAKE_WINDOW"
+    exit 0
+    ;;
+esac
 exit 0
 SH
   cat > "$fb/treehouse" <<'SH'
@@ -944,7 +1075,7 @@ run_teardown_case() {
   : > "$log"
   env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$fmroot" \
     FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
-    FM_TMUX_LOG="$log" \
+    FM_TMUX_LOG="$log" FM_TMUX_FAKE_WINDOW="fm-$id" FM_TMUX_FAKE_WINDOW_ID='@7' \
     "$script" "$id"
 }
 
@@ -1003,8 +1134,13 @@ test_teardown_conformance_old_vs_new() {
   # exact-selector contract belongs to the current script, asserted below.
   assert_contains "$(tr -d '=' < "$log_old")" "tmux"$'\x1f''kill-window'$'\x1f''-t'$'\x1f'"firstmate:fm-$id" \
     "legacy teardown fixture did not exercise tmux window cleanup for the task"
-  assert_contains "$(cat "$log_new")" "tmux"$'\x1f''kill-window'$'\x1f''-t'$'\x1f'"=firstmate:=fm-$id" \
-    "teardown did not call tmux kill-window with exact session and window selectors"
+  # @7 is the id the fake's session inventory carries for fm-<id>: the current
+  # adapter addresses the window with what its exact-NAME resolver read out of
+  # that listing, an address tmux cannot re-parse, rather than a
+  # `=session:=window` string whose trailing `.` tmux would split off as a pane
+  # specifier and aim at a sibling window.
+  assert_contains "$(cat "$log_new")" "tmux"$'\x1f''kill-window'$'\x1f''-t'$'\x1f''@7' \
+    "teardown did not call tmux kill-window with the exactly resolved recorded window"
 
   pass "fm-teardown.sh: treehouse return remains compatible while tmux cleanup uses exact selectors"
 }

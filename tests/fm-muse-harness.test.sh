@@ -75,8 +75,47 @@ case "${1:-}" in
     exit 0
     ;;
   display-message) printf 'firstmate\n'; exit 0 ;;
-  list-windows) exit 0 ;;
-  has-session|new-session|new-window|kill-window) exit 0 ;;
+  list-windows)
+    # A recorded-target send, the window kill and the agent-state read all
+    # resolve through an exact-NAME match: they ask `-t "=<session>"` for
+    # '#{window_id} #{window_name}' and compare only the NAME half before
+    # addressing the ID half. This stub's other answers model "the recorded
+    # task endpoints are live", so that is the inventory it reports here, and
+    # the synthetic @N id it pairs with each name is deliberately NOT the name,
+    # so a regression that addressed the name where the id belongs cannot pass
+    # by coincidence. Any other -F keeps the previous silent success.
+    fm_fake_ses=
+    fm_fake_prev=
+    fm_fake_fmt=name
+    for fm_fake_arg in "$@"; do
+      [ "$fm_fake_prev" = -t ] && fm_fake_ses=${fm_fake_arg#=}
+      fm_fake_prev=$fm_fake_arg
+      case "$fm_fake_arg" in *'#{window_id}'*) fm_fake_fmt=id ;; esac
+    done
+    [ "$fm_fake_fmt" = id ] || exit 0
+    fm_fake_ses=${fm_fake_ses%%:*}
+    fm_fake_n=0
+    for fm_fake_meta in "${FM_STATE_OVERRIDE:-${FM_HOME:-/nonexistent}/state}"/*.meta; do
+      [ -f "$fm_fake_meta" ] || continue
+      fm_fake_win=$(sed -n 's/^window=//p' "$fm_fake_meta" | head -1)
+      case "$fm_fake_win" in "$fm_fake_ses":*) ;; *) continue ;; esac
+      fm_fake_win=${fm_fake_win#*:}
+      case "$fm_fake_win" in *:*|'') continue ;; esac
+      fm_fake_n=$((fm_fake_n + 1))
+      printf '@%s %s\n' "$fm_fake_n" "$fm_fake_win"
+    done
+    exit 0 ;;
+  new-window)
+    # Real tmux answers `new-window -dP -F '#{window_id}'` with the new
+    # window's id, which fm_backend_tmux_create_task captures as the
+    # rename-safe handle spawn-time typing then addresses. A stub that
+    # printed nothing left that handle empty, so spawn silently fell back
+    # to the name form for reads the id exists to make rename-proof.
+    for fm_fake_arg in "$@"; do
+      case "$fm_fake_arg" in -*P*) printf '@1\n'; break ;; esac
+    done
+    exit 0 ;;
+  has-session|new-session|kill-window) exit 0 ;;
   send-keys)
     prev=
     for arg in "$@"; do
@@ -435,7 +474,36 @@ set -u
 case "${1:-}" in
   display-message) printf 'fakepane\n'; exit 0 ;;
   has-session) exit 0 ;;
-  list-panes|list-windows) printf 'fm-send:0\n'; exit 0 ;;
+  list-windows)
+    # The exact-NAME resolver behind a recorded-target send asks
+    # `-t "=<session>"` for '#{window_id} #{window_name}' and compares only the
+    # NAME half before addressing the ID half, so that format is answered from
+    # the recorded task inventory with a synthetic @N id that is deliberately
+    # NOT the name; every other -F keeps the bare-selector answer below.
+    fm_fake_ses=
+    fm_fake_prev=
+    fm_fake_fmt=name
+    for fm_fake_arg in "$@"; do
+      [ "$fm_fake_prev" = -t ] && fm_fake_ses=${fm_fake_arg#=}
+      fm_fake_prev=$fm_fake_arg
+      case "$fm_fake_arg" in *'#{window_id}'*) fm_fake_fmt=id ;; esac
+    done
+    if [ "$fm_fake_fmt" = id ]; then
+      fm_fake_ses=${fm_fake_ses%%:*}
+      fm_fake_n=0
+      for fm_fake_meta in "${FM_STATE_OVERRIDE:-${FM_HOME:-/nonexistent}/state}"/*.meta; do
+        [ -f "$fm_fake_meta" ] || continue
+        fm_fake_win=$(sed -n 's/^window=//p' "$fm_fake_meta" | head -1)
+        case "$fm_fake_win" in "$fm_fake_ses":*) ;; *) continue ;; esac
+        fm_fake_win=${fm_fake_win#*:}
+        case "$fm_fake_win" in *:*|'') continue ;; esac
+        fm_fake_n=$((fm_fake_n + 1))
+        printf '@%s %s\n' "$fm_fake_n" "$fm_fake_win"
+      done
+      exit 0
+    fi
+    printf 'fm-send:0\n'; exit 0 ;;
+  list-panes) printf 'fm-send:0\n'; exit 0 ;;
   send-keys)
     shift
     printf '%s\n' "$*" >> "$FM_FAKE_KEY_LOG"
@@ -504,7 +572,10 @@ $rec
 EOF
   keylog="$case_dir/keys.log"
   : > "$keylog"
-  out=$(FM_FAKE_KEY_FAIL='-t =fm-send:=0 C-u' run_send_key "$home" "$fakebin" "$id" Escape "$keylog")
+  # @1 is the id the fake's session inventory carries for the recorded window:
+  # a send to a recorded task resolves by exact NAME and then addresses the id
+  # that listing carried, never a re-derived target string tmux would re-parse.
+  out=$(FM_FAKE_KEY_FAIL='-t @1 C-u' run_send_key "$home" "$fakebin" "$id" Escape "$keylog")
   status=$?
   [ "$status" -ne 0 ] || fail "a failed muse composer clear was reported as success"
   assert_contains "$out" "could not be cleared" "the failed clear did not explain the pane state"
