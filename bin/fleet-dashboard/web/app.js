@@ -495,6 +495,11 @@ function Overlay({ task, allTasks, onClose, onPatch, onStatus, onAddNote, onTogg
 
 function AuditSection({ auditStatus, onSetInterval, tasks, onGoToCard, onForceAudit, forcing }) {
   const [intervalDraft, setIntervalDraft] = useState("");
+  // The "Clean - nothing caught" tile below reads lastRun.discrepancies_found
+  // alone, never `log`: a still-outstanding finding that collapsed into its
+  // existing row (store.py's record_audit_finding) adds no entry to the log
+  // that sweep, so deriving the verdict from the log would render a condition
+  // that is still standing as resolved.
   const lastRun = auditStatus?.last_run;
   const log = auditStatus?.log || [];
   const lock = auditStatus?.sweep_lock;
