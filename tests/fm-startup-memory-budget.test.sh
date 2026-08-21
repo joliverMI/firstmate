@@ -59,6 +59,30 @@ SH
 #!/usr/bin/env bash
 [ -z "${FM_FAKE_TMUX_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
 case "$*" in
+  list-windows*'#{window_id}'*)
+    # A send to a recorded `<session>:<window>` resolves through an exact-NAME
+    # match: it asks `-t "=<session>"` for '#{window_id} #{window_name}',
+    # compares only the NAME half, and then addresses the ID half. This stub's
+    # other answers model "the recorded task endpoints are live", so that is
+    # the inventory reported here; the synthetic @N id paired with each name is
+    # deliberately not the name, so an id/name mix-up cannot pass by accident.
+    fm_fake_ses=
+    fm_fake_prev=
+    for fm_fake_arg in "$@"; do
+      [ "$fm_fake_prev" = -t ] && fm_fake_ses=${fm_fake_arg#=}
+      fm_fake_prev=$fm_fake_arg
+    done
+    fm_fake_ses=${fm_fake_ses%%:*}
+    fm_fake_n=0
+    for fm_fake_meta in "${FM_STATE_OVERRIDE:-${FM_HOME:-/nonexistent}/state}"/*.meta; do
+      [ -f "$fm_fake_meta" ] || continue
+      fm_fake_win=$(sed -n 's/^window=//p' "$fm_fake_meta" | head -1)
+      case "$fm_fake_win" in "$fm_fake_ses":*) ;; *) continue ;; esac
+      fm_fake_n=$((fm_fake_n + 1))
+      printf '@%s %s\n' "$fm_fake_n" "${fm_fake_win#*:}"
+    done
+    exit 0
+    ;;
   *display-message*'#{pane_current_command}'*) printf '%s\n' codex ;;
   *display-message*'#{pane_id}'*) printf '%s\n' '%1' ;;
   *display-message*'#{cursor_y}'*) printf '%s\n' 0 ;;

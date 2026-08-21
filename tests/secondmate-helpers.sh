@@ -53,21 +53,18 @@ case "${1:-}" in
     # several a destructive call picked. With it unset the inventory is the
     # recorded task windows in the effective state dir, which is the same
     # "the addressed endpoint is live" world this stub's pane answers model.
+    #
+    # An entry that names its session is only in the inventory of THAT session,
+    # because the whole point of the exact resolver is that `-t "=<session>"`
+    # scopes the listing: a fake that answered a foreign session's window to
+    # every -t would report the resolver as picking a window it never can. A
+    # bare entry declares no session and answers whichever one is asked. Ids are
+    # numbered over the WHOLE declared inventory BEFORE that filter, so each
+    # window keeps one stable, session-independent @N a case can assert on.
     win_fmt=name
     for a in "$@"; do case "$a" in *'#{window_id}'*) win_fmt=id ;; esac; done
     if [ "$win_fmt" = name ]; then
       [ -n "${FM_FAKE_TMUX_WINDOW:-}" ] && printf '%s\n' "$FM_FAKE_TMUX_WINDOW"
-      exit 0
-    fi
-    n=0
-    if [ -n "${FM_FAKE_TMUX_WINDOW:-}" ]; then
-      while IFS= read -r w; do
-        [ -n "$w" ] || continue
-        n=$((n + 1))
-        printf '@%s %s\n' "$n" "${w##*:}"
-      done <<EOF
-$FM_FAKE_TMUX_WINDOW
-EOF
       exit 0
     fi
     ses=
@@ -77,6 +74,20 @@ EOF
       prev=$a
     done
     ses=${ses%%:*}
+    n=0
+    if [ -n "${FM_FAKE_TMUX_WINDOW:-}" ]; then
+      while IFS= read -r w; do
+        [ -n "$w" ] || continue
+        n=$((n + 1))
+        case "$w" in
+          *:*) [ -z "$ses" ] || [ "${w%%:*}" = "$ses" ] || continue ;;
+        esac
+        printf '@%s %s\n' "$n" "${w##*:}"
+      done <<EOF
+$FM_FAKE_TMUX_WINDOW
+EOF
+      exit 0
+    fi
     for m in "${FM_STATE_OVERRIDE:-${FM_HOME:-/nonexistent}/state}"/*.meta; do
       [ -f "$m" ] || continue
       w=$(sed -n 's/^window=//p' "$m" | head -1)
