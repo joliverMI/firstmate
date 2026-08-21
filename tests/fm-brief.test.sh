@@ -752,7 +752,7 @@ test_direct_pr_create_command_names_its_own_origin() {
   brief="$home/data/$id/brief.md"
   assert_present "$brief" "brief was not scaffolded"
   # shellcheck disable=SC2016 # The sed script is literal; nothing here should expand.
-  cmd=$(sed -n 's/.*`\(OWNER_REPO=[^`]*\)`.*/\1/p' "$brief" | head -n1)
+  cmd=$(sed -n 's/.*`\(set -- --title[^`]*\)`.*/\1/p' "$brief" | head -n1)
   [ -n "$cmd" ] \
     || fail "the direct-PR brief must emit one command that names the destination and creates the PR"
   repo="$TMP_ROOT/direct-pr-fork"
@@ -783,10 +783,47 @@ SH
   pass "fm-brief.sh: the direct-PR create command names the checkout's own origin as --repo"
 }
 
+# gh's fork-parent default is a GitHub behaviour, so a GitLab or self-hosted
+# project was never exposed to it. The emitted command must therefore still
+# open the PR there, exactly as it did before this destination work existed -
+# a guard that blocks where the hazard cannot reach buys nothing and costs the
+# whole delivery mode.
+test_direct_pr_create_command_still_ships_a_non_github_project() {
+  local home id brief cmd repo fakebin recorded code
+  home="$TMP_ROOT/direct-pr-non-github-home"
+  mkdir -p "$home/data"
+  id="brief-direct-dest-b2"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "brief was not scaffolded"
+  # shellcheck disable=SC2016 # The sed script is literal; nothing here should expand.
+  cmd=$(sed -n 's/.*`\(set -- --title[^`]*\)`.*/\1/p' "$brief" | head -n1)
+  [ -n "$cmd" ] || fail "the direct-PR brief must emit one runnable create command"
+  repo="$TMP_ROOT/direct-pr-gitlab"
+  fakebin="$TMP_ROOT/direct-pr-gitlab-fakebin"
+  mkdir -p "$repo" "$fakebin"
+  git -C "$repo" init -q
+  git -C "$repo" remote add origin https://gitlab.com/owner/repo.git
+  cat > "$fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > ./gh-axi-args
+SH
+  chmod +x "$fakebin/gh-axi"
+  ( cd "$repo" && PATH="$fakebin:$PATH" bash -c "$cmd" ) >/dev/null 2>&1
+  code=$?
+  expect_code 0 "$code" "a non-GitHub project must still be able to open its pull request"
+  assert_present "$repo/gh-axi-args" "the create call must still run for a non-GitHub project"
+  recorded=$(cat "$repo/gh-axi-args")
+  assert_not_contains "$recorded" "--repo" \
+    "there is no GitHub destination to override on a non-GitHub project"
+  pass "fm-brief.sh: the direct-PR create command still ships a project the hazard cannot reach"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_no_mistakes_setup_guard_path_resolves_outside_firstmate
 test_direct_pr_create_command_names_its_own_origin
+test_direct_pr_create_command_still_ships_a_non_github_project
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
 test_ship_mode_is_required_and_closed_set

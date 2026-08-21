@@ -939,6 +939,10 @@ families_for_changed_path() {
       printf '%s\n' pure-contract-unit
       printf '%s\n' secondmate
       ;;
+    bin/fm-pr-destination-guard.sh|bin/fm-pr-lib.sh)
+      printf '%s\n' pr-forge
+      printf '%s\n' pure-contract-unit
+      ;;
     bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-review-diff.sh|\
     bin/fm-x-*|bin/fm-check*)
       printf '%s\n' pr-forge

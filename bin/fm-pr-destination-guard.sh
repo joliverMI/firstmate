@@ -38,6 +38,14 @@
 # into every refusal, because that diagnostic is what a blocked crewmate
 # records and what an operator recovers from.
 #
+# One authority decides both "is this GitHub?" and "which repository?": the
+# parse in fm_pr_github_remote_owner_repo. A second, independent scope test
+# (a substring glob over the URL, say) can disagree with it, and every
+# disagreement is either a task blocked on a correctly configured project or a
+# hazard skipped on a real one. So the parse runs first; a URL it cannot name
+# refuses only when its HOST is a GitHub host, and is otherwise a forge the
+# fork-parent hazard cannot reach.
+#
 # --print-destination is the machine-readable half of the same determination,
 # for a caller that must NAME the destination rather than pin it - a direct-PR
 # task, which never runs no-mistakes and so never has a pin to rely on. It
@@ -54,12 +62,16 @@
 #         repository (or, without --print-destination, origin is not GitHub so
 #         this guard's fork-parent default does not apply). With
 #         --print-destination, that repository is on stdout.
-# Exit 1: origin is missing or unparseable, the gate cannot be discovered, or
-#         the destination could not be read back and confirmed to name this
-#         project's own repository. With --print-destination, a non-GitHub
-#         origin also refuses, because no GitHub destination can be named for
-#         it. Never silently proceeds.
+# Exit 1: origin is missing, or its host is GitHub but the repository could not
+#         be named, or the gate cannot be discovered, or the destination could
+#         not be read back and confirmed to name this project's own repository.
+#         Never silently proceeds.
 # Exit 2: the arguments themselves are wrong.
+# Exit 3: --print-destination only - origin is not on a GitHub host, so no
+#         GitHub destination exists to name and gh's fork-parent default cannot
+#         apply. Distinct from exit 1 so a caller can carry on unprotected
+#         where there is nothing to protect against, rather than treating a
+#         GitLab project as a blocked one.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -83,25 +95,21 @@ if [ -z "$ORIGIN_URL" ]; then
   exit 1
 fi
 
-case "$ORIGIN_URL" in
-  *github.com*) ;;
-  *)
-    if [ "$MODE" = print ]; then
-      echo "error: $DIR's origin is not on github.com; no GitHub pull-request destination can be named for it" >&2
-      exit 1
-    fi
-    echo "skip: $DIR's origin is not on github.com; gh's fork-parent default this guard closes is GitHub-specific"
-    exit 0
-    ;;
-esac
-
 # The project checkout's own origin is the single source of truth for where this
 # project's pull requests belong. The gate is checked against this same value,
 # not against its own origin: a gate whose origin drifted to the fork parent
 # would otherwise verify happily against itself.
 if ! fm_pr_github_remote_owner_repo "$ORIGIN_URL"; then
-  echo "error: $DIR's origin ($(fm_pr_redact_remote_url "$ORIGIN_URL")) is on github.com but names no owner/repository; the pull-request destination cannot be verified" >&2
-  exit 1
+  if fm_pr_github_host "$FM_PR_REMOTE_HOST"; then
+    echo "error: $DIR's origin ($(fm_pr_redact_remote_url "$ORIGIN_URL")) is on a GitHub host but names no owner/repository; the pull-request destination cannot be verified" >&2
+    exit 1
+  fi
+  if [ "$MODE" = print ]; then
+    echo "note: $DIR's origin is not on a GitHub host; gh's fork-parent default cannot apply to it and there is no GitHub destination to name" >&2
+    exit 3
+  fi
+  echo "skip: $DIR's origin is not on a GitHub host; gh's fork-parent default this guard closes is GitHub-specific"
+  exit 0
 fi
 EXPECTED="$FM_PR_REMOTE_OWNER/$FM_PR_REMOTE_REPO"
 

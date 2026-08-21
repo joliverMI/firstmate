@@ -26,6 +26,7 @@ FM_PR_REPO=
 FM_PR_NUMBER=
 FM_PR_REMOTE_OWNER=
 FM_PR_REMOTE_REPO=
+FM_PR_REMOTE_HOST=
 FM_PR_DATA_PROVIDER=
 FM_PR_DATA_URL=
 FM_PR_DATA_HOST=
@@ -217,6 +218,21 @@ fm_pr_lower() {
   printf '%s' "${1-}" | tr '[:upper:]' '[:lower:]'
 }
 
+# fm_pr_github_host <host>: 0 when <host> is a GitHub host for pull-request
+# purposes. github.com and GitHub's documented ssh.github.com:443 endpoint are
+# the same repository namespace. A "github.com-<suffix>" or
+# "ssh.github.com-<suffix>" host is an ~/.ssh/config Host alias - the standard
+# way to hold several GitHub accounts on one machine - and resolves to GitHub
+# for the user who configured it, so it is GitHub here too. The "-" is what
+# keeps that narrow: a genuinely different domain such as
+# github.com.example.invalid is dot-separated and does not match.
+fm_pr_github_host() {
+  case "$(fm_pr_lower "${1-}")" in
+    github.com|ssh.github.com|github.com-*|ssh.github.com-*) return 0 ;;
+  esac
+  return 1
+}
+
 # fm_pr_redact_remote_url <git-remote-url>: the same URL with any userinfo
 # replaced by "***". A remote can legitimately carry a credential
 # (https://x-access-token:<token>@github.com/owner/repo.git is the standard
@@ -255,38 +271,44 @@ fm_pr_redact_remote_url() {
 # wider no-forge-allowlist question): the https/http/ssh/git scheme forms and
 # the scp-style [user@]host:path form, each with optional userinfo, an optional
 # port, an optional leading slash on an scp-style path, and an optional
-# trailing slash and .git. GitHub's documented ssh.github.com:443 endpoint is
-# the same host for this purpose. Refusing a
-# legitimate form here blocks every task on that project, so the host - never
-# the spelling of the URL - is what decides.
+# trailing slash and .git. Refusing a legitimate form here blocks every task on
+# that project, so the host - never the spelling of the URL - is what decides.
+#
+# FM_PR_REMOTE_HOST is set to the parsed host as soon as the authority is
+# readable - before the path is examined, and so on the failure return too. That is what lets a caller tell "this
+# is not GitHub, so the fork-parent hazard cannot reach it" apart from "this is
+# GitHub and I could not name it", without asking the question a second way and
+# risking a different answer. See fm_pr_github_host.
 fm_pr_github_remote_owner_repo() {
   local raw=${1-} stripped rest authority host path pattern
   local LC_ALL=C
   FM_PR_REMOTE_OWNER=
   FM_PR_REMOTE_REPO=
+  FM_PR_REMOTE_HOST=
   stripped=${raw%/}
   stripped=${stripped%.git}
   case "$stripped" in
     https://*|http://*|ssh://*|git://*)
       rest=${stripped#*://}
       authority=${rest%%/*}
-      [ "$authority" != "$rest" ] || return 1
-      path=${rest#*/}
+      if [ "$authority" = "$rest" ]; then
+        path=
+      else
+        path=${rest#*/}
+      fi
       ;;
     *:*)
       authority=${stripped%%:*}
       path=${stripped#*:}
       path=${path#/}
-      case "$path" in '') return 1 ;; esac
       ;;
     *) return 1 ;;
   esac
   host=${authority##*@}
   host=${host%%:*}
-  case "$(fm_pr_lower "$host")" in
-    github.com|ssh.github.com) ;;
-    *) return 1 ;;
-  esac
+  # shellcheck disable=SC2034
+  FM_PR_REMOTE_HOST=$(fm_pr_lower "$host")
+  fm_pr_github_host "$FM_PR_REMOTE_HOST" || return 1
   pattern='^([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9._-]+)$'
   [[ "$path" =~ $pattern ]] || return 1
   # Consumed by bin/fm-pr-check.sh, which compares this against a reported PR's

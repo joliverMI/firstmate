@@ -378,16 +378,15 @@ test_print_destination_names_the_origin_repository() {
 
 test_print_destination_prints_nothing_when_it_cannot_name_one() {
   local name proj stdout stderr code
-  for name in no-origin non-github unparseable; do
+  for name in no-origin unparseable; do
     case $name in
       no-origin) proj=$(new_print_case print-no-origin -) ;;
-      non-github) proj=$(new_print_case print-non-github https://gitlab.com/owner/repo.git) ;;
       unparseable) proj=$(new_print_case print-unparseable 'https://x-access-token:s3cr3tt0ken@github.com/') ;;
     esac
     stderr="$(dirname "$proj")/stderr"
     stdout=$(run_guard "$proj" "$(dirname "$proj")/fakebin" --print-destination 2>"$stderr")
     code=$?
-    [ "$code" -ne 0 ] || fail "$name must not exit 0 when no destination can be named"
+    [ "$code" = 1 ] || fail "$name must exit 1 - the hazard is real here and the destination is undetermined (got $code)"
     [ -z "$stdout" ] \
       || fail "$name printed '$stdout' on stdout; a caller would substitute that as a destination"
     [ -s "$stderr" ] || fail "$name must explain on stderr why no destination could be named"
@@ -395,6 +394,57 @@ test_print_destination_prints_nothing_when_it_cannot_name_one() {
       "$name must not publish an origin credential"
   done
   pass "guard --print-destination refuses with an empty stdout instead of naming a guess"
+}
+
+# "Not GitHub" and "GitHub but undetermined" are different answers with
+# different consequences: the fork-parent default is a gh behaviour on GitHub
+# forks, so a GitLab or self-hosted project was never exposed to it and must
+# not be blocked as though it were. Its caller distinguishes the two by exit
+# code, so the codes are the contract.
+test_a_non_github_origin_is_not_applicable_rather_than_blocked() {
+  local form proj out code n=0
+  for form in \
+    'https://gitlab.com/owner/repo.git' \
+    'https://gitlab.com/me/github.com-mirror.git' \
+    'git@git.example.invalid:owner/repo.git'; do
+    n=$((n + 1))
+    proj=$(new_print_case "not-applicable-$n" "$form")
+    out=$(run_guard "$proj" "$(dirname "$proj")/fakebin" --print-destination 2>/dev/null)
+    code=$?
+    [ "$code" = 3 ] \
+      || fail "origin $n is not on a GitHub host, so --print-destination must exit 3, not $code"
+    [ -z "$out" ] || fail "origin $n printed '$out'; there is no GitHub destination to name"
+    out=$(run_guard "$proj" "$(dirname "$proj")/fakebin" 2>&1)
+    code=$?
+    expect_code 0 "$code" "origin $n must be skipped, not refused, when pinning" "$out"
+    assert_contains "$out" "skip:" "origin $n must say it is out of scope rather than fail"
+  done
+  pass "guard treats a non-GitHub origin as out of scope, never as a blocked project"
+}
+
+# git@github.com-work:owner/repo.git is the ~/.ssh/config Host-alias pattern for
+# holding several GitHub accounts on one machine. It is this project's own
+# GitHub repository, so it must verify - refusing it would block every task on
+# the project, and skipping it would leave the fork-parent hazard wide open.
+test_an_ssh_host_alias_origin_is_this_projects_own_github_repository() {
+  local proj out code gate
+  proj=$(new_print_case alias-print 'git@github.com-work:joliverMI/firstmate.git')
+  out=$(run_guard "$proj" "$(dirname "$proj")/fakebin" --print-destination 2>/dev/null)
+  code=$?
+  expect_code 0 "$code" "an ssh-alias origin names this project's own repository" "$out"
+  [ "$out" = joliverMI/firstmate ] \
+    || fail "an ssh-alias origin printed '$out', not joliverMI/firstmate"
+
+  proj=$(new_stub_case alias-verify \
+    'git@github.com-work:joliverMI/firstmate.git' joliverMI/firstmate \
+    'git@github.com-work:joliverMI/firstmate.git' joliverMI/firstmate)
+  gate="$(dirname "$proj")/gate.git"
+  out=$(run_guard "$proj" "$(dirname "$proj")/fakebin" 2>&1)
+  code=$?
+  expect_code 0 "$code" "an ssh-alias origin must be pinned and verified, not skipped" "$out"
+  assert_present "$gate/.fake-gh-wrote" \
+    "an ssh-alias origin must still be pinned; skipping it would leave the hazard open"
+  pass "guard reads an ssh-alias GitHub origin as this project's own repository"
 }
 
 # A remote can legitimately carry a credential, and this guard's stderr is
@@ -450,3 +500,5 @@ test_accepts_every_legitimate_github_origin_form
 test_refusal_never_echoes_an_origin_credential
 test_print_destination_names_the_origin_repository
 test_print_destination_prints_nothing_when_it_cannot_name_one
+test_a_non_github_origin_is_not_applicable_rather_than_blocked
+test_an_ssh_host_alias_origin_is_this_projects_own_github_repository
