@@ -1764,6 +1764,11 @@ validate_spawn_worktree() {  # <source> <inspect-target>
     [ -n "$other_wt" ] || continue
     other_real=$(real_path_or_raw "$other_wt")
     if [ "$other_real" = "$wt_real" ]; then
+      # Nothing this spawn holds on the orca path is safely ours to reclaim
+      # here: the worktree is another task's, and the terminal the same
+      # suspect create call reported may be that task's too. Disarm the abort
+      # cleanup so refusing never destroys what it exists to protect.
+      ORCA_ABORT_CLEANUP=0
       echo "error: $source resolved to worktree '$WT', already recorded as task $other_id's own isolated copy; refusing to spawn $ID onto a copy another task may still be using. The isolated-copy pool may be exhausted (a hard cap, a stale lease, or a crashed holder can all look like room when there is none) - free it (inspect $other_id, then 'treehouse status') before retrying. Inspect target $inspect_target" >&2
       exit 1
     fi
