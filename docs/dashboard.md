@@ -100,6 +100,58 @@ That migration says what it changed rather than running silently: on the startup
 Reload any board page that was already open when the upgraded server started: a phone tab still holding the pre-split frontend renders a migrated card with a bare `review` pill and no Mark Complete button until it is refreshed - non-destructive and self-clearing on reload, which is why this is an operational step rather than a cache-busting surface on the board.
 `testing` on its own is no longer inert: the fleet auditor's sweep now corroborates it against live crew state exactly like `working`, so a `testing` card nothing is actually exercising is a discrepancy the same way a stale `working` card is.
 
+## The needs-attention reason guard
+
+A card that reaches `needs-attention` with no stated ask, or with a reason that is really only a progress report, spends the Admiral's attention for nothing and teaches him that the loudest status on the board does not always mean him - the same failure that already made one always-red marker into noise he learned to skip.
+Two things are enforced server-side (`POST /api/tasks/{id}/status` and `POST /api/tasks` alike, both routed through `bin/fleet-dashboard/server/validation.py`), not left to an agent remembering to write good text:
+
+1. **A reason is required.** The API refuses to set `needs_attention` - whether on an existing card or a card created straight into that status - with an empty or missing `reason`, rather than substituting placeholder text.
+   `bin/fm-dashboard.sh status` and `add` both also refuse locally before making the call.
+   The page asks instead of failing: choosing `needs-attention` on a card opens a reason field, holds the confirm button disabled until it has text, and renders the server's own refusal next to the field if what was typed is rejected - so the Admiral's own route to this status can never end in a card set loud with nothing to act on.
+2. **An obviously report-shaped reason is refused.** The reason is rejected if one of a small fixed list of report-shaped phrases (`REPORT_SHAPED_PHRASES` in `validation.py` - things like "being chased", "in progress", "investigating", "working on") sits at an *edge* of the text: it opens or closes either the leading clause or the trailing clause, ignoring a short fixed list of hedges at that edge - a leading "still"/"currently"/"we"/"I", or a trailing "now"/"it".
+   Clause edges rather than only the very start, because the motivating failure was a reason of the form "*You reported flares not changing the lights - being chased now*" - a status update tacked onto the end of a sentence, not one that opens with the report phrase.
+   Clause edges rather than *anywhere in the text*, because a phrase buried mid-clause is almost always an ordinary noun inside a real ask: "*approve the $400 monitoring subscription renewal*", "*pick which contractor keeps working on the deck*", "*approve the invoice for the in progress work*" are each something he has to do, and refusing them would leave the card silently stuck in `working` with the Admiral never asked - the exact inverse of the failure this guard exists to prevent.
+
+### What this guard is, and what it is deliberately not
+
+**The phrase list is not the thing protecting this status, and it is not meant to become that thing.**
+It is a cheap catch for one specific careless move - a report phrase tacked onto, or opening, an otherwise ordinary sentence, exactly as in the "*being chased now*" reason that motivated all of this.
+The two things that actually protect `needs-attention` are (a) requiring a reason at all, which is structural and cannot be dodged by phrasing, and (b) the fleet auditor's judgment of whether the stated ask is genuine, which is the only check that can answer "would he actually DO something about this."
+A substring-and-edge matcher structurally cannot answer that question, so no amount of extending the phrase list or the hedge list would turn it into the real protection.
+
+This matters because the obvious next move on reading the misses below is to add more phrases and more hedges. That was tried and reverted, and the reason it was reverted is the point:
+
+> Widening the leading-hedge list to the English copulas ("is", "are", "was", "were") did catch "*We are investigating the checkout timeout*". It also started refusing genuine asks phrased as questions - "*Is monitoring the pool worth $80 a month?*", "*Was looking into the second quote worth the delay?*", "*Is working on Saturday ok with you?*" - because a question naturally opens on a copula, and the report phrase then sits immediately behind it.
+
+Refusing a real ask is the more expensive failure of the two. A missed report costs the Admiral one glance at a card that turns out not to need him; a refused ask leaves the card sitting in `working` and never reaches him at all, which is the exact inverse of the failure this guard exists to prevent. So the guard stays narrow on purpose, and the misses below are **accepted, recorded outcomes - not oversights and not a backlog**.
+
+### Measured rates
+
+The three corpora below are executed on every run by `tests/fm-dashboard.test.sh` (`test_documented_guard_rates_still_hold`), which asserts these exact counts, so narrowing or extending `REPORT_SHAPED_PHRASES` cannot quietly make the numbers here false.
+
+- Against **15** realistic report-shaped reasons built from `REPORT_SHAPED_PHRASES` ("Still investigating the checkout timeout", "Migration is in progress", "Rebuild kicked off - update to follow", "Monitoring the alert queue overnight", the "being chased" example above, and similar), it caught **all 15**.
+- Against **18** report-shaped reasons the list was never meant to reach, it caught **none** - a 100% miss rate, and the expected shape of its blind spot: it recognizes specific report vocabulary at a clause edge, not the general concept of "this is a report." Three kinds sit in this one class, all accepted:
+  - **Reworded to avoid every listed phrase**: "No change since last time", "Still on it", "Checked again, same result", "Reproduced it, cause unclear", "Nothing new to report".
+  - **A subject and a verb in front of the phrase**, whether the subject is first-person, a contraction, or a noun: "We are investigating the checkout timeout", "I was digging into the bounced payouts", "It's still chasing the supplier", "The team is looking into the failed backup", "The crew was investigating the leak". Catching these means stripping copulas at the clause edge, which is what broke the question-form asks above.
+  - **A listed phrase used bare, without the determiner the list entry carries**: "Monitoring disk usage", "Still monitoring disk usage" pass, while "Monitoring the alert queue overnight" and "Monitoring it now" are caught. `REPORT_SHAPED_PHRASES` holds "monitoring the" and "monitoring it" rather than bare "monitoring" precisely so that "*approve the $400 monitoring subscription renewal*" is not refused; the determiner is what separates the report use from the noun use, and the bare form is the price of that.
+- Against **14** genuine asks - the usual ones ("Pick red or blue for the trim", "Approve the $400 hosting renewal", "Confirm the domain transfer by Friday"), the three that name a report word mid-sentence ("Approve the $400 monitoring subscription renewal", "Pick which contractor keeps working on the deck", "Approve the invoice for the in progress work"), and two phrased as questions opening on a copula ("Is monitoring the pool worth $80 a month?", "Was looking into the second quote worth the delay?") - it produced **zero** false positives.
+
+Zero false positives is a measurement of that corpus, not a guarantee: a genuine ask that *opens or closes* a clause on one of these phrases is still refused ("*Approve overtime for the crew - two jobs still in progress*"). That residual is deliberate - it is the same edge position the guard reads as a report, and the rejection names the matched phrase so it can be reworded - but it is a real cost, not a zero one.
+What the guard buys is catching the plainest, most common form of carelessness - a progress update dropped straight into the field using ordinary report language - for a very small cost to real asks, not comprehension of every way a reason can fail to be one.
+
+**This guard does not replace the fleet auditor's judgment, and the auditor's judgment does not replace this guard.**
+The server checks words; the auditor checks whether the ask is real.
+The auditor's sweep separately reads every `needs-attention` card's reason and judges it against "what would he DO" - if the honest answer is "read it" or "know it," it is a discrepancy regardless of whether it happens to dodge the fixed phrase list (see the [`fleet-dashboard`](../.agents/skills/fleet-dashboard/SKILL.md) skill, fleet auditor's sweep, step 5).
+Retiring either check on the assumption the other one covers it would reopen the exact gap this section exists to close.
+
+Existing `needs-attention` cards set before this guard existed are not migrated or rewritten - the guard governs what can be set from now on, not what already sits on the board.
+
+One further gap, recorded rather than fixed here: **a status-change reason is only ever persisted and shown for `waiting` and `needs-attention`.**
+Those are the two statuses with a reason column (`waiting_reason`, `needs_attention_reason`).
+Passing `--reason` to `bin/fm-dashboard.sh status <id> working|paused|testing|complete` exits 0 and records the text only as a status-history note, which neither the `status` subcommand nor `show` ever surfaces - so it is written somewhere nobody reads.
+That is pre-existing behaviour this task deliberately did not change; it is named here so it is a known gap rather than a surprise.
+What this task did do is stop `add` from adding a second way into the same hole: `add --reason` is refused outright for any status but `needs-attention`, and the refusal only points at the `status` subcommand when the status given is one that genuinely stores a reason there.
+
 ## Link policy (standing order 17)
 
 `bin/fm-dashboard.sh link` and the underlying `POST /api/tasks/{id}/notes` endpoint reject, structurally, any link whose host contains `github`, any link that is not a full `http(s)://` URL, and any link whose host is local-only and will not resolve from the Admiral's phone (`bin/fleet-dashboard/server/validation.py`).
