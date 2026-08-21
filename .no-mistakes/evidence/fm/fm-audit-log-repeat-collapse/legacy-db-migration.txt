@@ -1,0 +1,19 @@
+legacy audit_log DDL taken from commit 5a53eee:
+  CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT,
+    kind TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+after migration, the two legacy rows:
+   {'id': 1, 'task_id': 'old-card', 'text': 'a finding logged before this change existed', 'key': None, 'occurrences': 1, 'created_at': '2026-08-01T09:00:00Z', 'last_seen_at': '2026-08-01T09:00:00Z'}
+   {'id': 2, 'task_id': 'old-card', 'text': 'a second pre-existing finding', 'key': None, 'occurrences': 1, 'created_at': '2026-08-02T09:00:00Z', 'last_seen_at': '2026-08-02T09:00:00Z'}
+  -> last_seen_at backfilled from each row's OWN created_at; key NULL; occurrences 1
+after two new keyed writes on the same card:
+   {'text': 'a finding logged before this change existed', 'key': None, 'occurrences': 1}
+   {'text': 'a second pre-existing finding', 'key': None, 'occurrences': 1}
+   {'text': 'a new keyed finding', 'key': 'live-crew:working', 'occurrences': 2}
+  -> legacy un-keyed rows untouched; the new keyed finding collapsed into one row (occurrences 2)
+  -> un-keyed writes still append (2 legacy + 2 new = 4 un-keyed rows): no silent behavior change
+MIGRATION CHECK: PASS
