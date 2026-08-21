@@ -15,6 +15,7 @@ command -v curl >/dev/null 2>&1 || { pass "skipped - curl not available"; exit 0
 DASH="$ROOT/bin/fm-dashboard.sh"
 SERVER_PID=""
 MIGRATION_SERVER_PID=""
+PORT_HOLDER_PID=""
 
 # bin/fm-dashboard.sh starts the server with `nohup ... &` and exits, so the
 # process is orphaned and never a child of this shell: `wait` on its pid returns
@@ -39,6 +40,7 @@ stop_dashboard_server() {  # <pid>
 fm_dashboard_test_cleanup() {
   stop_dashboard_server "$SERVER_PID"
   stop_dashboard_server "$MIGRATION_SERVER_PID"
+  [ -n "$PORT_HOLDER_PID" ] && kill "$PORT_HOLDER_PID" 2>/dev/null
   fm_test_cleanup
 }
 trap fm_dashboard_test_cleanup EXIT
@@ -430,6 +432,112 @@ PY
   pass "the testing-to-review split migration converts only pre-existing testing cards, and runs at most once"
 }
 
+# Guards the ordering contract between the one-time migration and the
+# listening socket, and the synchrony contract of `stop`. Both exist because
+# the live board is upgraded with `fm-dashboard.sh restart`: if `stop` returned
+# while the old server still held the port, the new server would commit the
+# irreversible migration and then die on EADDRINUSE, leaving the database
+# migrated while a pre-split server kept serving statuses it cannot render.
+test_a_start_that_cannot_bind_leaves_the_migration_pending() {
+  local blk_home blk_db blk_port blk_url holder_pid first_pid waited
+
+  blk_home="$FM_HOME/blocked-bind-case"
+  mkdir -p "$blk_home/state" "$blk_home/data"
+  blk_db="$blk_home/data/dashboard.db"
+
+  PYTHONPATH="$ROOT/bin/fleet-dashboard/server" python3 - "$blk_db" <<'PY' || fail "could not seed a pre-split database for the blocked-bind case"
+import sqlite3
+import sys
+
+import store
+
+conn = sqlite3.connect(sys.argv[1])
+conn.executescript(store.SCHEMA)
+conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES ('audit_interval_minutes', '15')")
+ts = "2020-02-03T04:05:06Z"
+conn.execute(
+    """INSERT INTO tasks (id, title, agent, captain, status, initial_prompt, created_at, updated_at)
+       VALUES ('blocked-bind-testing-1', 'Pre-split testing card', '', 'firstmate', 'testing', 'seed prompt', ?, ?)""",
+    (ts, ts),
+)
+conn.commit()
+conn.close()
+PY
+
+  blk_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()') \
+    || fail "could not allocate a port for the blocked-bind case"
+  blk_url="http://127.0.0.1:$blk_port"
+
+  # Stand in for the old server that has been signalled but has not let go of
+  # the port yet - the exact window a non-waiting `stop` leaves open.
+  python3 -c 'import socket, sys, time
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", int(sys.argv[1])))
+s.listen(8)
+time.sleep(600)' "$blk_port" &
+  holder_pid=$!
+  PORT_HOLDER_PID="$holder_pid"
+  waited=0
+  until python3 -c 'import socket, sys
+s = socket.socket()
+s.settimeout(1)
+try:
+    s.connect(("127.0.0.1", int(sys.argv[1])))
+except OSError:
+    raise SystemExit(1)
+s.close()' "$blk_port" 2>/dev/null; do
+    waited=$((waited + 1))
+    [ "$waited" -gt 100 ] && fail "the port holder never came up for the blocked-bind case"
+    sleep 0.05
+  done
+
+  if FM_HOME="$blk_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$blk_port" FM_DASHBOARD_DB="$blk_db" \
+      "$DASH" start >"$blk_home/blocked-start.out" 2>&1; then
+    fail "start reported success while another process already held the port"
+  fi
+
+  kill "$holder_pid" 2>/dev/null
+  wait "$holder_pid" 2>/dev/null || true
+  PORT_HOLDER_PID=""
+
+  # The blocked start must not have consumed the one-time migration: the card
+  # is still pre-split, so the first start that actually serves migrates it.
+  FM_HOME="$blk_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$blk_port" FM_DASHBOARD_DB="$blk_db" \
+    "$DASH" start >"$blk_home/start.out" 2>&1 \
+    || { cat "$blk_home/start.out" >&2; fail "blocked-bind-case server did not start once the port was free"; }
+  MIGRATION_SERVER_PID=$(cat "$blk_home/state/dashboard.pid" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after the blocked-bind-case server start"
+  first_pid="$MIGRATION_SERVER_PID"
+
+  assert_contains "$(FM_DASHBOARD_URL="$blk_url" "$DASH" show blocked-bind-testing-1)" "status:   review" \
+    "a start that could not bind consumed the one-time migration, so the card never reached review"
+  assert_contains "$(cat "$blk_home/state/dashboard.log")" "migrated 1 card(s) from testing to review" \
+    "the start that actually served did not report the migration the blocked start must have left pending"
+
+  # `stop` must not return until the process is really gone, or `restart`
+  # would hand the port to a new server the old one still owns.
+  FM_HOME="$blk_home" "$DASH" stop >"$blk_home/stop.out" 2>&1 \
+    || { cat "$blk_home/stop.out" >&2; fail "stop failed for the blocked-bind-case server"; }
+  MIGRATION_SERVER_PID=""
+  if kill -0 "$first_pid" 2>/dev/null; then
+    fail "stop returned while pid $first_pid was still running, so restart can overlap two servers"
+  fi
+
+  # ...which is exactly what makes an immediate re-start on the same port work.
+  FM_HOME="$blk_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$blk_port" FM_DASHBOARD_DB="$blk_db" \
+    "$DASH" start >"$blk_home/restart.out" 2>&1 \
+    || { cat "$blk_home/restart.out" >&2; fail "an immediate start after stop could not take the port back"; }
+  MIGRATION_SERVER_PID=$(cat "$blk_home/state/dashboard.pid" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after the immediate re-start"
+  assert_contains "$(FM_DASHBOARD_URL="$blk_url" "$DASH" show blocked-bind-testing-1)" "status:   review" \
+    "the card did not survive an immediate stop/start cycle as review"
+
+  stop_dashboard_server "$MIGRATION_SERVER_PID"
+  MIGRATION_SERVER_PID=""
+  pass "a start that cannot bind leaves the migration pending, and stop waits for the port"
+}
+
 test_health_and_server_status
 test_add_and_list_round_trip
 test_status_and_captain_and_title_updates
@@ -444,4 +552,5 @@ test_calls_are_bounded_against_a_board_that_never_answers
 test_zero_timeout_override_is_refused_like_any_other_unusable_one
 test_missing_id_and_unreachable_board_have_distinct_exit_codes
 test_testing_to_review_split_migration_runs_once
+test_a_start_that_cannot_bind_leaves_the_migration_pending
 test_star_and_delete

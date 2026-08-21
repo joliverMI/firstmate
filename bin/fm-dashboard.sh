@@ -503,6 +503,13 @@ cmd_server_stop() {
   local pid; pid=$(cat "$pf")
   kill -0 "$pid" 2>/dev/null || { rm -f "$pf"; die "recorded pid $pid is not running"; }
   kill "$pid"
+  local waited=0
+  while kill -0 "$pid" 2>/dev/null; do
+    waited=$((waited + 1))
+    [ "$waited" -eq 200 ] && kill -9 "$pid" 2>/dev/null
+    [ "$waited" -gt 300 ] && die "pid $pid did not exit - port still held, refusing to leave a stale pidfile"
+    sleep 0.05
+  done
   rm -f "$pf"
   printf 'stopped (pid %s)\n' "$pid"
 }

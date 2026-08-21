@@ -414,7 +414,12 @@ def serve(host: str, port: int, db_path: str) -> ThreadingHTTPServer:
     # server - use 127.0.0.1 in that case instead of the bind address.
     call_host = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
     SELF_URL = f"http://{call_host}:{port}"
-    store = Store(db_path)
-    handler = make_handler(store)
-    httpd = ThreadingHTTPServer((host, port), handler)
+    httpd = ThreadingHTTPServer((host, port), BaseHTTPRequestHandler, bind_and_activate=False)
+    try:
+        httpd.server_bind()
+        httpd.server_activate()
+        httpd.RequestHandlerClass = make_handler(Store(db_path))
+    except BaseException:
+        httpd.server_close()
+        raise
     return httpd

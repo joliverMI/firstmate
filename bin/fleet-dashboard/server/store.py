@@ -208,7 +208,7 @@ class Store:
                 ],
             )
         conn.execute(
-            "INSERT INTO settings(key, value) VALUES (?, '1')",
+            "INSERT OR IGNORE INTO settings(key, value) VALUES (?, '1')",
             (SETTING_TESTING_REVIEW_SPLIT_MIGRATED,),
         )
         return ids
