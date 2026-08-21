@@ -1735,7 +1735,7 @@ real_path_or_raw() {  # <path>
 # per-backend routing (fm_backend_resolve_selector).
 validate_spawn_worktree() {  # <source> <inspect-target>
   local source=$1 inspect_target=$2 wt_real proj_real wt_top wt_top_real
-  local other_meta other_id other_wt other_real
+  local other_meta other_id other_wt other_real other_backend other_target other_state
   wt_real=
   if ! wt_real=$(cd "$WT" 2>/dev/null && pwd -P); then
     wt_real=
@@ -1766,13 +1766,44 @@ validate_spawn_worktree() {  # <source> <inspect-target>
     [ -n "$other_wt" ] || continue
     other_real=$(real_path_or_raw "$other_wt")
     if [ "$other_real" = "$wt_real" ]; then
-      # Nothing this spawn holds on the orca path is safely ours to reclaim
-      # here: the worktree is another task's, and the terminal the same
-      # suspect create call reported may be that task's too. Disarm the abort
-      # cleanup so refusing never destroys what it exists to protect.
-      ORCA_ABORT_CLEANUP=0
-      echo "error: $source resolved to worktree '$WT', already recorded as task $other_id's own isolated copy; refusing to spawn $ID onto a copy another task may still be using. The isolated-copy pool may be exhausted (a hard cap, a stale lease, or a crashed holder can all look like room when there is none) - free it (inspect $other_id, then 'treehouse status') before retrying. Inspect target $inspect_target" >&2
-      exit 1
+      # A record claiming the worktree only blocks this spawn while its own
+      # endpoint could still be running. The liveness answer comes from the
+      # shared recovery-grade primitive (fm_backend_agent_alive in
+      # bin/fm-backend.sh), and ONLY a literal `dead` licenses reuse: `alive`,
+      # `unknown`, and any other answer refuse. `unknown` is what that
+      # primitive already returns for an unreadable record, an unverified or
+      # unimplemented backend, a remote endpoint it deliberately never probes
+      # locally, and any failed probe, so treating everything but `dead` as
+      # non-permitting covers all of them without special cases.
+      #
+      # Known dependency: fm_backend_agent_state/fm_backend_agent_alive is
+      # being corrected by a separate, concurrent task because it has reported
+      # some dead endpoints as alive. This check is correct under both the
+      # current and the corrected behavior - a false `alive` only ever costs an
+      # extra refusal, never a wrongful reuse.
+      #
+      # Known remaining case: a teardown that already returned the worktree to
+      # the pool but exited before removing its own record (the herdr
+      # endpoint-confirmation-ambiguous path is the clearest one) leaves a
+      # record whose endpoint reads ambiguous rather than dead, so this guard
+      # still refuses that genuinely free slot. Clearing `worktree=` at the
+      # moment fm-teardown.sh returns the worktree is the root fix and is filed
+      # as its own separate task, not folded in here.
+      other_backend=$(fm_backend_of_meta "$other_meta")
+      other_target=$(fm_backend_target_of_meta "$other_meta")
+      other_state=unknown
+      if [ -n "$other_target" ]; then
+        other_state=$(fm_backend_agent_alive "$other_backend" "$other_target" 2>/dev/null) || other_state=unknown
+      fi
+      [ "$other_state" = dead ] || {
+        # Nothing this spawn holds on the orca path is safely ours to reclaim
+        # here: the worktree is another task's, and the terminal the same
+        # suspect create call reported may be that task's too. Disarm the abort
+        # cleanup so refusing never destroys what it exists to protect.
+        ORCA_ABORT_CLEANUP=0
+        echo "error: $source resolved to worktree '$WT', already recorded as task $other_id's own isolated copy whose endpoint reads '${other_state:-unknown}' rather than a confirmed-dead one; refusing to spawn $ID onto a copy another task may still be using. The isolated-copy pool may be exhausted (a hard cap, a stale lease, or a crashed holder can all look like room when there is none) - free it (inspect $other_id, then 'treehouse status') before retrying. Inspect target $inspect_target" >&2
+        exit 1
+      }
     fi
   done
 }
