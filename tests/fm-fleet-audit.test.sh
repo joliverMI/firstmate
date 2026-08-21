@@ -63,6 +63,12 @@ not_started_finding_count_for() {  # <task_id>
     '[.log[] | select(.task_id==$t and .kind=="discrepancy" and (.text | startswith("still not_started, but")))] | length'
 }
 
+# Full rows (occurrences, last_seen_at, key) for one task's discrepancies -
+# what the general collapse-mechanism tests below inspect beyond mere count.
+discrepancy_rows_for() {  # <task_id>
+  audit_status_json | jq --arg t "$1" '[.log[] | select(.task_id==$t and .kind=="discrepancy")]'
+}
+
 test_claim_is_exclusive_and_release_frees_it() {
   "$DASH" audit-claim --json >"$FM_HOME/claim1.json" || fail "first claim failed"
   assert_contains "$(cat "$FM_HOME/claim1.json")" '"claimed": true' "first claim was not granted"
@@ -189,6 +195,131 @@ test_sweep_flags_a_live_crew_status_whose_linked_crew_is_not_working() {
     "$DASH" status "$card_id" complete >/dev/null || fail "could not clear the $status card"
   done
   pass "the sweep flags a working or testing card whose linked crew is demonstrably not working"
+}
+
+# The general collapse mechanism (fm-dashboard.sh audit-log --key,
+# store.py's record_audit_finding) proved through a real recurring check -
+# the live-crew corroboration checks 1/2 use it, unlike not_started's own
+# older, bespoke suppression already covered above. This is the "repeat
+# collapses" half.
+test_a_recurring_identical_finding_collapses_into_one_row_with_a_growing_count() {
+  local crew_id card_id rows count first_seen last_seen
+  crew_id="audit-collapse-repeat"
+  make_crew_state_case "$crew_id" "blocked: upstream API is down"
+  card_id=$("$DASH" add --title "Repeatedly blocked working card" --captain firstmate \
+    --prompt "collapse test" --status working --ref "$crew_id" | awk '{print $1}')
+  [ -n "$card_id" ] || fail "could not add the working card"
+
+  "$SWEEP" --forced || fail "first sweep exited non-zero"
+  [ "$(discrepancy_count_for "$card_id")" -eq 1 ] || fail "the first sweep did not log exactly one row"
+  first_seen=$(discrepancy_rows_for "$card_id" | jq -r '.[0].created_at')
+
+  sleep 1
+  "$SWEEP" --forced || fail "second sweep exited non-zero"
+  sleep 1
+  "$SWEEP" --forced || fail "third sweep exited non-zero"
+
+  rows=$(discrepancy_rows_for "$card_id")
+  count=$(printf '%s' "$rows" | jq 'length')
+  [ "$count" -eq 1 ] \
+    || fail "three sweeps of one standing condition produced $count rows, expected a single collapsed row"
+  [ "$(printf '%s' "$rows" | jq -r '.[0].occurrences')" -eq 3 ] \
+    || fail "expected the collapsed row's seen-count to be 3 after three sweeps, got $(printf '%s' "$rows" | jq -r '.[0].occurrences')"
+  last_seen=$(printf '%s' "$rows" | jq -r '.[0].last_seen_at')
+  [ "$last_seen" \> "$first_seen" ] \
+    || fail "the collapsed row's last-seen time did not advance across sweeps ($first_seen -> $last_seen)"
+
+  "$DASH" status "$card_id" complete >/dev/null || fail "could not clear the test card"
+  pass "a recurring identical finding updates one row's last-seen time and seen-count instead of appending"
+}
+
+# The "genuinely new finding" half: a different card hitting the same check
+# must never collapse onto another card's row just because the finding looks
+# similar - collapsing is scoped to the task, not merely to the check.
+test_a_genuinely_new_finding_on_a_different_card_does_not_collapse() {
+  local crew_a crew_b card_a card_b
+  crew_a="audit-collapse-new-a"; crew_b="audit-collapse-new-b"
+  make_crew_state_case "$crew_a" "blocked: reason a"
+  make_crew_state_case "$crew_b" "blocked: reason b"
+  card_a=$("$DASH" add --title "Blocked card A" --captain firstmate --prompt "a" \
+    --status working --ref "$crew_a" | awk '{print $1}')
+  card_b=$("$DASH" add --title "Blocked card B" --captain firstmate --prompt "b" \
+    --status working --ref "$crew_b" | awk '{print $1}')
+  [ -n "$card_a" ] && [ -n "$card_b" ] || fail "could not add both test cards"
+
+  "$SWEEP" --forced || fail "sweep exited non-zero"
+
+  [ "$(discrepancy_count_for "$card_a")" -eq 1 ] || fail "card A did not get its own row"
+  [ "$(discrepancy_count_for "$card_b")" -eq 1 ] || fail "card B did not get its own row"
+
+  "$DASH" status "$card_a" complete >/dev/null || fail "could not clear card A"
+  "$DASH" status "$card_b" complete >/dev/null || fail "could not clear card B"
+  pass "two genuinely different cards each get their own row rather than collapsing together"
+}
+
+# The strictness requirement: an older, unrelated finding already on the same
+# card (as if left by a different check) must never be silenced, merged, or
+# have its own seen-count bumped by a check it has nothing to do with - the
+# same bar the not_started check's own suppression already had to clear.
+test_an_unrelated_finding_on_the_same_card_never_suppresses_a_general_collapse() {
+  local crew_id card_id rows
+  crew_id="audit-collapse-unrelated"
+  make_crew_state_case "$crew_id" "blocked: reason"
+  card_id=$("$DASH" add --title "Card with an unrelated older finding" --captain firstmate \
+    --prompt "unrelated" --status working --ref "$crew_id" | awk '{print $1}')
+  [ -n "$card_id" ] || fail "could not add the test card"
+  "$DASH" audit-log "$card_id" "an unrelated finding from a different check" --key "some-other-check" \
+    >/dev/null || fail "could not seed the unrelated finding"
+
+  "$SWEEP" --forced || fail "first sweep exited non-zero"
+  "$SWEEP" --forced || fail "second sweep exited non-zero"
+
+  rows=$(discrepancy_rows_for "$card_id")
+  [ "$(printf '%s' "$rows" | jq 'length')" -eq 2 ] \
+    || fail "expected exactly two rows (the seeded unrelated one plus the live-crew one), got: $rows"
+  [ "$(printf '%s' "$rows" | jq -r '[.[] | select(.key=="some-other-check")] | length')" -eq 1 ] \
+    || fail "the unrelated finding's own row was touched by the live-crew check"
+  [ "$(printf '%s' "$rows" | jq -r '[.[] | select(.key=="some-other-check")][0].occurrences')" -eq 1 ] \
+    || fail "the unrelated finding's seen-count was bumped by an unrelated check"
+  [ "$(printf '%s' "$rows" | jq -r '[.[] | select(.key=="live-crew:working")][0].occurrences')" -eq 2 ] \
+    || fail "the live-crew finding did not collapse across its own two sweeps"
+
+  "$DASH" status "$card_id" complete >/dev/null || fail "could not clear the test card"
+  pass "an unrelated finding on the same card is never silenced by, or merged into, a different check's collapse"
+}
+
+# The hard requirement: holding the text back must never be mistaken for the
+# condition clearing. Mirrors test_a_quiet_but_outstanding_block_still_counts_
+# toward_the_run_total above, but for the general mechanism rather than
+# not_started's bespoke one.
+test_a_collapsed_but_outstanding_finding_still_counts_and_never_reads_clean() {
+  local crew_id card_id baseline first second
+  "$SWEEP" --forced || fail "baseline sweep exited non-zero"
+  baseline=$(audit_status_json | jq -r '.last_run.discrepancies_found')
+
+  crew_id="audit-collapse-outstanding"
+  make_crew_state_case "$crew_id" "blocked: still down"
+  card_id=$("$DASH" add --title "Outstanding blocked card" --captain firstmate --prompt "outstanding" \
+    --status working --ref "$crew_id" | awk '{print $1}')
+  [ -n "$card_id" ] || fail "could not add the test card"
+
+  "$SWEEP" --forced || fail "first sweep exited non-zero"
+  first=$(audit_status_json | jq -r '.last_run.discrepancies_found')
+  [ "$first" -eq $((baseline + 1)) ] \
+    || fail "the new outstanding finding did not add exactly one to the run total (baseline=$baseline, now=$first)"
+  [ "$first" -gt 0 ] || fail "a sweep with a genuine outstanding finding reported zero discrepancies"
+
+  "$SWEEP" --forced || fail "second sweep exited non-zero"
+  second=$(audit_status_json | jq -r '.last_run.discrepancies_found')
+  [ "$second" -eq "$first" ] \
+    || fail "a still-outstanding, now-collapsed finding stopped counting toward the run total (was $first, now $second)"
+  [ "$second" -gt 0 ] \
+    || fail "the run read as clean (0 discrepancies) while a collapsed finding is still outstanding"
+  [ "$(discrepancy_count_for "$card_id")" -eq 1 ] \
+    || fail "the second sweep appended a new row instead of collapsing into the first"
+
+  "$DASH" status "$card_id" complete >/dev/null || fail "could not clear the test card"
+  pass "a collapsed but still-outstanding finding keeps counting toward the run total and never reads clean"
 }
 
 test_sweep_flags_waiting_on_completed_card() {
@@ -531,6 +662,10 @@ test_audit_run_forced_flag_and_auto_release
 test_audit_tick_heartbeat_and_due_interval
 test_sweep_counts_testing_cards_and_never_flags_an_unverifiable_one
 test_sweep_flags_a_live_crew_status_whose_linked_crew_is_not_working
+test_a_recurring_identical_finding_collapses_into_one_row_with_a_growing_count
+test_a_genuinely_new_finding_on_a_different_card_does_not_collapse
+test_an_unrelated_finding_on_the_same_card_never_suppresses_a_general_collapse
+test_a_collapsed_but_outstanding_finding_still_counts_and_never_reads_clean
 test_sweep_flags_waiting_on_completed_card
 test_sweep_counts_not_started_cards_and_never_flags_an_unverifiable_one
 test_sweep_flags_a_not_started_card_that_live_work_is_waiting_on

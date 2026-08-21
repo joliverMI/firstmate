@@ -50,6 +50,30 @@
 #   never checked here at all - see "Why `needs-attention` is a separate
 #   status from `review`" in docs/dashboard.md.
 #
+# Collapsing repeats (general mechanism): checks 1, 2, 3, and 5 above can all
+# recur sweep after sweep for as long as their condition stands, and each
+# passes write_discrepancy/log_discrepancy a check-namespaced key so a
+# recurring identical finding updates its one existing row - last-seen time
+# and a seen-count - instead of appending a new one every cycle (see
+# write_discrepancy's own comment, fm-dashboard.sh audit-log --key, and
+# bin/fleet-dashboard/server/store.py's record_audit_finding). Check 6
+# (not_started) predates this mechanism and keeps its own bespoke,
+# time-boundary-aware suppression rather than retiring onto a plain key: its
+# "started then abandoned is flagged again" case needs a *new* row the moment
+# the block's own boundary (waiting-since or restarted-since) moves forward,
+# which a fixed key alone cannot express, and it already carries a full,
+# passing regression suite, so migrating it for its own sake without a
+# concrete need was not worth the regression risk this task's scope. It
+# could retire onto the general mechanism if its key embedded that same
+# boundary the way the needs_attention check's key now embeds `changed_at`
+# below; that is a legitimate future simplification, not a correctness gap.
+# Checks 1-3 do not embed a boundary either, so a card whose condition
+# resolves and later recurs differently collapses onto its own prior row
+# rather than opening a fresh one - an accepted simplification for this pass,
+# since the log still reads correctly either way: the row's last-seen time
+# and seen-count are exactly this recurrence's, and the report has never
+# claimed a gap-free streak.
+#
 # Usage: fm-fleet-audit-sweep.sh [--forced] [--already-claimed]
 #   --forced           mark the recorded run as forced (the Force Audit
 #                       button), not scheduled.
@@ -98,12 +122,34 @@ fail_sweep() {  # <text>
   exit 1
 }
 
-write_discrepancy() {  # <task_id> <text> - record the text, count nothing
-  "$DASH" audit-log "$1" "$2" --kind discrepancy >/dev/null 2>&1
+# <key>, when given, is the general collapse mechanism (fm-dashboard.sh
+# audit-log --key, bin/fleet-dashboard/server/store.py record_audit_finding):
+# a recurring identical finding under the same (task, key) updates its
+# existing row - last-seen time and a seen-count - instead of appending a new
+# one every sweep, so a standing condition can no longer bury every other
+# finding under repeats of itself. Every call site below that can recur
+# passes a key namespaced to that check, so one check's repeats can never
+# collapse onto, or be mistaken for, another check's finding on the same
+# card. The not_started check further down deliberately keeps its own older,
+# time-boundary-aware suppression instead of a key - see its comment for why.
+write_discrepancy() {  # <task_id> <text> [<key>] - record the text, count nothing
+  local task_id=$1 text=$2 key=${3:-}
+  if [ -n "$key" ]; then
+    "$DASH" audit-log "$task_id" "$text" --kind discrepancy --key "$key" >/dev/null 2>&1
+  else
+    "$DASH" audit-log "$task_id" "$text" --kind discrepancy >/dev/null 2>&1
+  fi
 }
 
-log_discrepancy() {  # <task_id> <text>
-  write_discrepancy "$1" "$2" && DISCREPANCIES=$((DISCREPANCIES + 1))
+log_discrepancy() {  # <task_id> <text> [<key>]
+  # Collapsing only changes whether the LOG TEXT is rewritten, never whether
+  # this outstanding condition counts toward the run - see the not_started
+  # check's "Quiet is never clean" comment below, which this shares:
+  # DISCREPANCIES increments on every sweep the condition is still true,
+  # independent of whether write_discrepancy collapsed into an existing row
+  # or inserted a new one, so a collapsed-but-outstanding finding can never
+  # make a sweep read as clean.
+  write_discrepancy "$1" "$2" "${3:-}" && DISCREPANCIES=$((DISCREPANCIES + 1))
 }
 
 # Shared by the working and testing checks: both statuses claim a real crew is
@@ -129,7 +175,8 @@ check_live_crew_status() {  # <status-flag>
     state=$(printf '%s\n' "$state_line" | sed -n 's/^state: \([a-z]*\).*/\1/p')
     case "$state" in
       working|unknown|"") ;;  # corroborated, or crew-state itself has nothing to say - not a discrepancy
-      *) log_discrepancy "$id" "card claims $status_flag, but the linked crew reads: $state_line" ;;
+      *) log_discrepancy "$id" "card claims $status_flag, but the linked crew reads: $state_line" \
+           "live-crew:$status_flag" ;;
     esac
   done < <(printf '%s' "$json" | jq -r '.tasks[] | [.id, (.backlog_ref // "")] | @tsv')
 }
@@ -165,7 +212,7 @@ while IFS=$'\t' read -r id waiting_on; do
   target_status=$("$DASH" show "$waiting_on" --json 2>/dev/null | jq -r '.status // empty')
   [ -n "$target_status" ] || continue
   if [ "$target_status" = "complete" ]; then
-    log_discrepancy "$id" "card is waiting on $waiting_on, but that card is already complete"
+    log_discrepancy "$id" "card is waiting on $waiting_on, but that card is already complete" "waiting-stale"
   fi
 done < <(printf '%s' "$WAITING_JSON" | jq -r '.tasks[] | [.id, (.waiting_on_id // "")] | @tsv')
 
@@ -193,7 +240,13 @@ while IFS= read -r id; do
   replied=$(printf '%s' "$detail_json" | jq -r --arg since "$changed_at" \
     '([.notes[] | select(.tab=="communication" and .author=="admiral" and .created_at > $since)] | length) > 0')
   [ "$replied" = "true" ] && continue
-  log_discrepancy "$id" "needs-attention for ${age_min}m with no reply from him since it was flagged"
+  # Keyed on changed_at, not just the card, so a card that later cycles back
+  # into needs_attention after an earlier reply gets a fresh row rather than
+  # updating the one that reply already closed - the same fresh-occurrence
+  # principle as the not_started check's own restarted_since handling below,
+  # here free because changed_at is already in hand for the age check above.
+  log_discrepancy "$id" "needs-attention for ${age_min}m with no reply from him since it was flagged" \
+    "needs-attention-stale:$changed_at"
 done < <(printf '%s' "$NA_JSON" | jq -r '.tasks[].id')
 
 # ---- 6. not_started: counted for every not-started card, but flagged only

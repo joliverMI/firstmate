@@ -561,7 +561,11 @@ function AuditSection({ auditStatus, onSetInterval, tasks, onGoToCard, onForceAu
             const target = entry.task_id ? tasks.find((t) => t.id === entry.task_id) : null;
             return html`
               <div class="log-item ${entry.kind}" key=${entry.id}>
-                <div class="log-when">${fmtDateTime(entry.created_at)} · ${entry.kind}${entry.task_id ? ` · ${entry.task_id}` : ""}</div>
+                <div class="log-when">${fmtDateTime(entry.created_at)} · ${entry.kind}${entry.task_id ? ` · ${entry.task_id}` : ""}${
+                  entry.occurrences > 1
+                    ? ` · seen ${entry.occurrences}x, last ${fmtDateTime(entry.last_seen_at)}`
+                    : ""
+                }</div>
                 <div>${entry.text}</div>
                 ${entry.task_id
                   ? (target

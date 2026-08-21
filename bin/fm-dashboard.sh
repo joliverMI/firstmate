@@ -42,7 +42,21 @@
 #       [--text <text>] [--link <url>] [--link-label <text>] [--author <a>]
 #   fm-dashboard.sh link <id> --url <url> [--label <text>] [--tab <tab>]
 #   fm-dashboard.sh delete <id> --confirm
-#   fm-dashboard.sh audit-log (<id> | --fleet) <text> [--kind discrepancy|error]
+#   fm-dashboard.sh audit-log (<id> | --fleet) <text> [--kind discrepancy|error] \
+#       [--key <key>]
+#       --key collapses a recurring identical finding into its existing row
+#       (bumping its last-seen time and a seen-count) instead of appending a
+#       new one every time it recurs, so a persistent condition never buries
+#       every other finding under repeats of itself. It is a fingerprint for
+#       the *condition*, not the wording: pass the same key every time a
+#       given check re-detects the same standing problem on the same card,
+#       even as `<text>` itself changes (an elapsed age, a different observed
+#       state) - and a different key for every other kind of finding, so one
+#       check's repeats can never collapse onto, or be mistaken for, another
+#       check's finding on that same card. Omit it and every call inserts a
+#       new row, the pre-existing behavior. See docs/dashboard.md "Auditor
+#       integration" for the full contract, including why the caller must
+#       still count a collapsed-but-outstanding finding on every run.
 #   fm-dashboard.sh audit-run --duration-seconds <n> --checked <n> \
 #       [--discrepancies <n>] [--forced] [--started-at <iso>]
 #   fm-dashboard.sh audit-interval [get | <minutes>]
@@ -413,20 +427,33 @@ cmd_delete() {
 
 cmd_audit_log() {
   local target=${1:-}; shift || true
-  [ -n "$target" ] || die "audit-log: usage: audit-log (<id> | --fleet) <text> [--kind discrepancy|error]"
+  [ -n "$target" ] || die "audit-log: usage: audit-log (<id> | --fleet) <text> [--kind discrepancy|error] [--key <key>]"
   local text=${1:-}; shift || true
   [ -n "$text" ] || die "audit-log: text is required"
-  local kind="discrepancy"
+  local kind="discrepancy" key=""
   while [ $# -gt 0 ]; do
-    case "$1" in --kind) kind=$2; shift 2 ;; *) die "audit-log: unknown argument '$1'" ;; esac
+    case "$1" in
+      --kind) kind=$2; shift 2 ;;
+      --key) key=$2; shift 2 ;;
+      *) die "audit-log: unknown argument '$1'" ;;
+    esac
   done
   local body
   if [ "$target" = "--fleet" ]; then
-    body=$(jq -n --arg k "$kind" --arg t "$text" '{kind:$k, text:$t}')
+    body=$(jq -n --arg k "$kind" --arg t "$text" --arg key "$key" \
+      '{kind:$k, text:$t} + (if $key=="" then {} else {key:$key} end)')
   else
-    body=$(jq -n --arg k "$kind" --arg t "$text" --arg id "$target" '{kind:$k, text:$t, task_id:$id}')
+    body=$(jq -n --arg k "$kind" --arg t "$text" --arg id "$target" --arg key "$key" \
+      '{kind:$k, text:$t, task_id:$id} + (if $key=="" then {} else {key:$key} end)')
   fi
-  dash_call POST /api/audit/log "$body" >/dev/null && printf 'audit finding recorded (%s)\n' "$kind"
+  local out
+  out=$(dash_call POST /api/audit/log "$body") || return 1
+  if [ "$(printf '%s' "$out" | jq -r '.collapsed // false')" = "true" ]; then
+    printf 'audit finding recorded (%s, collapsed into existing row, occurrence #%s)\n' \
+      "$kind" "$(printf '%s' "$out" | jq -r '.occurrences // "?"')"
+  else
+    printf 'audit finding recorded (%s)\n' "$kind"
+  fi
 }
 
 cmd_audit_run() {
