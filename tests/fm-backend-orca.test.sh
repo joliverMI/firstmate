@@ -655,6 +655,10 @@ test_spawn_refuses_orca_worktree_owned_by_another_task_without_reclaiming_it() {
     "Orca refusal must not remove the worktree the other task still owns"
   assert_not_contains "$(cat "$LOG")" $'orca\x1f''terminal'$'\x1f''close' \
     "Orca refusal must not close a terminal that may belong to the other task"
+  assert_contains "$out" "wt-holder" "Orca refusal must name the orca worktree id it left behind"
+  assert_contains "$out" "term-holder" "Orca refusal must name the orca terminal it left behind"
+  assert_contains "$out" "orca worktree show" "Orca refusal must point at orca's own inspection tooling"
+  assert_not_contains "$out" "treehouse status" "Orca refusal must not send the operator to treehouse, which is not orca's pool"
   assert_present "$wt/uncommitted.txt" "Orca refusal must leave the other task's uncommitted work in place"
   assert_grep "worktree=$wt" "$state/orcaholderz9.meta" "the holding task's own record must survive the refusal"
   pass "fm-spawn.sh --backend orca: refuses a worktree another task owns without reclaiming it"
