@@ -26,33 +26,66 @@ make_fake_tmux() {
 #!/usr/bin/env bash
 set -u
 case "${1:-}" in
-  has-session|new-session|new-window|send-keys|kill-window)
+  new-window)
+    printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
+    # Real tmux answers `new-window -dP -F '#{window_id}'` with the new
+    # window's id, which fm_backend_tmux_create_task captures as the rename-safe
+    # handle spawn-time typing then addresses before the task's meta is even
+    # published. A stub that printed nothing left that handle empty.
+    for a in "$@"; do case "$a" in -*P*) printf '@1\n'; break ;; esac; done
+    exit 0
+    ;;
+  has-session|new-session|send-keys|kill-window)
     printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
     exit 0
     ;;
   list-windows)
-    # FM_FAKE_TMUX_WINDOW is the live window inventory, one name per line
-    # (a bare selector listing may carry `session:window` entries instead).
-    # bin/backends/tmux.sh's window kill resolves a recorded session:window by
-    # reading '#{window_id} #{window_name}' and comparing the NAME byte-exactly,
-    # then addresses the id it read - so that format has to answer with BOTH
+    # bin/backends/tmux.sh's window kill, agent-state read and recorded-target
+    # sends all resolve a recorded session:window by reading
+    # '#{window_id} #{window_name}' and comparing the NAME byte-exactly, then
+    # addressing the id they read - so that format has to answer with BOTH
     # fields, and with an id distinct from the name, or the fake would let an
     # id/name mix-up pass. Every other format keeps answering with names only.
-    [ -n "${FM_FAKE_TMUX_WINDOW:-}" ] || exit 0
+    #
+    # FM_FAKE_TMUX_WINDOW, when set, IS the live inventory, one name per line (a
+    # bare selector listing may carry `session:window` entries instead) - that is
+    # how a case declares a window with no recorded task, or asserts which of
+    # several a destructive call picked. With it unset the inventory is the
+    # recorded task windows in the effective state dir, which is the same
+    # "the addressed endpoint is live" world this stub's pane answers model.
     win_fmt=name
     for a in "$@"; do case "$a" in *'#{window_id}'*) win_fmt=id ;; esac; done
     if [ "$win_fmt" = name ]; then
-      printf '%s\n' "$FM_FAKE_TMUX_WINDOW"
+      [ -n "${FM_FAKE_TMUX_WINDOW:-}" ] && printf '%s\n' "$FM_FAKE_TMUX_WINDOW"
       exit 0
     fi
     n=0
-    while IFS= read -r w; do
-      [ -n "$w" ] || continue
-      n=$((n + 1))
-      printf '@%s %s\n' "$n" "${w##*:}"
-    done <<EOF
+    if [ -n "${FM_FAKE_TMUX_WINDOW:-}" ]; then
+      while IFS= read -r w; do
+        [ -n "$w" ] || continue
+        n=$((n + 1))
+        printf '@%s %s\n' "$n" "${w##*:}"
+      done <<EOF
 $FM_FAKE_TMUX_WINDOW
 EOF
+      exit 0
+    fi
+    ses=
+    prev=
+    for a in "$@"; do
+      [ "$prev" = -t ] && ses=${a#=}
+      prev=$a
+    done
+    ses=${ses%%:*}
+    for m in "${FM_STATE_OVERRIDE:-${FM_HOME:-/nonexistent}/state}"/*.meta; do
+      [ -f "$m" ] || continue
+      w=$(sed -n 's/^window=//p' "$m" | head -1)
+      case "$w" in "$ses":*) ;; *) continue ;; esac
+      w=${w#*:}
+      case "$w" in *:*|'') continue ;; esac
+      n=$((n + 1))
+      printf '@%s %s\n' "$n" "$w"
+    done
     exit 0
     ;;
   list-panes)

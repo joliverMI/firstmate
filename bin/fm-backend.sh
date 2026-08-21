@@ -707,16 +707,25 @@ fm_backend_capture() {  # <backend> <target> <lines> [expected-label]
 }
 
 # fm_backend_send_key: one backend-supported named special key.
-fm_backend_send_key() {  # <backend> <target> <key> [expected-label]
+#
+# <target-kind> declares where <target> came from - `named` for a recorded
+# task's own window (or one the caller just created), `general` for an
+# explicit, operator-declared address that may be pane-qualified. Only the tmux
+# path consumes it, because only tmux resolves targets by parsing an ambiguous
+# name/pane string; herdr, zellij, orca and cmux address a pane by id through a
+# structured inventory query and are handed exactly the arguments they always
+# were. Omitted means `named`, so an unclassified caller refuses rather than
+# reinterpreting a dead window as a live stranger's pane.
+fm_backend_send_key() {  # <backend> <target> <key> [expected-label] [target-kind]
   local backend=$1
   shift
   fm_backend_source "$backend" || return 1
   case "$backend" in
-    tmux) fm_backend_tmux_send_key "$@" ;;
-    herdr) fm_backend_herdr_send_key "$@" ;;
-    zellij) fm_backend_zellij_send_key "$@" ;;
-    orca) fm_backend_orca_send_key "$@" ;;
-    cmux) fm_backend_cmux_send_key "$@" ;;
+    tmux) fm_backend_tmux_send_key "$1" "$2" "${4:-}" ;;
+    herdr) fm_backend_herdr_send_key "$1" "$2" "${3:-}" ;;
+    zellij) fm_backend_zellij_send_key "$1" "$2" "${3:-}" ;;
+    orca) fm_backend_orca_send_key "$1" "$2" "${3:-}" ;;
+    cmux) fm_backend_cmux_send_key "$1" "$2" "${3:-}" ;;
     *) echo "error: no send-key implementation for backend '$backend'" >&2; return 1 ;;
   esac
 }
@@ -724,16 +733,22 @@ fm_backend_send_key() {  # <backend> <target> <key> [expected-label]
 # fm_backend_send_text_submit: type text once, then submit and verify,
 # retrying only the submission (never retyping). Echoes the backend's
 # proof-carrying verdict; callers require exact empty for confirmed delivery.
-fm_backend_send_text_submit() {  # <backend> <target> <text> <retries> <enter-sleep> <settle> [expected-label]
+#
+# <target-kind> carries the same declaration, and matters most here: this is
+# how every ordinary steer reaches every crew, so a target reinterpreted as a
+# live stranger's pane does not merely fail, it types a whole message into that
+# worker's composer and submits it. See fm_backend_send_key above for the
+# vocabulary and for why only the tmux path consumes it.
+fm_backend_send_text_submit() {  # <backend> <target> <text> <retries> <enter-sleep> <settle> [expected-label] [target-kind]
   local backend=$1
   shift
   fm_backend_source "$backend" || return 1
   case "$backend" in
-    tmux) fm_backend_tmux_send_text_submit "$@" ;;
-    herdr) fm_backend_herdr_send_text_submit "$@" ;;
-    zellij) fm_backend_zellij_send_text_submit "$@" ;;
-    orca) fm_backend_orca_send_text_submit "$@" ;;
-    cmux) fm_backend_cmux_send_text_submit "$@" ;;
+    tmux) fm_backend_tmux_send_text_submit "$1" "$2" "$3" "$4" "$5" "${7:-}" ;;
+    herdr) fm_backend_herdr_send_text_submit "$1" "$2" "$3" "$4" "$5" "${6:-}" ;;
+    zellij) fm_backend_zellij_send_text_submit "$1" "$2" "$3" "$4" "$5" "${6:-}" ;;
+    orca) fm_backend_orca_send_text_submit "$1" "$2" "$3" "$4" "$5" "${6:-}" ;;
+    cmux) fm_backend_cmux_send_text_submit "$1" "$2" "$3" "$4" "$5" "${6:-}" ;;
     *) echo "error: no send-text implementation for backend '$backend'" >&2; return 1 ;;
   esac
 }
@@ -852,8 +867,9 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
 # exists - prefix-colliding session and fm-<task-id> window names are routine,
 # so a bare probe reproduces the very false-alive this must not report. Both
 # components of a `session:window` target are therefore pinned with tmux's
-# exact-match `=` prefix (the same `=$session:=$window` form this resolver
-# hands to every gated consumer, including fm_backend_tmux_kill), which also
+# exact-match `=` prefix (the `=$session:=$window` form this resolver hands
+# back to the consumers it answers - the existence probe, and the four send
+# primitives when their caller declares target-kind `general`), which also
 # resolves a window INDEX exactly, so `FM_SUPERVISOR_TARGET_DEFAULT`
 # ("firstmate:0") keeps working.
 #
@@ -862,9 +878,13 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
 # a live window `fm-release-1.2` makes `list-panes -t '=s:=fm-release-1.2'`
 # fail with "can't find window: fm-release-1". Task ids admit dots, so a dotted
 # window component is instead matched byte-exactly against the session's own
-# name inventory - the same exact-name match fm_backend_tmux_agent_state now
-# resolves its own window component through, by calling this function -
-# since `grep -Fqx` never reinterprets `.`.
+# name inventory, since a byte-exact comparison never reinterprets `.`. That
+# name match is the WHOLE of the separate fm_backend_tmux_exact_target_named
+# (bin/backends/tmux.sh), which fm_backend_tmux_kill and
+# fm_backend_tmux_agent_state call instead of this function, and which the four
+# send primitives call for a `named` target-kind: those consumers hold a
+# recorded window NAME, so for them the pane fallback below is not a second
+# reading to try, it is a wrong answer to refuse.
 #
 # `session:window.pane` is a legitimate tmux target too, and the two readings
 # compete for the same string, so both are answered: the window NAME wins when

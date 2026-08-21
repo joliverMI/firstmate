@@ -1168,7 +1168,13 @@ inject_msg() {  # <message> [state]
   # buffer is preserved rather than cleared.
   retries=${FM_INJECT_CONFIRM_RETRIES:-$INJECT_CONFIRM_RETRIES_DEFAULT}
   sleep_s=${FM_INJECT_CONFIRM_SLEEP:-$INJECT_CONFIRM_SLEEP_DEFAULT}
-  verdict=$(fm_backend_send_text_submit "$backend" "$target" "$msg" "$retries" "$sleep_s" "$sleep_s")
+  # target-kind `general`, explicitly: this target is FM_SUPERVISOR_TARGET (or
+  # its "firstmate:0" default), an operator/config address for firstmate's OWN
+  # pane that may legitimately be pane-qualified ("firstmate:0.1"). The default
+  # kind is `named`, which would refuse exactly those addresses and silently
+  # close the fleet's only escalation channel while the Admiral is away, so this
+  # path opts in to the general resolver rather than inheriting the safe default.
+  verdict=$(fm_backend_send_text_submit "$backend" "$target" "$msg" "$retries" "$sleep_s" "$sleep_s" "" general)
   if [ "$verdict" = empty ]; then
     return 0  # Backend confirmed the submit.
   fi

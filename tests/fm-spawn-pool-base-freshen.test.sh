@@ -25,7 +25,48 @@ case "$*" in
 esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
-  list-windows|has-session|new-session|new-window|kill-window|send-keys) exit 0 ;;
+  list-windows)
+    # The exact-NAME resolver behind a recorded-target send (and the window kill
+    # and agent-state read) asks `-t "=<session>"` for
+    # '#{window_id} #{window_name}' and compares only the NAME half before
+    # addressing the ID half, so that format is answered from the recorded task
+    # inventory this stub already models as live, with a synthetic @N id that is
+    # deliberately NOT the name. Every other -F keeps its previous answer.
+    fm_fake_ses=
+    fm_fake_prev=
+    fm_fake_fmt=name
+    for fm_fake_arg in "$@"; do
+      [ "$fm_fake_prev" = -t ] && fm_fake_ses=${fm_fake_arg#=}
+      fm_fake_prev=$fm_fake_arg
+      case "$fm_fake_arg" in *'#{window_id}'*) fm_fake_fmt=id ;; esac
+    done
+    if [ "$fm_fake_fmt" = id ]; then
+      fm_fake_ses=${fm_fake_ses%%:*}
+      fm_fake_n=0
+      for fm_fake_meta in "${FM_STATE_OVERRIDE:-${FM_HOME:-/nonexistent}/state}"/*.meta; do
+        [ -f "$fm_fake_meta" ] || continue
+        fm_fake_win=$(sed -n 's/^window=//p' "$fm_fake_meta" | head -1)
+        case "$fm_fake_win" in "$fm_fake_ses":*) ;; *) continue ;; esac
+        fm_fake_win=${fm_fake_win#*:}
+        case "$fm_fake_win" in *:*|'') continue ;; esac
+        fm_fake_n=$((fm_fake_n + 1))
+        printf '@%s %s\n' "$fm_fake_n" "$fm_fake_win"
+      done
+      exit 0
+    fi
+    exit 0
+    ;;
+  new-window)
+    # Real tmux answers `new-window -dP -F '#{window_id}'` with the new
+    # window's id, which fm_backend_tmux_create_task captures as the
+    # rename-safe handle spawn-time typing then addresses. A stub that
+    # printed nothing left that handle empty, so spawn silently fell back
+    # to the name form for reads the id exists to make rename-proof.
+    for fm_fake_arg in "$@"; do
+      case "$fm_fake_arg" in -*P*) printf '@1\n'; break ;; esac
+    done
+    exit 0 ;;
+  has-session|new-session|kill-window|send-keys) exit 0 ;;
 esac
 exit 0
 SH

@@ -832,6 +832,155 @@ pass "real tmux: fm_backend_tmux_kill leaves a live sibling intact when the dott
 
 kill_window_id "$gone_sib_wid"
 
+# --- target-kind `named`: an already-gone dotted RECORDED window never sends --
+# The send half of the same defect, and the worst-consequence half. A recorded
+# `sess:fm-<id>.0` whose window is gone, beside a live `fm-<id>` whose first
+# pane index always exists, resolved through the general resolver's
+# pane-qualified fallback to a real pane of that live sibling - so an ordinary
+# steer was TYPED AND SUBMITTED into a different crew's composer while that
+# crew was mid-turn, and if their composer then cleared, the verdict read
+# `empty`, reporting delivery CONFIRMED for a task that never received it.
+# The four sends take both kinds of target, so the kind is declared by the
+# caller, never inferred from the string: fm-send.sh's recorded-metadata paths,
+# fm-control.sh's validated endpoint and fm-spawn.sh's just-created window are
+# `named`, and `named` is the default so an unclassified caller refuses.
+# The fixture is a decoy shell that would EXECUTE a misdelivered line, and the
+# ordering sentinel below drives a real send through the same primitives to
+# completion afterwards - tmux delivers in order, so a sentinel that has run
+# means any misdelivered earlier byte would already have run too. Marker tokens
+# are never typed contiguously in their own command line, so the echo of a
+# typed-but-unsubmitted command cannot false-positive.
+SEND_GONE_LIVE="fm-sendgone"
+send_gone_wid=$(fm_backend_tmux_create_task "$SESSION" "$SEND_GONE_LIVE" "$HOME") \
+  || fail "could not create the live sibling window for the already-gone dotted send check"
+send_gone_pane=$(tmux list-panes -t "$send_gone_wid" -F '#{pane_index}' | head -1)
+[ -n "$send_gone_pane" ] || fail "could not read the already-gone dotted send sibling's first pane index"
+SEND_GONE_DOTTED="$SESSION:$SEND_GONE_LIVE.$send_gone_pane"
+if tmux list-windows -t "=$SESSION" -F '#{window_name}' | grep -Fqx "$SEND_GONE_LIVE.$send_gone_pane"; then
+  fail "fixture is invalid: the supposedly already-gone window '$SEND_GONE_LIVE.$send_gone_pane' actually exists"
+fi
+
+SEND_GONE_READY=false
+for _ in $(seq 1 100); do
+  tmux send-keys -t "$send_gone_wid" C-c
+  tmux send-keys -t "$send_gone_wid" -l "printf 'sendgone-%s\\n' ready"
+  tmux send-keys -t "$send_gone_wid" Enter
+  if wait_for_capture_text "$send_gone_wid" "sendgone-ready" 10; then
+    SEND_GONE_READY=true
+    break
+  fi
+done
+[ "$SEND_GONE_READY" = true ] || fail "the already-gone dotted send decoy shell never became ready to execute a misdelivered line"
+
+# Every call below omits the kind, so it also proves the DEFAULT is the safe
+# one: a call site that was never classified refuses rather than reinterpreting.
+if fm_backend_tmux_send_text_line "$SEND_GONE_DOTTED" "printf 'GONELINELEAK-%s\\n' ARRIVED" 2>/dev/null; then
+  fail "fm_backend_tmux_send_text_line accepted the already-gone '$SEND_GONE_DOTTED' instead of refusing it"
+fi
+if fm_backend_tmux_send_literal "$SEND_GONE_DOTTED" "printf 'GONELITERALLEAK-%s\\n' ARRIVED" 2>/dev/null; then
+  fail "fm_backend_tmux_send_literal accepted the already-gone '$SEND_GONE_DOTTED' instead of refusing it"
+fi
+send_gone_verdict=$(fm_backend_tmux_send_text_submit "$SEND_GONE_DOTTED" "printf 'GONETEXTLEAK-%s\\n' ARRIVED" 2 0.1 0.1 2>/dev/null)
+send_gone_rc=$?
+[ "$send_gone_rc" -ne 0 ] \
+  || fail "fm_backend_tmux_send_text_submit accepted the already-gone '$SEND_GONE_DOTTED' instead of refusing it"
+[ "$send_gone_verdict" != empty ] \
+  || fail "fm_backend_tmux_send_text_submit reported delivery CONFIRMED (verdict 'empty') for the already-gone '$SEND_GONE_DOTTED'"
+
+# send_key's misdelivery is only observable if there is something for a stray
+# Enter to submit, so a marker command is typed into the live sibling first.
+fm_backend_tmux_send_literal "$send_gone_wid" "printf 'GONEKEYLEAK-%s\\n' ARRIVED" \
+  || fail "could not type the unsubmitted marker command into the already-gone dotted send decoy pane"
+if fm_backend_tmux_send_key "$SEND_GONE_DOTTED" Enter 2>/dev/null; then
+  fail "fm_backend_tmux_send_key accepted the already-gone '$SEND_GONE_DOTTED' instead of refusing it"
+fi
+pass "real tmux: all four send primitives refuse an already-gone dotted recorded window rather than resolving it to a live sibling's pane"
+
+tmux send-keys -t "$send_gone_wid" C-u
+fm_backend_tmux_send_text_line "$SESSION:$SEND_GONE_LIVE" "printf 'sendgone-%s\\n' sentinel" named \
+  || fail "fm_backend_tmux_send_text_line refused the LIVE '$SESSION:$SEND_GONE_LIVE' under target-kind named; the guard must not block a resolvable recorded window"
+wait_for_capture_text "$send_gone_wid" "sendgone-sentinel" \
+  || fail "the named-kind sentinel never executed, so the misdelivery assertion below would prove nothing"
+send_gone_out=$(fm_backend_tmux_capture "$send_gone_wid" 200) \
+  || fail "fm_backend_tmux_capture failed for the already-gone dotted send decoy pane"
+case "$send_gone_out" in
+  *GONELINELEAK-ARRIVED*|*GONELITERALLEAK-ARRIVED*|*GONETEXTLEAK-ARRIVED*|*GONEKEYLEAK-ARRIVED*)
+    fail "input addressed to the already-gone '$SEND_GONE_DOTTED' was delivered into the live sibling '$SEND_GONE_LIVE'"$'\n'"$send_gone_out" ;;
+esac
+pass "real tmux: nothing addressed to an already-gone dotted recorded window ever lands in its same-pane-indexed live sibling"
+
+kill_window_id "$send_gone_wid"
+
+# --- target-kind `general`: pane-qualified delivery must keep working --------
+# The other side of the same boundary, and the one that must NOT regress. An
+# operator-declared FM_SUPERVISOR_TARGET ("firstmate:0.1") legitimately
+# addresses pane N of window W, and it is how the away-mode escalation channel
+# reaches the Admiral. `named` is the default precisely because it refuses that
+# reading, so bin/fm-supervise-daemon.sh opts in to `general` explicitly - and
+# this asserts the whole chain that path uses, including the dispatcher's
+# argument positions, by sending through fm_backend_send_text_submit exactly as
+# the injector does and checking the bytes land in the ADDRESSED pane and not
+# its sibling.
+PANEGEN_WINDOW="fm-panegen"
+panegen_wid=$(fm_backend_tmux_create_task "$SESSION" "$PANEGEN_WINDOW" "$HOME") \
+  || fail "could not create the pane-qualified general-kind window"
+tmux split-window -t "$panegen_wid" || fail "could not split a second pane for the general-kind check"
+panegen_first_pid=$(tmux list-panes -t "$panegen_wid" -F '#{pane_id}' | head -1)
+panegen_target_idx=$(tmux list-panes -t "$panegen_wid" -F '#{pane_index}' | tail -1)
+panegen_target_pid=$(tmux list-panes -t "$panegen_wid" -F '#{pane_id}' | tail -1)
+[ -n "$panegen_first_pid" ] && [ -n "$panegen_target_idx" ] && [ -n "$panegen_target_pid" ] \
+  || fail "could not read the general-kind window's pane index/ids"
+[ "$panegen_first_pid" != "$panegen_target_pid" ] \
+  || fail "the general-kind fixture needs two distinct panes to prove delivery landed in the addressed one"
+PANEGEN_TARGET="$SESSION:$PANEGEN_WINDOW.$panegen_target_idx"
+
+PANEGEN_READY=false
+for _ in $(seq 1 100); do
+  tmux send-keys -t "$panegen_target_pid" C-c
+  tmux send-keys -t "$panegen_target_pid" -l "printf 'panegen-%s\\n' ready"
+  tmux send-keys -t "$panegen_target_pid" Enter
+  if wait_for_capture_text "$panegen_target_pid" "panegen-ready" 10; then
+    PANEGEN_READY=true
+    break
+  fi
+done
+[ "$PANEGEN_READY" = true ] || fail "the pane-qualified general-kind shell never became ready"
+
+if fm_backend_tmux_send_text_line "$PANEGEN_TARGET" "printf 'panegen-%s\\n' refused" 2>/dev/null; then
+  fail "the default target-kind accepted the pane-qualified '$PANEGEN_TARGET'; the named kind must refuse a pane reading so that opting in to general is a real, explicit decision"
+fi
+pass "real tmux: a pane-qualified target is refused under the default target-kind, so the general kind is an explicit opt-in rather than an accident"
+
+fm_backend_tmux_send_text_line "$PANEGEN_TARGET" "printf 'panegen-%s\\n' vialine" general \
+  || fail "fm_backend_tmux_send_text_line refused the pane-qualified '$PANEGEN_TARGET' under target-kind general"
+wait_for_capture_text "$panegen_target_pid" "panegen-vialine" \
+  || fail "target-kind general did not deliver a line to the addressed pane '$PANEGEN_TARGET'"
+
+# The away-mode injector's exact call shape: through the generic dispatcher,
+# with an empty expected-label and an explicit `general` kind.
+panegen_verdict=$(fm_backend_send_text_submit tmux "$PANEGEN_TARGET" "printf 'panegen-%s\\n' viasubmit" 2 0.1 0.1 "" general) \
+  || fail "fm_backend_send_text_submit refused the pane-qualified '$PANEGEN_TARGET' under target-kind general (verdict '$panegen_verdict'); this is the away-mode escalation channel"
+[ "$panegen_verdict" != target-unresolved ] \
+  || fail "fm_backend_send_text_submit reported the live pane-qualified '$PANEGEN_TARGET' unresolved under target-kind general"
+wait_for_capture_text "$panegen_target_pid" "panegen-viasubmit" \
+  || fail "the away-mode dispatcher shape did not deliver to the addressed pane '$PANEGEN_TARGET'"
+
+tmux send-keys -t "$panegen_target_pid" -l "printf 'panegen-%s\\n' viakey"
+fm_backend_tmux_send_key "$PANEGEN_TARGET" Enter general \
+  || fail "fm_backend_tmux_send_key refused the pane-qualified '$PANEGEN_TARGET' under target-kind general"
+wait_for_capture_text "$panegen_target_pid" "panegen-viakey" \
+  || fail "target-kind general did not deliver a key to the addressed pane '$PANEGEN_TARGET'"
+
+panegen_other=$(fm_backend_tmux_capture "$panegen_first_pid" 200) \
+  || fail "fm_backend_tmux_capture failed for the general-kind window's other pane"
+case "$panegen_other" in
+  *panegen-vialine*|*panegen-viasubmit*|*panegen-viakey*)
+    fail "general-kind delivery addressed to pane $panegen_target_idx landed in the window's OTHER pane"$'\n'"$panegen_other" ;;
+esac
+pass "real tmux: target-kind general still delivers text, a submit through the away-mode dispatcher shape, and a key to an explicitly pane-qualified target, and only to that pane"
+
+kill_window_id "$panegen_wid"
+
 # --- fm_backend_tmux_send_text_line / fm_backend_tmux_send_literal: gated too -
 # These two were the last unpinned senders, used only by bin/fm-spawn.sh to
 # type setup commands and the harness launch command into a pane it just

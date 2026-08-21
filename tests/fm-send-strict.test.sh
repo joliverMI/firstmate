@@ -60,7 +60,40 @@ case "${1:-}" in
     printf '╭────╮\n│    │\n╰────╯\n'
     exit 0 ;;
   list-windows)
-    printf 'foreign:%s\n' "${FM_FAKE_TMUX_WINDOW:-fm-lost}"
+    # Two different formats reach this stub, and they are not interchangeable.
+    # A bare-selector lookup asks for '#{session_name}:#{window_name}' across
+    # every session; the exact-NAME resolver behind a recorded-target send asks
+    # `-t "=<session>"` for '#{window_id} #{window_name}' and then compares only
+    # the NAME half before addressing the ID half. Answering the second with a
+    # bare name would let its `id`/`rest` split succeed by coincidence - both
+    # halves of a space-less line are the whole line - so a regression that
+    # addressed the name where the id belongs would pass unnoticed. The live
+    # inventory modelled here is the recorded task windows in this home, which
+    # is exactly what this stub's unconditional pane answers already assume is
+    # live; a window no task recorded is correctly absent.
+    ses=
+    prev=
+    win_fmt=name
+    for arg in "$@"; do
+      [ "$prev" = -t ] && ses=${arg#=}
+      prev=$arg
+      case "$arg" in *'#{window_id}'*) win_fmt=id ;; esac
+    done
+    if [ "$win_fmt" != id ]; then
+      printf 'foreign:%s\n' "${FM_FAKE_TMUX_WINDOW:-fm-lost}"
+      exit 0
+    fi
+    ses=${ses%%:*}
+    n=0
+    for m in "${FM_HOME:-/nonexistent}"/state/*.meta; do
+      [ -f "$m" ] || continue
+      w=$(sed -n 's/^window=//p' "$m" | head -1)
+      case "$w" in "$ses":*) ;; *) continue ;; esac
+      w=${w#*:}
+      case "$w" in *:*|'') continue ;; esac
+      n=$((n + 1))
+      printf '@%s %s\n' "$n" "$w"
+    done
     exit 0 ;;
   list-panes)
     target=
@@ -114,8 +147,8 @@ test_exact_lane_id_send_still_works() {
     "$SEND" mpf-lane-m8 "lost dispatch" >/dev/null 2>"$err"; rc=$?
   expect_code 0 "$rc" "exact task id send should succeed when metadata exists"
   got=$(cat "$log")
-  assert_contains "$got" "target==sess:=fm-mpf-lane-m8 literal=1 arg=lost dispatch" "exact id should type literal text to the meta target"
-  assert_contains "$got" "target==sess:=fm-mpf-lane-m8 literal=0 arg=Enter" "exact id should submit with Enter"
+  assert_contains "$got" "target=@1 literal=1 arg=lost dispatch" "exact id should type literal text to the meta target's own resolved window id"
+  assert_contains "$got" "target=@1 literal=0 arg=Enter" "exact id should submit with Enter to that same resolved window id"
   pass "fm-send strict: exact task/lane ids resolve through home metadata"
 }
 
@@ -204,8 +237,8 @@ test_healthy_fm_id_send_still_works() {
     "$SEND" fm-lane-ok "hello captain" >/dev/null 2>"$err"; rc=$?
   expect_code 0 "$rc" "healthy fm-id send should succeed"
   got=$(cat "$log")
-  assert_contains "$got" "target==sess:=fm-lane-ok literal=1 arg=hello captain" "healthy send should type literal text to the meta target"
-  assert_contains "$got" "target==sess:=fm-lane-ok literal=0 arg=Enter" "healthy send should submit with Enter"
+  assert_contains "$got" "target=@1 literal=1 arg=hello captain" "healthy send should type literal text to the meta target's own resolved window id"
+  assert_contains "$got" "target=@1 literal=0 arg=Enter" "healthy send should submit with Enter to that same resolved window id"
   assert_contains "$(cat "$err")" "requested message WILL still be sent" "fm-send guard banner should keep send-specific continuation wording"
   pass "fm-send strict: healthy fm-<id> sends still type once and submit"
 }
@@ -226,7 +259,7 @@ test_key_send_exit_status_follows_delivery() {
   PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
     "$SEND" lane-key --key Escape >/dev/null 2>"$err"; rc=$?
   expect_code 0 "$rc" "a delivered --key interrupt should report success"
-  assert_contains "$(cat "$log")" "target==sess:=fm-lane-key literal=0 arg=Escape" "the delivered case should send the named key"
+  assert_contains "$(cat "$log")" "target=@1 literal=0 arg=Escape" "the delivered case should send the named key to the resolved window id"
 
   : > "$log"
   PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
@@ -234,7 +267,7 @@ test_key_send_exit_status_follows_delivery() {
     "$SEND" lane-key --key Escape >/dev/null 2>"$err"; rc=$?
   [ "$rc" -ne 0 ] || fail "an undelivered --key interrupt reported success"
   assert_contains "$(cat "$err")" "key 'Escape' not sent" "the undelivered case should name the key that failed"
-  assert_contains "$(cat "$log")" "target==sess:=fm-lane-key literal=0 arg=Escape" "the undelivered case should still have attempted the send"
+  assert_contains "$(cat "$log")" "target=@1 literal=0 arg=Escape" "the undelivered case should still have attempted the send"
   pass "fm-send --key: exit status follows delivery, and an undelivered key never reports success"
 }
 

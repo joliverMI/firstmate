@@ -1090,7 +1090,36 @@ case "${1:-}" in
     for a in "$@"; do case "$a" in *cursor_y*) printf '1\n'; exit 0 ;; esac; done
     printf 'fakepane\n'; exit 0 ;;
   capture-pane) printf '╭────╮\n│    │\n╰────╯\n'; exit 0 ;;
-  list-windows) exit 0 ;;
+  list-windows)
+    # A recorded-target send, the window kill and the agent-state read all
+    # resolve through an exact-NAME match: they ask `-t "=<session>"` for
+    # '#{window_id} #{window_name}' and compare only the NAME half before
+    # addressing the ID half. This stub's other answers model "the recorded
+    # task endpoints are live", so that is the inventory it reports here, and
+    # the synthetic @N id it pairs with each name is deliberately NOT the name,
+    # so a regression that addressed the name where the id belongs cannot pass
+    # by coincidence. Any other -F keeps the previous silent success.
+    fm_fake_ses=
+    fm_fake_prev=
+    fm_fake_fmt=name
+    for fm_fake_arg in "$@"; do
+      [ "$fm_fake_prev" = -t ] && fm_fake_ses=${fm_fake_arg#=}
+      fm_fake_prev=$fm_fake_arg
+      case "$fm_fake_arg" in *'#{window_id}'*) fm_fake_fmt=id ;; esac
+    done
+    [ "$fm_fake_fmt" = id ] || exit 0
+    fm_fake_ses=${fm_fake_ses%%:*}
+    fm_fake_n=0
+    for fm_fake_meta in "${FM_STATE_OVERRIDE:-${FM_HOME:-/nonexistent}/state}"/*.meta; do
+      [ -f "$fm_fake_meta" ] || continue
+      fm_fake_win=$(sed -n 's/^window=//p' "$fm_fake_meta" | head -1)
+      case "$fm_fake_win" in "$fm_fake_ses":*) ;; *) continue ;; esac
+      fm_fake_win=${fm_fake_win#*:}
+      case "$fm_fake_win" in *:*|'') continue ;; esac
+      fm_fake_n=$((fm_fake_n + 1))
+      printf '@%s %s\n' "$fm_fake_n" "$fm_fake_win"
+    done
+    exit 0 ;;
 esac
 exit 0
 SH
