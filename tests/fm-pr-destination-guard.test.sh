@@ -64,7 +64,10 @@ run_guard() {  # <proj-dir> <fakebin-dir>
 # naming a repository to a live GitHub API. The stub writes the same
 # remote.origin.gh-resolved config the real CLI writes, and answers
 # `set-default --view` from a .fake-gh-view file in the directory it runs in -
-# absent means the read fails, empty means it reads back empty.
+# absent means the read fails, empty means it reads back empty. Any invocation
+# that is not `--view` is the destination WRITE, and the stub records it by
+# touching .fake-gh-wrote, so a case can assert whether the network write
+# happened at all rather than only what the destination ended up being.
 #   new_stub_case <name> <proj-origin> <proj-view> <gate-origin> <gate-view>
 # A view argument of "-" leaves the .fake-gh-view file out entirely.
 new_stub_case() {
@@ -95,6 +98,7 @@ if [ "$3" = --view ]; then
   cat .fake-gh-view
   exit 0
 fi
+: > .fake-gh-wrote
 if [ -f .fake-gh-pin-fails ]; then
   echo "could not lock config file .git/config: File exists" >&2
   exit 1
@@ -264,7 +268,7 @@ test_accepts_a_destination_matching_the_origin_case_insensitively() {
 # no-mistakes task, from concurrent crewmate worktrees of one checkout. An API
 # blip or a lock collision must not block a task whose destination was already
 # correct: the verified destination is the invariant, not the write.
-test_accepts_an_already_correct_destination_when_the_write_fails() {
+test_accepts_an_already_correct_destination_without_writing() {
   local proj gate out code
   proj=$(new_stub_case already-pinned \
     https://github.com/joliverMI/firstmate.git joliverMI/firstmate \
@@ -278,7 +282,67 @@ test_accepts_an_already_correct_destination_when_the_write_fails() {
   code=$?
   expect_code 0 "$code" "an already-correct destination must survive a failed pin write" "$out"
   assert_contains "$out" "sole pull-request destination" "guard reports the verified destination"
-  pass "guard accepts a destination already verified correct instead of failing on the write"
+  assert_absent "$proj/.fake-gh-wrote" \
+    "an already-correct checkout must not take the shared config lock to rewrite its pin"
+  assert_absent "$gate/.fake-gh-wrote" \
+    "an already-correct gate must not take the shared config lock to rewrite its pin"
+  pass "guard verifies an already-correct destination without writing it again"
+}
+
+test_writes_the_pin_when_the_destination_is_not_yet_set() {
+  local proj gate out code
+  proj=$(new_stub_case unpinned-writes \
+    https://github.com/joliverMI/firstmate.git joliverMI/firstmate \
+    https://github.com/joliverMI/firstmate.git joliverMI/firstmate)
+  gate="$(dirname "$proj")/gate.git"
+  out=$(run_guard "$proj" "$(dirname "$proj")/fakebin" 2>&1)
+  code=$?
+  expect_code 0 "$code" "an unpinned destination must be pinned and verified" "$out"
+  assert_present "$proj/.fake-gh-wrote" "an unpinned checkout must actually be pinned"
+  assert_present "$gate/.fake-gh-wrote" "an unpinned gate must actually be pinned"
+  pass "guard still writes the pin when the destination is not already set"
+}
+
+# Each origin below is a legitimate, correctly configured spelling of this
+# project's own GitHub repository. Refusing one would permanently block every
+# no-mistakes task on that project, since bin/fm-brief.sh tells the crewmate to
+# treat this guard's non-zero exit as a blocker with no recovery step.
+test_accepts_every_legitimate_github_origin_form() {
+  local form proj out code n=0
+  for form in \
+    'https://user@github.com/joliverMI/firstmate.git' \
+    'https://x-access-token:s3cr3t@github.com/joliverMI/firstmate.git' \
+    'https://github.com:443/joliverMI/firstmate.git' \
+    'ssh://git@ssh.github.com:443/joliverMI/firstmate.git' \
+    'git://github.com/joliverMI/firstmate.git' \
+    'git@github.com:joliverMI/firstmate.git'; do
+    n=$((n + 1))
+    proj=$(new_stub_case "origin-form-$n" \
+      "$form" joliverMI/firstmate \
+      https://github.com/joliverMI/firstmate.git joliverMI/firstmate)
+    out=$(run_guard "$proj" "$(dirname "$proj")/fakebin" 2>&1)
+    code=$?
+    expect_code 0 "$code" "origin form $n names this project's own repository" "$out"
+  done
+  pass "guard accepts every legitimate spelling of the project's own GitHub origin"
+}
+
+# A remote can legitimately carry a credential, and this guard's stderr is
+# copied verbatim into a crewmate's `blocked:` status line and into
+# provisioning logs, so a refusal must never publish one.
+test_refusal_never_echoes_an_origin_credential() {
+  local case_dir proj out code
+  case_dir="$TMP_ROOT/credentialed-origin"
+  proj="$case_dir/proj"
+  mkdir -p "$proj"
+  git -C "$proj" init -q
+  git -C "$proj" remote add origin 'https://x-access-token:s3cr3tt0ken@github.com/'
+  out=$("$GUARD" "$proj" 2>&1)
+  code=$?
+  expect_code 1 "$code" "guard refuses a github.com origin that names no repository" "$out"
+  assert_not_contains "$out" "s3cr3tt0ken" "a refusal must never publish an origin credential"
+  assert_contains "$out" "$proj" "the refusal must still name the directory that failed"
+  pass "guard names the failing directory without echoing its origin credential"
 }
 
 test_refusal_carries_ghs_own_reason() {
@@ -309,5 +373,8 @@ test_refuses_when_the_checkout_resolves_elsewhere
 test_refuses_when_the_gate_resolves_to_the_fork_parent
 test_refuses_an_unreadable_or_empty_destination_read
 test_accepts_a_destination_matching_the_origin_case_insensitively
-test_accepts_an_already_correct_destination_when_the_write_fails
+test_accepts_an_already_correct_destination_without_writing
+test_writes_the_pin_when_the_destination_is_not_yet_set
 test_refusal_carries_ghs_own_reason
+test_accepts_every_legitimate_github_origin_form
+test_refusal_never_echoes_an_origin_credential

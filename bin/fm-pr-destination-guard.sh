@@ -69,7 +69,7 @@ fi
 case "$ORIGIN_URL" in
   *github.com*) ;;
   *)
-    echo "skip: $DIR's origin ($ORIGIN_URL) is not github.com; gh's fork-parent default this guard closes is GitHub-specific"
+    echo "skip: $DIR's origin is not on github.com; gh's fork-parent default this guard closes is GitHub-specific"
     exit 0
     ;;
 esac
@@ -79,7 +79,7 @@ esac
 # not against its own origin: a gate whose origin drifted to the fork parent
 # would otherwise verify happily against itself.
 if ! fm_pr_github_remote_owner_repo "$ORIGIN_URL"; then
-  echo "error: $DIR's origin ($ORIGIN_URL) is on github.com but is not a parseable owner/repository URL; the pull-request destination cannot be verified" >&2
+  echo "error: $DIR's origin ($(fm_pr_redact_remote_url "$ORIGIN_URL")) is on github.com but names no owner/repository; the pull-request destination cannot be verified" >&2
   exit 1
 fi
 EXPECTED="$FM_PR_REMOTE_OWNER/$FM_PR_REMOTE_REPO"

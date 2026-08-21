@@ -123,15 +123,23 @@ SH
 
 # Every remote URL form below addresses exactly the same repository as the
 # reported PR, so none of them may be read as a foreign destination: a trailing
-# slash after .git, the scp-style and ssh:// forms, and GitHub's
-# case-insensitive owner/repository names.
+# slash after .git, the scp-style and ssh:// forms, GitHub's case-insensitive
+# owner/repository names, embedded userinfo (including the standard
+# token-clone form), an explicit port, GitHub's documented ssh.github.com:443
+# endpoint, and the git:// scheme. Refusing any of these would read a correctly
+# configured project as somebody else's repository.
 test_accepts_equivalent_forms_of_its_own_origin() {
   local form dir out code n=0
   for form in \
     'https://github.com/joliverMI/firstmate.git/' \
     'git@github.com:joliverMI/firstmate.git' \
     'ssh://git@github.com/joliverMI/firstmate.git' \
-    'https://github.com/JoliverMI/FirstMate.git'; do
+    'https://github.com/JoliverMI/FirstMate.git' \
+    'https://user@github.com/joliverMI/firstmate.git' \
+    'https://x-access-token:s3cr3t@github.com/joliverMI/firstmate.git' \
+    'https://github.com:443/joliverMI/firstmate.git' \
+    'ssh://git@ssh.github.com:443/joliverMI/firstmate.git' \
+    'git://github.com/joliverMI/firstmate.git'; do
     n=$((n + 1))
     dir=$(make_case "own-origin-form-$n" "$form")
     out=$(run_check_entry "$dir" task-a https://github.com/joliverMI/firstmate/pull/1 2>&1)
@@ -143,7 +151,30 @@ test_accepts_equivalent_forms_of_its_own_origin() {
   pass "the ownership check reads every equivalent form of the project's own origin as its own"
 }
 
+# The backstop only ever blocks on a confirmed mismatch, so an origin form it
+# cannot read is not refused - it is silently skipped, and a wrong-repository
+# PR sails through. Every form below is a legitimate spelling of this project's
+# own repository, so each must be understood well enough to catch the mismatch.
+test_refuses_a_wrong_repository_pr_for_every_origin_form() {
+  local form dir out code n=0
+  for form in \
+    'https://user@github.com/joliverMI/firstmate.git' \
+    'https://github.com:443/joliverMI/firstmate.git' \
+    'ssh://git@ssh.github.com:443/joliverMI/firstmate.git' \
+    'git://github.com/joliverMI/firstmate.git'; do
+    n=$((n + 1))
+    dir=$(make_case "mismatch-origin-form-$n" "$form")
+    out=$(run_check_entry "$dir" task-a https://github.com/kunchenguid/firstmate/pull/1 2>&1)
+    code=$?
+    expect_code 1 "$code" "a wrong-repository PR must be refused when origin is '$form'" "$out"
+    assert_no_grep "pr=" "$dir/home/state/task-a.meta" \
+      "a refused PR must not be recorded when origin is '$form'"
+  done
+  pass "the ownership check catches a wrong-repository PR for every legitimate origin form"
+}
+
 test_refuses_a_pr_against_the_wrong_repository
 test_accepts_a_pr_against_its_own_repository
 test_accepts_equivalent_forms_of_its_own_origin
+test_refuses_a_wrong_repository_pr_for_every_origin_form
 test_skips_the_check_when_origin_cannot_be_determined

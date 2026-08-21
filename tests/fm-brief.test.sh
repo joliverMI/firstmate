@@ -734,9 +734,38 @@ test_no_mistakes_setup_guard_path_resolves_outside_firstmate() {
   pass "fm-brief.sh: the no-mistakes Setup guard is named by a path a project worktree can actually run"
 }
 
+# The direct-PR brief's destination derivation is a generated, executable
+# instruction the crewmate runs verbatim, so it is tested by running it. The
+# fixture is fork-shaped - origin is the checkout's own repository, and a
+# second remote points somewhere else - because that is the layout where a
+# derivation that lets a tool pick its own remote silently names the wrong
+# repository and opens the pull request there.
+test_direct_pr_destination_derivation_names_its_own_origin() {
+  local home id brief cmd repo owner_repo
+  home="$TMP_ROOT/direct-pr-destination-home"
+  mkdir -p "$home/data"
+  id="brief-direct-dest-b1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "brief was not scaffolded"
+  cmd=$(grep -F "fm_pr_github_remote_owner_repo" "$brief" | head -n1 | tr -d '`')
+  [ -n "$cmd" ] || fail "the direct-PR brief must emit a destination derivation the crewmate can run"
+  repo="$TMP_ROOT/direct-pr-fork"
+  mkdir -p "$repo"
+  git -C "$repo" init -q
+  git -C "$repo" remote add origin https://github.com/joliverMI/firstmate.git
+  git -C "$repo" remote add upstream https://github.com/someone-else/firstmate.git
+  # shellcheck disable=SC2153 # OWNER_REPO is assigned by the brief's own emitted command.
+  owner_repo=$(cd "$repo" && eval "$cmd" >/dev/null 2>&1 && printf '%s' "$OWNER_REPO")
+  [ "$owner_repo" = joliverMI/firstmate ] \
+    || fail "the emitted derivation resolved '$owner_repo', not the checkout's own origin joliverMI/firstmate"
+  pass "fm-brief.sh: the direct-PR destination derivation names the checkout's own origin"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_no_mistakes_setup_guard_path_resolves_outside_firstmate
+test_direct_pr_destination_derivation_names_its_own_origin
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
 test_ship_mode_is_required_and_closed_set
