@@ -65,7 +65,11 @@ SH
 
 # make_failed_probe_tmux <dir> <inventory>: missing and present fail the pane
 # read, while unreadable returns a misleading fallback node process but fails
-# the inventory that must be authoritative.
+# the inventory that must be authoritative. list-panes is stubbed alongside
+# list-windows because fm_backend_tmux_agent_state now resolves existence
+# through fm_backend_tmux_exact_target, which probes the exact
+# session:window pane the same way fm_backend_target_exists does; only
+# 'present' has a real pane to find.
 make_failed_probe_tmux() {
   local dir=$1 inventory=$2 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -86,6 +90,10 @@ case "\${1:-}" in
       present) printf '%s\n' fm-sm1 ; exit 0 ;;
       *) printf '%s\n' "permission denied" >&2; exit 1 ;;
     esac
+    ;;
+  list-panes)
+    [ '$inventory' = present ] && exit 0
+    exit 1
     ;;
 esac
 exit 1
@@ -263,7 +271,10 @@ SH
 
 # make_liveness_tmux <dir>: a controllable tmux stub. FM_TEST_PANE_CMD may be
 # a foreground command, `missing` (readable inventory omits the window), or
-# `unreadable` (both pane and inventory reads fail).
+# `unreadable` (both pane and inventory reads fail). A `new-window` call always
+# makes the window read back as present (a `.created` marker, cleared by a
+# later `kill-window`) regardless of FM_TEST_PANE_CMD's initial mode, so a
+# relaunch that creates a fresh window can still type into it.
 make_liveness_tmux() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -287,17 +298,40 @@ case "${1:-}" in
     exit 0
     ;;
   list-windows)
+    if [ -e "${FM_TMUX_CALL_LOG:?}.created" ] && [ ! -e "${FM_TMUX_CALL_LOG}.killed" ]; then
+      printf '%s\n' fm-sm1; exit 0
+    fi
     case "$mode" in
       missing) printf '%s\n' main; exit 0 ;;
       unreadable) exit 1 ;;
       *) [ -e "${FM_TMUX_CALL_LOG:?}.killed" ] || printf '%s\n' fm-sm1; exit 0 ;;
     esac
     ;;
+  list-panes)
+    # fm_backend_tmux_agent_state, and the gated send primitives a relaunch
+    # types into a freshly created window with, now resolve existence through
+    # fm_backend_tmux_exact_target, which probes the exact pane the same way
+    # fm_backend_target_exists does; mirror list-windows's created/killed
+    # state (below the initial mode-driven probe outcome) so the resolver
+    # sees the same live-or-gone window the rest of this fixture already
+    # models, including the window a relaunch just created.
+    if [ -e "${FM_TMUX_CALL_LOG:?}.created" ] && [ ! -e "${FM_TMUX_CALL_LOG}.killed" ]; then
+      exit 0
+    fi
+    case "$mode" in
+      missing) exit 1 ;;
+      unreadable) exit 1 ;;
+      *) [ -e "${FM_TMUX_CALL_LOG:?}.killed" ] && exit 1; exit 0 ;;
+    esac
+    ;;
   new-window|kill-window)
     printf '%s\n' "$*" >> "${FM_TMUX_CALL_LOG:?}"
     [ "${1:-}" = kill-window ] && : > "${FM_TMUX_CALL_LOG}.killed"
     [ "${FM_TEST_FAIL_NEW_WINDOW:-0}" = 1 ] && [ "${1:-}" = new-window ] && exit 1
-    [ "${1:-}" = new-window ] && rm -f "${FM_TMUX_CALL_LOG}.killed"
+    if [ "${1:-}" = new-window ]; then
+      rm -f "${FM_TMUX_CALL_LOG}.killed"
+      : > "${FM_TMUX_CALL_LOG}.created"
+    fi
     exit 0
     ;;
   has-session) exit 0 ;;

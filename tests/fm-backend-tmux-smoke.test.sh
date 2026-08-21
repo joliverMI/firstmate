@@ -677,6 +677,163 @@ pass "real tmux: a bare window name live in two sessions is refused rather than 
 tmux kill-session -t "=$AMBIG_SESSION" 2>/dev/null || true
 kill_window_id "$ambig_wid"
 
+# --- fm_backend_tmux_exact_target (the resolver itself), from inside a client -
+# fm_backend_target_exists is a thin wrapper around fm_backend_tmux_exact_target
+# (bin/fm-backend.sh); every other gated primitive in this file - the sends,
+# the kill, and the recovery-grade agent-state read below - shares that exact
+# same resolver call, so this proves the resolver itself, not just one of its
+# callers, refuses a nonexistent target from inside a live tmux client. Run
+# from outside a client this passes today and proves nothing, exactly like the
+# fm_backend_target_exists case above (same discipline: the fallback needs a
+# live session to fall back TO).
+fm_backend_tmux_send_text_line "$TARGET" \
+  "export PATH=\"$SHIM_DIR:\$PATH\" && . \"$ROOT/bin/fm-backend.sh\" && if fm_backend_tmux_exact_target nosuchsession2:nosuchwindow2 >/dev/null 2>&1; then printf 'RESOLVER-RESULT:%s\\n' EXISTS; else printf 'RESOLVER-RESULT:%s\\n' MISSING; fi" \
+  || fail "fm_backend_tmux_send_text_line failed for the in-pane resolver probe"
+wait_for_capture_text "$TARGET" "RESOLVER-RESULT:MISSING" 150
+out=$(fm_backend_tmux_capture "$TARGET" 20) || fail "fm_backend_tmux_capture failed after the in-pane resolver probe"
+case "$out" in
+  *RESOLVER-RESULT:MISSING*) : ;;
+  *RESOLVER-RESULT:EXISTS*) fail "fm_backend_tmux_exact_target resolved a nonexistent session:window when run from inside a live tmux client"$'\n'"$out" ;;
+  *) fail "fm_backend_tmux_exact_target's in-pane resolver probe produced an unexpected result"$'\n'"$out" ;;
+esac
+pass "real tmux: fm_backend_tmux_exact_target (the resolver itself) refuses a nonexistent target even when run from inside a live tmux client"
+
+# --- fm_backend_tmux_agent_state: no session-component prefix fallback -------
+# fm_backend_tmux_agent_state used to validate existence with unpinned
+# `list-windows -t "$session"`, and tmux resolves a target-session by PREFIX
+# exactly like it resolves a target-window (proven above for
+# fm_backend_target_exists), so a dead `dead-sess:fm-x` fell through to a live
+# PREFIX-colliding `dead-sess-2`'s own window inventory, found a same-named
+# window there, and read THAT window's foreground process under the dead
+# session's label. This is the defect fm-tmux-agent-state-session-prefix-match
+# exists to fix: a fleet that acts on "endpoint: alive" for an endpoint that
+# was never actually verified.
+# The fixture makes the misdelivery provable rather than theoretical: the live
+# sibling's pane runs a process whose ARGV[0] the classifier recognizes as a
+# harness (`exec -a claude sleep 300` - argv[0]=claude, comm=sleep, exactly
+# the shape fm_backend_tmux_foreground_argv0s exists to catch when a title is
+# rewritten), so the old code's misdelivery would read back a false ALIVE, not
+# merely something non-missing.
+AGENT_DEAD_SESSION="agent-dead"
+AGENT_LIVE_SESSION="agent-dead-2"
+AGENT_WINDOW="fm-x"
+tmux new-session -d -s "$AGENT_LIVE_SESSION" -x 200 -y 50 \
+  || fail "could not create the live prefix-colliding sibling session"
+fm_backend_tmux_create_task "$AGENT_LIVE_SESSION" "$AGENT_WINDOW" "$HOME" >/dev/null \
+  || fail "could not create the sibling's window"
+if tmux has-session -t "=$AGENT_DEAD_SESSION" 2>/dev/null; then
+  fail "fixture is invalid: the supposedly dead '$AGENT_DEAD_SESSION' session actually exists"
+fi
+
+fm_backend_tmux_send_text_line "$AGENT_LIVE_SESSION:$AGENT_WINDOW" "exec -a claude sleep 300" \
+  || fail "could not start the fake harness process (argv0=claude) in the live sibling pane"
+AGENT_READY=false
+for _ in $(seq 1 50); do
+  case "$(fm_backend_tmux_foreground_argv0s "$AGENT_LIVE_SESSION:$AGENT_WINDOW" 2>/dev/null)" in
+    *claude*) AGENT_READY=true; break ;;
+  esac
+  sleep 0.1
+done
+[ "$AGENT_READY" = true ] || fail "the fake harness process (argv0=claude) never became the sibling pane's foreground process"
+
+agent_state_out=$(fm_backend_agent_state tmux "$AGENT_DEAD_SESSION:$AGENT_WINDOW")
+[ "$agent_state_out" != alive ] \
+  || fail "fm_backend_agent_state reported '$AGENT_DEAD_SESSION:$AGENT_WINDOW' alive by reading the live prefix-colliding sibling '$AGENT_LIVE_SESSION:$AGENT_WINDOW'"
+[ "$agent_state_out" = missing ] \
+  || fail "fm_backend_agent_state should classify a session that does not exist as missing, got '$agent_state_out'"
+pass "real tmux: fm_backend_agent_state does not fall through to a live prefix-colliding sibling session, and reports the dead session missing rather than reading the sibling alive"
+
+fm_backend_tmux_kill "$AGENT_LIVE_SESSION:$AGENT_WINDOW"
+tmux kill-session -t "=$AGENT_LIVE_SESSION" 2>/dev/null || true
+
+# --- fm_backend_tmux_kill and a dotted window NAME: never a sibling ----------
+# fm_backend_tmux_kill used to hand-build `=$session:=$window`, and tmux splits
+# a dotted window component's trailing `.` off as a PANE specifier before
+# matching the name, so `kill-window -t '=sess:=fm-killsib.2'` could remove the
+# SIBLING window `fm-killsib` (whichever one owns pane 2) instead of the
+# dotted-name window it was actually asked to remove - a destructive misfire,
+# not merely a failed removal. The fixture is the failing shape itself: a live
+# sibling window that really owns the pane index the dotted string reads as,
+# beside the dotted-name window kill is actually asked to remove.
+KILL_SIBLING="fm-killsib"
+kill_sib_wid=$(fm_backend_tmux_create_task "$SESSION" "$KILL_SIBLING" "$HOME") \
+  || fail "could not create the kill-safety sibling window"
+tmux split-window -t "$kill_sib_wid" || fail "could not split a second pane in the kill-safety sibling"
+kill_pane_idx=$(tmux list-panes -t "$kill_sib_wid" -F '#{pane_index}' | tail -1)
+[ -n "$kill_pane_idx" ] || fail "could not read the kill-safety sibling's pane index"
+KILL_DOTTED="$KILL_SIBLING.$kill_pane_idx"
+kill_dotted_wid=$(fm_backend_tmux_create_task "$SESSION" "$KILL_DOTTED" "$HOME") \
+  || fail "could not create the dotted-name window to kill"
+
+fm_backend_tmux_kill "$SESSION:$KILL_DOTTED"
+
+if ! tmux list-windows -t "=$SESSION" -F '#{window_name}' 2>/dev/null | grep -Fqx "$KILL_SIBLING"; then
+  fail "fm_backend_tmux_kill removed the SIBLING window '$KILL_SIBLING' instead of the dotted-name window '$KILL_DOTTED' it was asked to remove"
+fi
+if tmux list-windows -t "=$SESSION" -F '#{window_name}' 2>/dev/null | grep -Fqx "$KILL_DOTTED"; then
+  fail "fm_backend_tmux_kill did not remove the dotted-name window '$KILL_DOTTED' it was asked to remove"
+fi
+pass "real tmux: fm_backend_tmux_kill removes a window named with a dot without destroying a same-pane-indexed sibling window"
+
+kill_window_id "$kill_sib_wid"
+kill_window_id "$kill_dotted_wid"
+
+# --- fm_backend_tmux_send_text_line / fm_backend_tmux_send_literal: gated too -
+# These two were the last unpinned senders, used only by bin/fm-spawn.sh to
+# type setup commands and the harness launch command into a pane it just
+# created. Same shape as the send_key/send_text_submit refusal proofs above: a
+# destroyed session:window whose name is only a PREFIX of a live sibling must
+# not deliver into that sibling.
+LINE_DECOY_LIVE="fm-linedecoy-2"
+LINE_DECOY_DEAD="$SESSION:fm-linedecoy"
+line_decoy_wid=$(fm_backend_tmux_create_task "$SESSION" "$LINE_DECOY_LIVE" "$HOME") \
+  || fail "could not create the live decoy window for the send_text_line/send_literal refusal check"
+if tmux list-windows -t "=$SESSION" -F '#{window_name}' | grep -Fqx "fm-linedecoy"; then
+  fail "decoy fixture is invalid: the supposedly destroyed 'fm-linedecoy' window actually exists"
+fi
+
+LINE_DECOY_READY=false
+for _ in $(seq 1 100); do
+  tmux send-keys -t "$line_decoy_wid" C-c
+  tmux send-keys -t "$line_decoy_wid" -l "printf 'linedecoy-%s\\n' ready"
+  tmux send-keys -t "$line_decoy_wid" Enter
+  if wait_for_capture_text "$line_decoy_wid" "linedecoy-ready" 10; then
+    LINE_DECOY_READY=true
+    break
+  fi
+done
+[ "$LINE_DECOY_READY" = true ] || fail "the line/literal decoy shell never became ready"
+
+if fm_backend_tmux_send_text_line "$LINE_DECOY_DEAD" "printf 'LINELEAK-%s\\n' ARRIVED" 2>/dev/null; then
+  fail "fm_backend_tmux_send_text_line accepted '$LINE_DECOY_DEAD', a destroyed target whose name is only a prefix of the live '$LINE_DECOY_LIVE'"
+fi
+if fm_backend_tmux_send_literal "$LINE_DECOY_DEAD" "printf 'LITERALLEAK-%s\\n' ARRIVED" 2>/dev/null; then
+  fail "fm_backend_tmux_send_literal accepted '$LINE_DECOY_DEAD', a destroyed target whose name is only a prefix of the live '$LINE_DECOY_LIVE'"
+fi
+pass "real tmux: fm_backend_tmux_send_text_line and fm_backend_tmux_send_literal refuse a target that does not resolve exactly"
+
+tmux send-keys -t "$line_decoy_wid" C-c
+tmux send-keys -t "$line_decoy_wid" -l "printf 'linedecoy-%s\\n' sentinel"
+fm_backend_tmux_send_key "$line_decoy_wid" Enter \
+  || fail "fm_backend_tmux_send_key refused the LIVE line/literal decoy window id; the guard must not block a resolvable target"
+wait_for_capture_text "$line_decoy_wid" "linedecoy-sentinel" \
+  || fail "the line/literal decoy sentinel never executed, so the misdelivery assertion below would prove nothing"
+line_decoy_out=$(fm_backend_tmux_capture "$line_decoy_wid" 200) \
+  || fail "fm_backend_tmux_capture failed for the line/literal decoy pane"
+case "$line_decoy_out" in
+  *LINELEAK-ARRIVED*|*LITERALLEAK-ARRIVED*)
+    fail "text addressed to the destroyed '$LINE_DECOY_DEAD' was delivered into the live '$LINE_DECOY_LIVE' pane"$'\n'"$line_decoy_out" ;;
+esac
+pass "real tmux: a message addressed to a destroyed prefix-colliding target via send_text_line/send_literal never lands in the live sibling's pane"
+
+fm_backend_tmux_send_text_line "$SESSION:$LINE_DECOY_LIVE" "printf 'linedecoy-%s\\n' vialine" \
+  || fail "fm_backend_tmux_send_text_line refused the LIVE '$SESSION:$LINE_DECOY_LIVE'; the guard must not block a resolvable target"
+wait_for_capture_text "$line_decoy_wid" "linedecoy-vialine" \
+  || fail "fm_backend_tmux_send_text_line did not deliver to an exactly resolvable target"
+pass "real tmux: fm_backend_tmux_send_text_line still delivers to an exactly resolvable session:window target"
+
+kill_window_id "$line_decoy_wid"
+
 # --- kill and recovery-grade missing-window classification ------------------
 
 fm_backend_tmux_kill "$TARGET"

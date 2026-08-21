@@ -130,6 +130,25 @@ case "${1:-}" in
   list-windows)
     if [ -f "$D/windows" ]; then cat "$D/windows"; fi
     exit 0 ;;
+  list-panes)
+    # Every gated tmux primitive (bin/backends/tmux.sh's sends, kill, and
+    # agent-state read) now resolves existence through
+    # fm_backend_tmux_exact_target, which probes the exact pane with
+    # `list-panes -t "=session:=window"` rather than reading list-windows
+    # directly - mirror the same $D/windows presence model here so a
+    # simulated-gone window (an emptied windows file) still refuses.
+    shift
+    win=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -t) win=${2#*:}; win=${win#=}; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    if [ -n "$win" ] && [ -f "$D/windows" ] && grep -Fqx "$win" "$D/windows"; then
+      exit 0
+    fi
+    exit 1 ;;
 esac
 exit 0
 SH

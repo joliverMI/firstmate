@@ -852,17 +852,19 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
 # exists - prefix-colliding session and fm-<task-id> window names are routine,
 # so a bare probe reproduces the very false-alive this must not report. Both
 # components of a `session:window` target are therefore pinned with tmux's
-# exact-match `=` prefix (the same `=$session:=$window` form
-# fm_backend_tmux_kill already uses), which also resolves a window INDEX
-# exactly, so `FM_SUPERVISOR_TARGET_DEFAULT` ("firstmate:0") keeps working.
+# exact-match `=` prefix (the same `=$session:=$window` form this resolver
+# hands to every gated consumer, including fm_backend_tmux_kill), which also
+# resolves a window INDEX exactly, so `FM_SUPERVISOR_TARGET_DEFAULT`
+# ("firstmate:0") keeps working.
 #
 # The one shape the `=` pin cannot express is a window name containing a dot:
 # tmux splits the last `.` off as a pane specifier BEFORE matching the name, so
 # a live window `fm-release-1.2` makes `list-panes -t '=s:=fm-release-1.2'`
 # fail with "can't find window: fm-release-1". Task ids admit dots, so a dotted
 # window component is instead matched byte-exactly against the session's own
-# name inventory - the way fm_backend_tmux_agent_state already resolves its
-# window component - since `grep -Fqx` never reinterprets `.`.
+# name inventory - the same exact-name match fm_backend_tmux_agent_state now
+# resolves its own window component through, by calling this function -
+# since `grep -Fqx` never reinterprets `.`.
 #
 # `session:window.pane` is a legitimate tmux target too, and the two readings
 # compete for the same string, so both are answered: the window NAME wins when
