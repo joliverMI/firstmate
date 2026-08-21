@@ -127,6 +127,8 @@ MAIN_BACKLOG="$DATA/backlog.md"
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-dashboard-link-lib.sh
+. "$SCRIPT_DIR/fm-dashboard-link-lib.sh"
 
 ACTIVE_HANDOFF_LOCK=
 ACTIVE_REGISTRY_LOCK=
@@ -630,42 +632,14 @@ DASHBOARD_LINK_CONFIRMED=0
 AUDIT_LOG_FLEET_WRITTEN=0
 dashboard_link_card() { # <secondmate-id> <item-key> <card-id> <known-status|''>
   local sm_id=$1 key=$2 card=$3 known_status=$4
-  local dash ref failed=0 out
+  local dash ref
   DASHBOARD_LINK_CONFIRMED=0
   dash="$SCRIPT_DIR/fm-dashboard.sh"
   ref="$sm_id:$key"
 
-  if out=$("$dash" ref "$card" "$ref" 2>&1); then
-    :
-  else
-    failed=1
-    echo "warning: dashboard card link failed for $key -> card $card (ref): $out" >&2
-  fi
+  fm_dashboard_link_and_advance "$dash" "$card" "$ref" "$sm_id" "$key" "$known_status"
 
-  if out=$("$dash" agent "$card" "$sm_id" 2>&1); then
-    :
-  else
-    failed=1
-    echo "warning: dashboard card link failed for $key -> card $card (agent): $out" >&2
-  fi
-
-  if [ "$failed" -eq 0 ]; then
-    if [ -z "$known_status" ]; then
-      failed=1
-      echo "warning: dashboard card link failed for $key -> card $card (status): the board did not answer when this card was read, so it cannot be confirmed past not_started" >&2
-    elif [ "$known_status" = not_started ]; then
-      if out=$("$dash" status "$card" working 2>&1); then
-        echo "dashboard: linked card $card to $key (ref=$ref, agent=$sm_id, status not_started -> working)"
-      else
-        failed=1
-        echo "warning: dashboard card link failed for $key -> card $card (status working): $out" >&2
-      fi
-    else
-      echo "dashboard: linked card $card to $key (ref=$ref, agent=$sm_id)"
-    fi
-  fi
-
-  if [ "$failed" -eq 1 ]; then
+  if [ "$FM_DASHBOARD_LINK_FAILED" -eq 1 ]; then
     if [ "$RESUME_PENDING" -eq 0 ] && [ "$AUDIT_LOG_FLEET_WRITTEN" -eq 0 ]; then
       AUDIT_LOG_FLEET_WRITTEN=1
       "$dash" audit-log --fleet "dashboard link failed for handoff item $key -> card $card to secondmate $sm_id; ref/agent/status may be stale" --kind error >/dev/null 2>&1 || true

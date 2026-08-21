@@ -274,6 +274,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
 . "$SCRIPT_DIR/fm-remote-readiness-lib.sh"
+# shellcheck source=bin/fm-dashboard-link-lib.sh
+. "$SCRIPT_DIR/fm-dashboard-link-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -2880,43 +2882,14 @@ fi
 # the fleet auditor already reads, so a silently-dropped link is never silent.
 spawn_dashboard_link() {
   [ "$CARD_SET" -eq 1 ] || return 0
-  local dash home_name ref failed=0 out current_status
+  local dash home_name ref
   dash="$SCRIPT_DIR/fm-dashboard.sh"
   home_name=$(basename "$FM_HOME")
   ref="$home_name:$ID"
 
-  if out=$("$dash" ref "$CARD_ARG" "$ref" 2>&1); then
-    :
-  else
-    failed=1
-    echo "warning: dashboard card link failed for $ID -> card $CARD_ARG (ref): $out" >&2
-  fi
+  fm_dashboard_link_and_advance "$dash" "$CARD_ARG" "$ref" "$ID" "$ID" "$FM_DASHBOARD_LINK_SELF_READ"
 
-  if out=$("$dash" agent "$CARD_ARG" "$ID" 2>&1); then
-    :
-  else
-    failed=1
-    echo "warning: dashboard card link failed for $ID -> card $CARD_ARG (agent): $out" >&2
-  fi
-
-  if [ "$failed" -eq 0 ]; then
-    current_status=$("$dash" show "$CARD_ARG" --json 2>/dev/null | jq -r '.status // empty' 2>/dev/null) || current_status=
-    if [ -z "$current_status" ]; then
-      failed=1
-      echo "warning: dashboard card link failed for $ID -> card $CARD_ARG (status): the board did not answer when this card was read, so it cannot be confirmed past not_started" >&2
-    elif [ "$current_status" = not_started ]; then
-      if out=$("$dash" status "$CARD_ARG" working 2>&1); then
-        echo "dashboard: linked card $CARD_ARG to $ID (ref=$ref, agent=$ID, status not_started -> working)"
-      else
-        failed=1
-        echo "warning: dashboard card link failed for $ID -> card $CARD_ARG (status working): $out" >&2
-      fi
-    else
-      echo "dashboard: linked card $CARD_ARG to $ID (ref=$ref, agent=$ID)"
-    fi
-  fi
-
-  if [ "$failed" -eq 1 ]; then
+  if [ "$FM_DASHBOARD_LINK_FAILED" -eq 1 ]; then
     "$dash" audit-log --fleet "dashboard link failed for task $ID -> card $CARD_ARG at spawn; ref/agent/status may be stale" --kind error >/dev/null 2>&1 || true
   fi
   return 0
