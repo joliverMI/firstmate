@@ -1,0 +1,154 @@
+
+### 1. A pre-split board (base commit b98e0981), running the old seven-status code
+
+$ fm-dashboard.sh start        # pre-split build
+fleet dashboard started (pid 2314592) - http://127.0.0.1:41245/  log: /tmp/fm-split-demo.5bu0By/home/state/dashboard.log
+
+$ fm-dashboard.sh list        # pre-split build
+rework-the-shore-leave-rota-ahwr	testing	captain_dj	-	Rework the shore-leave rota
+harbour-telemetry-backfill-01os	testing	captain_river	-	Harbour telemetry backfill
+signal-flag-renderer-7f4h	testing	firstmate	-	Signal-flag renderer
+quartermaster-ledger-export-s7av	working	captain_dj	-	Quartermaster ledger export
+
+### The old CLI knows nothing about 'review' - all three 'testing' cards above mean ready-for-him
+
+$ fm-dashboard.sh status quartermaster-ledger-export-s7av review        # pre-split build
+fm-dashboard.sh: unknown status 'review' - valid: needs-attention not-started working paused waiting testing complete
+
+### 2. Deploying the split onto that live board
+
+$ fm-dashboard.sh restart
+stopped (pid 2314592)
+fleet dashboard started (pid 2316768) - http://127.0.0.1:41245/  log: /tmp/fm-split-demo.5bu0By/home/state/dashboard.log
+
+### The migration reports exactly what it changed, in the server log 'start' names
+
+$ grep -i migrated $FM_HOME/state/dashboard.log
+dashboard: migrated 3 card(s) from testing to review (testing/review split): rework-the-shore-leave-rota-ahwr, harbour-telemetry-backfill-01os, signal-flag-renderer-7f4h
+
+$ fm-dashboard.sh list
+rework-the-shore-leave-rota-ahwr	review	captain_dj	-	Rework the shore-leave rota
+harbour-telemetry-backfill-01os	review	captain_river	-	Harbour telemetry backfill
+signal-flag-renderer-7f4h	review	firstmate	-	Signal-flag renderer
+quartermaster-ledger-export-s7av	working	captain_dj	-	Quartermaster ledger export
+
+### 3. The migrated card's own audit trail - and updated_at deliberately untouched
+
+$ curl -s $BOARD/api/tasks/rework-the-shore-leave-rota-ahwr | jq ...
+{
+  "id": "rework-the-shore-leave-rota-ahwr",
+  "status": "review",
+  "updated_at": "2026-08-21T02:24:44Z",
+  "status_history": [
+    {
+      "from_status": null,
+      "to_status": "not_started",
+      "changed_at": "2026-08-21T02:24:44Z",
+      "note": "created"
+    },
+    {
+      "from_status": "not_started",
+      "to_status": "testing",
+      "changed_at": "2026-08-21T02:24:44Z",
+      "note": null
+    },
+    {
+      "from_status": "testing",
+      "to_status": "review",
+      "changed_at": "2026-08-21T02:24:44Z",
+      "note": "migrated: testing/review split - this card meant ready for his review"
+    }
+  ]
+}
+
+### 4. Both statuses separate and independently settable; CLI hyphenated, store underscored
+
+$ fm-dashboard.sh status quartermaster-ledger-export-s7av testing
+quartermaster-ledger-export-s7av	testing	captain_dj	-	Quartermaster ledger export
+
+$ fm-dashboard.sh list --status review
+rework-the-shore-leave-rota-ahwr	review	captain_dj	-	Rework the shore-leave rota
+harbour-telemetry-backfill-01os	review	captain_river	-	Harbour telemetry backfill
+signal-flag-renderer-7f4h	review	firstmate	-	Signal-flag renderer
+
+$ fm-dashboard.sh list --status testing
+quartermaster-ledger-export-s7av	testing	captain_dj	-	Quartermaster ledger export
+
+$ curl -s $BOARD/api/tasks | jq -r ".tasks[] | .status, .id"
+review	harbour-telemetry-backfill-01os
+review	rework-the-shore-leave-rota-ahwr
+review	signal-flag-renderer-7f4h
+testing	quartermaster-ledger-export-s7av
+
+### No invented statuses: anything outside the eight is refused by both the API and the CLI
+
+$ curl -X POST -d '{"status":"reviewing"}' $BOARD/api/tasks/signal-flag-renderer-7f4h/status
+{"error": "unknown status: 'reviewing'. Valid: needs_attention, not_started, working, paused, waiting, testing, review, complete"}
+HTTP 400
+
+$ fm-dashboard.sh status signal-flag-renderer-7f4h in-review
+fm-dashboard.sh: unknown status 'in-review' - valid: needs-attention not-started working paused waiting testing review complete
+
+### 5. Idempotence: a second restart must not rewrite the genuinely in-flight testing card
+
+$ fm-dashboard.sh restart
+stopped (pid 2316768)
+fleet dashboard started (pid 2319236) - http://127.0.0.1:41245/  log: /tmp/fm-split-demo.5bu0By/home/state/dashboard.log
+
+$ grep -c "migrated .* from testing to review" $FM_HOME/state/dashboard.log   # fresh log from this start
+0
+
+$ fm-dashboard.sh list
+quartermaster-ledger-export-s7av	testing	captain_dj	-	Quartermaster ledger export
+rework-the-shore-leave-rota-ahwr	review	captain_dj	-	Rework the shore-leave rota
+harbour-telemetry-backfill-01os	review	captain_river	-	Harbour telemetry backfill
+signal-flag-renderer-7f4h	review	firstmate	-	Signal-flag renderer
+
+### 6. The fleet auditor: a testing card with no live crew behind it is a discrepancy
+
+$ bin/fm-crew-state.sh ledger-export-crew
+state: blocked · source: status-log · waiting on the quartermaster's schema, nothing running
+
+$ fm-dashboard.sh ref quartermaster-ledger-export-s7av ledger-export-crew
+quartermaster-ledger-export-s7av	testing	captain_dj	-	Quartermaster ledger export
+
+$ FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES=0 bin/fm-fleet-audit-sweep.sh --forced
+exit=0
+
+$ fm-dashboard.sh audit-status --json | jq -r .log[]
+discrepancy	quartermaster-ledger-export-s7av	card claims testing, but the linked crew reads: state: blocked · source: status-log · waiting on the quartermaster's schema, nothing running
+
+### The review cards are the same age and are never flagged: review is not age-checked
+
+$ fm-dashboard.sh list --status review
+rework-the-shore-leave-rota-ahwr	review	captain_dj	-	Rework the shore-leave rota
+harbour-telemetry-backfill-01os	review	captain_river	-	Harbour telemetry backfill
+signal-flag-renderer-7f4h	review	firstmate	-	Signal-flag renderer
+
+### 7. Live crew behind the testing card => no finding (it corroborates, it does not just count)
+
+$ bin/fm-crew-state.sh ledger-export-crew
+state: working · source: status-log · running the export end-to-end against the staging ledger
+
+$ bin/fm-fleet-audit-sweep.sh --forced
+exit=0
+
+$ fm-dashboard.sh audit-status
+interval_minutes: 15
+last_tick_at:     never
+sweep running:    false
+last_run:         2026-08-21T02:24:49Z - 0.0s, 1 checked, 0 discrepancy(ies) (forced)
+
+### 8. The Admiral marks a review card complete from the board
+
+$ curl -X POST -d '{"status":"complete"}' $BOARD/api/tasks/rework-the-shore-leave-rota-ahwr/status   # what his Mark Complete button sends
+{"id":"rework-the-shore-leave-rota-ahwr","status":"complete"}
+
+$ fm-dashboard.sh list
+rework-the-shore-leave-rota-ahwr	complete	captain_dj	-	Rework the shore-leave rota
+quartermaster-ledger-export-s7av	testing	captain_dj	-	Quartermaster ledger export
+harbour-telemetry-backfill-01os	review	captain_river	-	Harbour telemetry backfill
+signal-flag-renderer-7f4h	review	firstmate	-	Signal-flag renderer
+
+$ fm-dashboard.sh stop
+stopped (pid 2319236)
