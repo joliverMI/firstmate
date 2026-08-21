@@ -1733,6 +1733,7 @@ real_path_or_raw() {  # <path>
 # per-backend routing (fm_backend_resolve_selector).
 validate_spawn_worktree() {  # <source> <inspect-target>
   local source=$1 inspect_target=$2 wt_real proj_real wt_top wt_top_real
+  local other_meta other_id other_wt other_real
   wt_real=
   if ! wt_real=$(cd "$WT" 2>/dev/null && pwd -P); then
     wt_real=
@@ -1747,6 +1748,26 @@ validate_spawn_worktree() {  # <source> <inspect-target>
     echo "error: $source did not yield an isolated worktree (resolved '$WT'; worktree root '${wt_top:-none}'; primary '$PROJ_ABS'); refusing to launch to avoid tangling the primary checkout. Inspect target $inspect_target" >&2
     exit 1
   fi
+  # The pool provider is trusted to hand back a worktree nobody else is using,
+  # but that trust has no independent check on this side: a hard cap, a stale
+  # lease, a crashed holder, or a race between two spawns could all end with
+  # $source reporting a worktree this SAME home already recorded for a
+  # different, still-tracked task. Accepting it silently would let this task's
+  # freshen/reset step or eventual teardown tear down that other task's
+  # unlanded work - the exact thing hard rule 3 forbids. Cross-check every
+  # other tracked task's own recorded worktree before trusting this one.
+  for other_meta in "$STATE"/*.meta; do
+    [ -e "$other_meta" ] || continue
+    other_id=$(basename "$other_meta" .meta)
+    [ "$other_id" != "$ID" ] || continue
+    other_wt=$(fm_meta_get "$other_meta" worktree)
+    [ -n "$other_wt" ] || continue
+    other_real=$(real_path_or_raw "$other_wt")
+    if [ "$other_real" = "$wt_real" ]; then
+      echo "error: $source resolved to worktree '$WT', already recorded as task $other_id's own isolated copy; refusing to spawn $ID onto a copy another task may still be using. The isolated-copy pool may be exhausted (a hard cap, a stale lease, or a crashed holder can all look like room when there is none) - free it (inspect $other_id, then 'treehouse status') before retrying. Inspect target $inspect_target" >&2
+      exit 1
+    fi
+  done
 }
 
 freshen_spawn_worktree_base() {  # <worktree>

@@ -160,6 +160,10 @@ Crewmates never intentionally touch your project clone; [treehouse](https://gith
 For ship and scout work, `fm-spawn.sh` refuses to launch unless the resolved task path is a real git worktree root that is distinct from the project primary checkout.
 `fm-spawn.sh` also owns the base-freshness boundary for every fresh ship and scout: no worker starts until its clean task worktree matches the fetched tip of origin's resolved default branch, and any unsafe or unverifiable base stops the spawn.
 Its header owns the exact refusal mechanics, while `tests/fm-spawn-pool-base-freshen.test.sh` owns the portable regression coverage.
+`validate_spawn_worktree` also cross-checks the pool's answer against every other task this home still tracks, refusing rather than accepting a worktree another tracked task's own record already claims.
+This is a guard against a failure mode, not a fix for a confirmed one: a hard cap, a stale lease, a crashed holder, and a race between two spawns were each driven directly against a real treehouse pool (both the CI-pinned build and the current release) and none reproduced the pool handing back a worktree still in use, so the underlying report stays unconfirmed at the pool-provider layer.
+What is proven is only the acceptance side: `fm-spawn.sh` had no check of its own, so if the pool ever did hand back an occupied worktree by any means, this task's freshen step or eventual teardown would silently tear down that other task's unlanded work - the guard closes exactly that gap and nothing upstream of it.
+It never blocks a worktree a finished task's own teardown has genuinely retired; `tests/fm-spawn-pool-worktree-collision.test.sh` owns the regression coverage for both the refusal and that legitimate-reuse case.
 
 The firstmate repo has one extra exposure because it can dispatch crewmates to work on itself.
 Its operating checkout (`FM_ROOT`) and the disposable crewmate worktrees are all linked git worktrees of the same repository, so the valid discriminator is branch state, not whether the checkout is linked.
