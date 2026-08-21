@@ -838,6 +838,53 @@ SH
   pass "fm-brief.sh: the direct-PR create command carries a PR body the shell never evaluates"
 }
 
+# PR titles in this repo routinely contain an apostrophe. A title inlined into
+# a quoted shell word cannot carry one - the quote ends mid-line and the whole
+# command dies before any of it runs - so the title, like the body, must reach
+# gh-axi through a file the crewmate wrote, byte for byte.
+test_direct_pr_title_survives_an_apostrophe() {
+  local home id brief write_cmd create_cmd repo fakebin title recorded code
+  home="$TMP_ROOT/direct-pr-title-home"
+  mkdir -p "$home/data"
+  id="brief-direct-title-b1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "brief was not scaffolded"
+  # shellcheck disable=SC2016 # The sed scripts are literal; nothing here should expand.
+  write_cmd=$(sed -n 's/.*`\(cat > [^`]*fm-pr-title[^`]*\)`.*/\1/p' "$brief" | head -n1)
+  [ -n "$write_cmd" ] || fail "the direct-PR brief must emit a command that writes the PR title to a file"
+  # shellcheck disable=SC2016 # The sed scripts are literal; nothing here should expand.
+  create_cmd=$(sed -n 's/.*`\(set -- --title[^`]*\)`.*/\1/p' "$brief" | head -n1)
+  [ -n "$create_cmd" ] || fail "the direct-PR brief must emit one runnable create command"
+  repo="$TMP_ROOT/direct-pr-title-repo"
+  fakebin="$TMP_ROOT/direct-pr-title-fakebin"
+  mkdir -p "$repo" "$fakebin"
+  git -C "$repo" init -q
+  git -C "$repo" remote add origin https://github.com/joliverMI/firstmate.git
+  cat > "$fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    --title) printf '%s' "$2" > ./gh-axi-title; shift 2 ;;
+    *) shift ;;
+  esac
+done
+SH
+  chmod +x "$fakebin/gh-axi"
+  title="fix(bin): pin the destination instead of trusting gh's fork default"
+  ( cd "$repo" && bash -c "$write_cmd
+$title
+FM_PR_TITLE" ) >/dev/null 2>&1
+  ( cd "$repo" && PATH="$fakebin:$PATH" bash -c "$create_cmd" ) >/dev/null 2>&1
+  code=$?
+  expect_code 0 "$code" "an apostrophe in the PR title must not break the create command"
+  assert_present "$repo/gh-axi-title" "the create call must carry a title"
+  recorded=$(cat "$repo/gh-axi-title")
+  [ "$recorded" = "$title" ] \
+    || fail "gh-axi received the title '$recorded', not the title that was written: '$title'"
+  pass "fm-brief.sh: the direct-PR title reaches gh-axi verbatim, apostrophe and all"
+}
+
 # Crewmates run concurrently on one host under one user, so the file the body
 # travels in cannot be a fixed path in a shared directory: one task's body
 # would silently replace another's between the write and the create. The same
@@ -924,6 +971,7 @@ test_direct_pr_create_command_names_its_own_origin
 test_direct_pr_create_command_still_ships_a_non_github_project
 test_direct_pr_create_command_carries_a_body_the_shell_cannot_execute
 test_direct_pr_body_file_is_not_shared_between_checkouts
+test_direct_pr_title_survives_an_apostrophe
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
 test_ship_mode_is_required_and_closed_set
