@@ -16,6 +16,7 @@ DASH="$ROOT/bin/fm-dashboard.sh"
 SERVER_PID=""
 MIGRATION_SERVER_PID=""
 PORT_HOLDER_PID=""
+RECYCLED_PID=""
 
 # bin/fm-dashboard.sh starts the server with `nohup ... &` and exits, so the
 # process is orphaned and never a child of this shell: `wait` on its pid returns
@@ -41,6 +42,7 @@ fm_dashboard_test_cleanup() {
   stop_dashboard_server "$SERVER_PID"
   stop_dashboard_server "$MIGRATION_SERVER_PID"
   [ -n "$PORT_HOLDER_PID" ] && kill "$PORT_HOLDER_PID" 2>/dev/null
+  [ -n "$RECYCLED_PID" ] && kill "$RECYCLED_PID" 2>/dev/null
   fm_test_cleanup
 }
 trap fm_dashboard_test_cleanup EXIT
@@ -611,6 +613,81 @@ test_restart_recovers_from_a_crashed_or_stopped_board() {
   pass "restart brings the board back from a crash, from stopped, and from healthy"
 }
 
+# A crash leaves the pidfile behind, and the host's pid counter can hand that
+# number to an unrelated process before anyone types stop or restart. The
+# lifecycle commands must recognise that the recorded pid is no longer a
+# dashboard and drop the stale file, not signal whatever inherited the number.
+test_lifecycle_commands_refuse_a_recycled_pid() {
+  local rec_home rec_db rec_port rec_url pf innocent_pid out card_id
+
+  rec_home="$FM_HOME/recycled-pid-case"
+  mkdir -p "$rec_home/state" "$rec_home/data"
+  rec_db="$rec_home/data/dashboard.db"
+  rec_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()') \
+    || fail "could not allocate a port for the recycled-pid case"
+  rec_url="http://127.0.0.1:$rec_port"
+  pf="$rec_home/state/dashboard.pid"
+
+  # Stand in for the unrelated process that inherited the crashed board's pid.
+  sleep 600 &
+  innocent_pid=$!
+  RECYCLED_PID="$innocent_pid"
+  printf '%s\n' "$innocent_pid" >"$pf"
+
+  # server-status must not claim the board is running just because the number
+  # in the pidfile happens to be alive.
+  out=$(FM_HOME="$rec_home" FM_DASHBOARD_URL="$rec_url" "$DASH" server-status 2>&1)
+  assert_contains "$out" "process: not running" \
+    "server-status reported a recycled pid as the running board"
+
+  if FM_HOME="$rec_home" "$DASH" stop >"$rec_home/stop.out" 2>&1; then
+    fail "stop reported success against a pid that is not a dashboard server"
+  fi
+  assert_contains "$(cat "$rec_home/stop.out")" "not a fleet dashboard server" \
+    "stop did not say why it refused the recycled pid"
+  kill -0 "$innocent_pid" 2>/dev/null \
+    || fail "stop signalled an unrelated process that had inherited the recorded pid"
+  if [ -f "$pf" ]; then
+    fail "stop left the stale pidfile in place, so start would keep refusing"
+  fi
+
+  # ...and having dropped the stale file, the board comes back up normally
+  # without the innocent process being touched.
+  FM_HOME="$rec_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$rec_port" FM_DASHBOARD_DB="$rec_db" \
+    "$DASH" start >"$rec_home/start.out" 2>&1 \
+    || { cat "$rec_home/start.out" >&2; fail "start did not bring the board up after the stale pidfile was dropped"; }
+  MIGRATION_SERVER_PID=$(cat "$pf" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after the recycled-pid-case start"
+  card_id=$(FM_DASHBOARD_URL="$rec_url" "$DASH" add --title "After a recycled pid" \
+    --captain firstmate --prompt "the board still works" --status review | awk '{print $1}')
+  [ -n "$card_id" ] || fail "the board that started after the recycled pid does not serve"
+  kill -0 "$innocent_pid" 2>/dev/null \
+    || fail "the unrelated process was killed somewhere in the recycled-pid lifecycle"
+
+  # restart over the same recycled state must also spare the innocent process
+  # while still ending with a board running.
+  stop_dashboard_server "$MIGRATION_SERVER_PID"
+  MIGRATION_SERVER_PID=""
+  printf '%s\n' "$innocent_pid" >"$pf"
+  FM_HOME="$rec_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$rec_port" FM_DASHBOARD_DB="$rec_db" \
+    "$DASH" restart >"$rec_home/restart.out" 2>&1 \
+    || { cat "$rec_home/restart.out" >&2; fail "restart did not bring the board back over a recycled pidfile"; }
+  MIGRATION_SERVER_PID=$(cat "$pf" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after restarting over a recycled pidfile"
+  [ "$MIGRATION_SERVER_PID" != "$innocent_pid" ] || fail "restart recorded the unrelated pid as the board"
+  kill -0 "$innocent_pid" 2>/dev/null \
+    || fail "restart killed the unrelated process that had inherited the recorded pid"
+  assert_contains "$(FM_DASHBOARD_URL="$rec_url" "$DASH" show "$card_id")" "status:   review" \
+    "the board did not serve its cards after restarting over a recycled pidfile"
+
+  stop_dashboard_server "$MIGRATION_SERVER_PID"
+  MIGRATION_SERVER_PID=""
+  kill "$innocent_pid" 2>/dev/null
+  wait "$innocent_pid" 2>/dev/null || true
+  RECYCLED_PID=""
+  pass "the lifecycle commands refuse a recycled pid instead of signalling it"
+}
+
 test_health_and_server_status
 test_add_and_list_round_trip
 test_status_and_captain_and_title_updates
@@ -627,4 +704,5 @@ test_missing_id_and_unreachable_board_have_distinct_exit_codes
 test_testing_to_review_split_migration_runs_once
 test_a_start_that_cannot_bind_leaves_the_migration_pending
 test_restart_recovers_from_a_crashed_or_stopped_board
+test_lifecycle_commands_refuse_a_recycled_pid
 test_star_and_delete

@@ -476,9 +476,34 @@ cmd_audit_release() {
 
 pidfile() { printf '%s/state/dashboard.pid' "$FM_HOME"; }
 
+# A recorded pid only means "the board" if the process behind it is still the
+# dashboard entrypoint: a crash leaves the pidfile behind, and the host's pid
+# counter can hand that number to something unrelated before anyone runs
+# stop/restart. Where ps cannot answer, fall back to trusting the pidfile
+# rather than refusing to manage the board at all.
+dashboard_pid_is_ours() {  # <pid>
+  local pid=${1:-} cmd
+  [ -n "$pid" ] || return 1
+  command -v ps >/dev/null 2>&1 || return 0
+  cmd=$(ps -ww -p "$pid" -o command= 2>/dev/null) \
+    || cmd=$(ps -p "$pid" -o command= 2>/dev/null) \
+    || return 0
+  case "$cmd" in
+    *fleet-dashboard/server/main.py*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+dashboard_server_running() {  # <pid>
+  local pid=${1:-}
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  dashboard_pid_is_ours "$pid"
+}
+
 cmd_server_start() {
   local pf; pf=$(pidfile)
-  if [ -f "$pf" ] && kill -0 "$(cat "$pf")" 2>/dev/null; then
+  if [ -f "$pf" ] && dashboard_server_running "$(cat "$pf")"; then
     die "already running (pid $(cat "$pf")) - see: fm-dashboard.sh server-status"
   fi
   local host="${FM_DASHBOARD_HOST:-127.0.0.1}" port="${FM_DASHBOARD_PORT:-8420}"
@@ -497,26 +522,52 @@ cmd_server_start() {
   fi
 }
 
+# `--if-running` is what `restart` passes: having nothing to stop is not a
+# failure when the point of the command is to end up with a board running, but
+# a stop that actually refused still has to say so on stderr and report it.
 cmd_server_stop() {
+  local lenient=false
+  [ "${1:-}" = "--if-running" ] && lenient=true
   local pf; pf=$(pidfile)
-  [ -f "$pf" ] || die "no pidfile - not started via this script (see: fm-dashboard.sh server-status)"
+  if [ ! -f "$pf" ]; then
+    if $lenient; then return 0; fi
+    die "no pidfile - not started via this script (see: fm-dashboard.sh server-status)"
+  fi
   local pid; pid=$(cat "$pf")
-  kill -0 "$pid" 2>/dev/null || { rm -f "$pf"; die "recorded pid $pid is not running"; }
+  if ! kill -0 "$pid" 2>/dev/null; then
+    rm -f "$pf"
+    if $lenient; then return 0; fi
+    die "recorded pid $pid is not running"
+  fi
+  if ! dashboard_pid_is_ours "$pid"; then
+    rm -f "$pf"
+    local not_ours="recorded pid $pid is not a fleet dashboard server - left it alone and dropped the stale pidfile"
+    if $lenient; then printf 'fm-dashboard.sh: %s\n' "$not_ours" >&2; return 0; fi
+    die "$not_ours"
+  fi
   kill "$pid"
-  local waited=0
+  local waited=0 forced=false
   while kill -0 "$pid" 2>/dev/null; do
     waited=$((waited + 1))
-    [ "$waited" -eq 200 ] && kill -9 "$pid" 2>/dev/null
-    [ "$waited" -gt 300 ] && die "pid $pid did not exit - port still held, refusing to leave a stale pidfile"
+    if [ "$waited" -eq 200 ]; then kill -9 "$pid" 2>/dev/null; forced=true; fi
+    if [ "$waited" -gt 300 ]; then
+      local wedged="pid $pid did not exit - port still held, refusing to leave a stale pidfile"
+      if $lenient; then printf 'fm-dashboard.sh: %s\n' "$wedged" >&2; return 1; fi
+      die "$wedged"
+    fi
     sleep 0.05
   done
   rm -f "$pf"
-  printf 'stopped (pid %s)\n' "$pid"
+  if $forced; then
+    printf 'stopped (pid %s - forced with SIGKILL after it ignored SIGTERM)\n' "$pid"
+  else
+    printf 'stopped (pid %s)\n' "$pid"
+  fi
 }
 
 cmd_server_status() {
   local pf; pf=$(pidfile)
-  if [ -f "$pf" ] && kill -0 "$(cat "$pf")" 2>/dev/null; then
+  if [ -f "$pf" ] && dashboard_server_running "$(cat "$pf")"; then
     printf 'process: running (pid %s)\n' "$(cat "$pf")"
   else
     printf 'process: not running (no active pid recorded by this script)\n'
@@ -554,7 +605,7 @@ main() {
     audit-release) cmd_audit_release "$@" ;;
     start) cmd_server_start ;;
     stop) cmd_server_stop ;;
-    restart) ( cmd_server_stop ) 2>/dev/null || true; cmd_server_start ;;
+    restart) cmd_server_stop --if-running || true; cmd_server_start ;;
     server-status) cmd_server_status ;;
     ""|--help|-h|help) sed -n '2,64p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
     *) die "unknown command '$cmd' - run: fm-dashboard.sh --help" ;;

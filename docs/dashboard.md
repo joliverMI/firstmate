@@ -11,6 +11,10 @@ For when and why an agent calls which command, see [`fleet-dashboard`](../.agent
 One process: `bin/fm-dashboard.sh start` (wraps `python3 bin/fleet-dashboard/server/main.py`).
 It serves both the API and the built page from the same port - there is no separate frontend build or server to keep up.
 `bin/fm-dashboard.sh server-status` reports the process state and whether the API answers; `stop` and `restart` round out the lifecycle.
+`stop` is synchronous - it signals the recorded process and does not return until that process is actually gone, escalating to `SIGKILL` after about ten seconds and giving up after about fifteen, and on giving up it deliberately leaves the pidfile in place rather than reporting a port that is still held as free.
+That synchrony is what stops `restart` from ever running two servers against the same database at once, which is what the one-time migration below depends on (see "Why `testing` split into `testing` and `review`").
+Before signalling anything, all three lifecycle commands check that the recorded pid is still a dashboard process and not a number the host has since recycled, so a pidfile left behind by a crash is dropped rather than used to kill whatever unrelated process inherited that pid.
+`restart` brings the board up even when its stop half had nothing to stop or refused - a crashed board recovers with one command - and a stop that genuinely refused says why on stderr instead of failing silently.
 The process is not currently registered with a supervisor (systemd, cron `@reboot`, or equivalent) - that registration is a deliberate follow-up for whoever deploys this, done once on the host that will run it continuously, not part of this change. Until it is, the board does not survive a host reboot even though its *data* does (see "Persistence" below).
 
 Reachable from the Admiral's phone the same way Lavish already is: bind to the host's tailnet address rather than `127.0.0.1`.
