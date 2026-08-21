@@ -89,12 +89,12 @@ The remaining two jobs, both in one run, are outside that suite's attributed cau
 - `not ok - next bounded scan did not resume with the following child` in `tests/fm-inactive-reconcile.test.sh` remains genuinely unattributed to any cause, and has not recurred.
 
 Separately, two CI jobs hit `ci.yml`'s 15-minute `tests-portable-serial` timeout, confirmed by an identical GitHub check-run annotation ("The job has exceeded the maximum execution time of 15m0s").
-Neither is attributed to any cause, and neither sits on a shard unrelated to the original report.
-The first is job `95412020578`, `Behavior portable serial 3`, cancelled at `2026-08-17T14:23:26Z` - not beside the red runs but inside one of them, red run `32037964172`, whose shard 4 failed an assertion in the same run.
+Neither is attributed to any cause, and they fall on different shards relative to the original report.
+The first is job `95412020578`, `Behavior portable serial 3` - one of the two shards the report named - cancelled at `2026-08-17T14:23:26Z`, not beside the red runs but inside one of them, red run `32037964172`, whose shard 4 failed an assertion in the same run.
 It is the only shard-3 non-success anywhere in window A: all four of window A's assertion failures were shard 4 (jobs `95243266311`, `95243272968`, `95249497126`, `95412020616`).
-That single timeout is therefore the whole of the "shard 3" half of the reported premise.
-It also concluded `cancelled` rather than `failure`, so the count of 8 failing serial jobs above excludes it; a maintainer tallying every non-green serial job across the two windows will count 9.
-The second is job `96651633862` on 2026-08-21, after both windows and after PR #14, and itself followed by a clean run - which shows the class is still live.
+It is not, however, the whole of the "shard 3" half of the reported premise, because shard 3 also failed on real assertions twice inside window B: jobs `95755272024` (run `32150616824`, 2026-08-18T14:48Z) and `95990618501` (run `32227657272`, 2026-08-19T07:24Z).
+This timeout also concluded `cancelled` rather than `failure`, so the count of 8 failing serial jobs above excludes it; a maintainer tallying every non-green serial job across the two windows will count 9.
+The second is job `96651633862`, `Behavior portable serial 2` - a shard the report did not name - on 2026-08-21, after both windows and after PR #14, and itself followed by a clean run, which shows the class is still live.
 
 ## Current state
 
