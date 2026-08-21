@@ -91,9 +91,13 @@ EOF
 #!/usr/bin/env bash
 [ "$1" = repo ] && [ "$2" = set-default ] || exit 1
 if [ "$3" = --view ]; then
-  [ -f .fake-gh-view ] || exit 1
+  [ -f .fake-gh-view ] || { echo "no default repository has been set" >&2; exit 1; }
   cat .fake-gh-view
   exit 0
+fi
+if [ -f .fake-gh-pin-fails ]; then
+  echo "could not lock config file .git/config: File exists" >&2
+  exit 1
 fi
 git config remote.origin.gh-resolved base
 EOF
@@ -255,6 +259,43 @@ test_accepts_a_destination_matching_the_origin_case_insensitively() {
   pass "guard compares owner/repository case-insensitively, as GitHub itself does"
 }
 
+# The write is an authenticated online round trip that also takes the shared
+# common git config lock, and this guard runs in the Setup step of every
+# no-mistakes task, from concurrent crewmate worktrees of one checkout. An API
+# blip or a lock collision must not block a task whose destination was already
+# correct: the verified destination is the invariant, not the write.
+test_accepts_an_already_correct_destination_when_the_write_fails() {
+  local proj gate out code
+  proj=$(new_stub_case already-pinned \
+    https://github.com/joliverMI/firstmate.git joliverMI/firstmate \
+    https://github.com/joliverMI/firstmate.git joliverMI/firstmate)
+  gate="$(dirname "$proj")/gate.git"
+  git -C "$proj" config remote.origin.gh-resolved base
+  git -C "$gate" config remote.origin.gh-resolved base
+  : > "$proj/.fake-gh-pin-fails"
+  : > "$gate/.fake-gh-pin-fails"
+  out=$(run_guard "$proj" "$(dirname "$proj")/fakebin" 2>&1)
+  code=$?
+  expect_code 0 "$code" "an already-correct destination must survive a failed pin write" "$out"
+  assert_contains "$out" "sole pull-request destination" "guard reports the verified destination"
+  pass "guard accepts a destination already verified correct instead of failing on the write"
+}
+
+test_refusal_carries_ghs_own_reason() {
+  local proj out code
+  proj=$(new_stub_case pin-fails-unpinned \
+    https://github.com/joliverMI/firstmate.git - \
+    https://github.com/joliverMI/firstmate.git joliverMI/firstmate)
+  : > "$proj/.fake-gh-pin-fails"
+  out=$(run_guard "$proj" "$(dirname "$proj")/fakebin" 2>&1)
+  code=$?
+  expect_code 1 "$code" "guard still refuses when an unpinned destination cannot be pinned" "$out"
+  assert_contains "$out" "could not lock config file" \
+    "the refusal must carry gh's own reason, not just what failed"
+  assert_contains "$out" "the project checkout" "the refusal must still name what failed"
+  pass "guard reports gh's own diagnostic so a blocked crewmate records the real cause"
+}
+
 if [ -n "$LIVE_GH_SKIP" ]; then
   pass "skipped: live gh pin cases ($LIVE_GH_SKIP)"
 else
@@ -268,3 +309,5 @@ test_refuses_when_the_checkout_resolves_elsewhere
 test_refuses_when_the_gate_resolves_to_the_fork_parent
 test_refuses_an_unreadable_or_empty_destination_read
 test_accepts_a_destination_matching_the_origin_case_insensitively
+test_accepts_an_already_correct_destination_when_the_write_fails
+test_refusal_carries_ghs_own_reason

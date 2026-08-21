@@ -27,18 +27,35 @@
 # origin pins gh just as successfully to the wrong repository - so a read that
 # fails, reads back empty, or names anything else is a refusal, never a pass.
 #
+# That verified destination, not the write, is the invariant. The write is an
+# authenticated online round trip that also takes the shared common git config
+# lock, and this guard runs in every no-mistakes ship brief's Setup step, from
+# concurrent crewmate worktrees of the same checkout. So an already-correct
+# destination is confirmed with a local config read plus the offline `--view`
+# and left alone; `gh repo set-default origin` is called only when the
+# destination is missing or wrong, and a failed write refuses only if the
+# destination is still not verifiable afterwards. gh's own stderr is carried
+# into every refusal, because that diagnostic is what a blocked crewmate
+# records and what an operator recovers from.
+#
 # Usage: fm-pr-destination-guard.sh <project-dir>
 # Exit 0: the destination is pinned and verified to be this project's own
 #         repository (or origin is not GitHub, so this guard's fork-parent
 #         default does not apply).
 # Exit 1: origin is missing or unparseable, the gate cannot be discovered, or
-#         the pin could not be read back and confirmed to name this project's
-#         own repository. Never silently proceeds.
+#         the destination could not be read back and confirmed to name this
+#         project's own repository. Never silently proceeds.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-pr-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+
+GH_ERR=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-pr-destination-guard.XXXXXX") || {
+  echo "error: could not allocate a scratch file to capture gh's diagnostics" >&2
+  exit 1
+}
+trap 'rm -f "$GH_ERR"' EXIT INT TERM
 
 DIR=${1:?usage: fm-pr-destination-guard.sh <project-dir>}
 [ -d "$DIR" ] || { echo "error: not a directory: $DIR" >&2; exit 1; }
@@ -68,29 +85,51 @@ fi
 EXPECTED="$FM_PR_REMOTE_OWNER/$FM_PR_REMOTE_REPO"
 EXPECTED_LC=$(fm_pr_lower "$EXPECTED")
 
-pin_and_verify() {  # <dir> <label>
-  local dir=$1 label=$2 resolved viewed
-  if ! ( cd "$dir" && gh repo set-default origin ) >/dev/null 2>&1; then
-    echo "error: could not pin the pull-request destination for $label ($dir)" >&2
-    exit 1
+gh_reason() {
+  sed -n '/[^[:space:]]/{s/\r$//;p;q;}' "$GH_ERR" 2>/dev/null || true
+}
+
+refuse() {  # <message> [<gh-reason>]
+  local message=$1 reason=${2-}
+  if [ -n "$reason" ]; then
+    echo "error: $message (gh: $reason)" >&2
+  else
+    echo "error: $message" >&2
   fi
+  exit 1
+}
+
+destination_of() {  # <dir>: echo the pinned destination, gh's stderr into $GH_ERR
+  local dir=$1 viewed
+  : > "$GH_ERR"
+  viewed=$(cd "$dir" && gh repo set-default --view 2>"$GH_ERR") || return 1
+  printf '%s' "$viewed" | head -n1 | tr -d '[:space:]'
+}
+
+pin_and_verify() {  # <dir> <label>
+  local dir=$1 label=$2 resolved viewed pin_reason=
+  resolved=$(cd "$dir" && git config --get remote.origin.gh-resolved 2>/dev/null || true)
+  if [ -n "$resolved" ]; then
+    viewed=$(destination_of "$dir") || viewed=
+    if [ -n "$viewed" ] && [ "$(fm_pr_lower "$viewed")" = "$EXPECTED_LC" ]; then
+      return 0
+    fi
+  fi
+
+  : > "$GH_ERR"
+  ( cd "$dir" && gh repo set-default origin >/dev/null 2>"$GH_ERR" ) || pin_reason=$(gh_reason)
+
   resolved=$(cd "$dir" && git config --get remote.origin.gh-resolved 2>/dev/null || true)
   if [ -z "$resolved" ]; then
-    echo "error: pull-request destination pin did not take effect for $label ($dir) - remote.origin.gh-resolved is still unset" >&2
-    exit 1
+    refuse "could not pin the pull-request destination for $label ($dir) - remote.origin.gh-resolved is still unset" "$pin_reason"
   fi
-  if ! viewed=$(cd "$dir" && gh repo set-default --view 2>/dev/null); then
-    echo "error: could not read back the pinned pull-request destination for $label ($dir); it stays unverified and this guard refuses rather than assume it" >&2
-    exit 1
-  fi
-  viewed=$(printf '%s' "$viewed" | head -n1 | tr -d '[:space:]')
+  viewed=$(destination_of "$dir") || \
+    refuse "could not read back the pinned pull-request destination for $label ($dir); it stays unverified and this guard refuses rather than assume it" "$(gh_reason)"
   if [ -z "$viewed" ]; then
-    echo "error: the pinned pull-request destination for $label ($dir) read back empty; an unnamed destination is never a verified one" >&2
-    exit 1
+    refuse "the pinned pull-request destination for $label ($dir) read back empty; an unnamed destination is never a verified one" "$pin_reason"
   fi
   if [ "$(fm_pr_lower "$viewed")" != "$EXPECTED_LC" ]; then
-    echo "error: $label ($dir) resolves pull requests to $viewed, not this project's own $EXPECTED; refusing to proceed" >&2
-    exit 1
+    refuse "$label ($dir) resolves pull requests to $viewed, not this project's own $EXPECTED; refusing to proceed" "$pin_reason"
   fi
 }
 
