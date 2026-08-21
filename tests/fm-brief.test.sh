@@ -838,6 +838,49 @@ SH
   pass "fm-brief.sh: the direct-PR create command carries a PR body the shell never evaluates"
 }
 
+# Crewmates run concurrently on one host under one user, so the file the body
+# travels in cannot be a fixed path in a shared directory: one task's body
+# would silently replace another's between the write and the create. The same
+# emitted command run from two different checkouts must therefore name two
+# different body files.
+test_direct_pr_body_file_is_not_shared_between_checkouts() {
+  local home id brief cmd fakebin one two path_one path_two
+  home="$TMP_ROOT/direct-pr-bodypath-home"
+  mkdir -p "$home/data"
+  id="brief-direct-bodypath-b1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "brief was not scaffolded"
+  # shellcheck disable=SC2016 # The sed script is literal; nothing here should expand.
+  cmd=$(sed -n 's/.*`\(set -- --title[^`]*\)`.*/\1/p' "$brief" | head -n1)
+  [ -n "$cmd" ] || fail "the direct-PR brief must emit one runnable create command"
+  fakebin="$TMP_ROOT/direct-pr-bodypath-fakebin"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    --body-file) printf '%s\n' "$2" > ./gh-axi-body-path; shift 2 ;;
+    *) shift ;;
+  esac
+done
+SH
+  chmod +x "$fakebin/gh-axi"
+  for one in first second; do
+    two="$TMP_ROOT/direct-pr-bodypath-$one"
+    mkdir -p "$two"
+    git -C "$two" init -q
+    git -C "$two" remote add origin https://github.com/joliverMI/firstmate.git
+    ( cd "$two" && TMPDIR="$TMP_ROOT/direct-pr-bodypath-shared" PATH="$fakebin:$PATH" bash -c "$cmd" ) >/dev/null 2>&1
+    assert_present "$two/gh-axi-body-path" "the create call must name a body file in checkout '$one'"
+  done
+  path_one=$(cat "$TMP_ROOT/direct-pr-bodypath-first/gh-axi-body-path")
+  path_two=$(cat "$TMP_ROOT/direct-pr-bodypath-second/gh-axi-body-path")
+  [ "$path_one" != "$path_two" ] \
+    || fail "both checkouts named the same body file '$path_one'; concurrent crewmates would overwrite each other"
+  pass "fm-brief.sh: the direct-PR body file is private to each checkout, not a shared path"
+}
+
 # gh's fork-parent default is a GitHub behaviour, so a GitLab or self-hosted
 # project was never exposed to it. The emitted command must therefore still
 # open the PR there, exactly as it did before this destination work existed -
@@ -880,6 +923,7 @@ test_no_mistakes_setup_guard_path_resolves_outside_firstmate
 test_direct_pr_create_command_names_its_own_origin
 test_direct_pr_create_command_still_ships_a_non_github_project
 test_direct_pr_create_command_carries_a_body_the_shell_cannot_execute
+test_direct_pr_body_file_is_not_shared_between_checkouts
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
 test_ship_mode_is_required_and_closed_set
