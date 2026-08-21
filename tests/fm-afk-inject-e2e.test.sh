@@ -245,6 +245,28 @@ selfcheck_pane_input_pending() {
   fail "pane_input_pending self-check failed"
 }
 
+# start_composer_loop <pane-target> <log-file>: run another copy of the
+# supervisor composer loop in <pane-target>, logging every submitted line to its
+# OWN file, and wait until it has drawn the agent prompt glyph the composer
+# classifier proves as an empty agent composer. A second, independently logged
+# composer is what lets Scenario D tell "delivered to the addressed pane" apart
+# from "delivered to the window", which is the whole point of a pane-qualified
+# address.
+start_composer_loop() {  # <pane-target> <log-file>
+  local target=$1 logfile=$2 i=0
+  : > "$logfile"
+  "$REAL_TMUX" -L "$SOCKET" send-keys -t "$target" \
+    "bash '$LOOP_SCRIPT' '$logfile'" Enter
+  while [ "$i" -lt 50 ]; do
+    case "$("$REAL_TMUX" -L "$SOCKET" capture-pane -p -t "$target" 2>/dev/null)" in
+      *❯*) return 0 ;;
+    esac
+    sleep 0.2
+    i=$((i + 1))
+  done
+  return 1
+}
+
 wait_for_pane_input_pending() {
   local i=0
   while [ "$i" -lt 30 ]; do
@@ -421,8 +443,158 @@ test_scenario_c() {
   pass "Scenario C: a normal captain status injects exactly one clean single-line sentinel digest"
 }
 
+# --- Scenario D: the away channel's own supervisor-target shapes -------------
+# Scenarios A-C address the supervisor pane by a colon-free `%N` pane id, which
+# every tmux target resolver answers identically - so none of them can tell
+# whether inject_msg still asks for the resolution its target actually needs.
+# The two shapes that DO depend on it are exactly the two the away channel is
+# configured with in production:
+#
+#   FM_SUPERVISOR_TARGET="firstmate:0.1" - an operator-declared, pane-qualified
+#     address for the captain's own pane.
+#   FM_SUPERVISOR_TARGET unset           - FM_SUPERVISOR_TARGET_DEFAULT, the
+#     literal "firstmate:0", a session plus a window INDEX.
+#
+# bin/backends/tmux.sh resolves a recorded task window by exact NAME and refuses
+# anything else, because a dead `sess:fm-1.0` re-read as pane 0 of a live `fm-1`
+# types a steer into an unrelated crew's composer. Neither shape above is a
+# window name, so both are refused under that (default) reading, and the away
+# channel opts in to the general resolver instead. If that opt-in is ever
+# dropped from inject_msg's own call, the daemon keeps passing its upstream
+# existence gate - that probe still uses the general resolver - and then fails
+# at the submit, logging "inject failed" and buffering every escalation
+# indefinitely: the fleet's only route to the Admiral closes silently. This
+# scenario is what makes that regression loud.
+#
+# The daemon is deliberately NOT running here: inject_msg is invoked directly,
+# so what is under test is the injector's own argument list rather than any
+# scheduling around it.
+test_scenario_d() {
+  reset_state
+  afk_enter "$STATE_DIR"
+
+  local win pane_idx pane_target pane_log rc out
+  local fm_win fm_log fm_pane
+
+  win=$("$REAL_TMUX" -L "$SOCKET" display-message -p -t "$SUPERVISOR_PANE" '#{window_index}')
+  [ -n "$win" ] || fail "Scenario D: could not read the supervisor window index"
+
+  # (i) Operator-declared, pane-qualified: a REAL second pane, so that a
+  # delivery which landed on the window (or its first/active pane) instead of
+  # the addressed one shows up as a miss in this pane's log and a stray line in
+  # the original pane's.
+  "$REAL_TMUX" -L "$SOCKET" split-window -d -t "$SUPERVISOR_PANE" \
+    || fail "Scenario D: could not split a second supervisor pane"
+  pane_idx=$("$REAL_TMUX" -L "$SOCKET" list-panes -t "supervisor:$win" -F '#{pane_index}' | tail -1)
+  [ -n "$pane_idx" ] || fail "Scenario D: could not read the second pane's index"
+  pane_target="supervisor:$win.$pane_idx"
+  pane_log="$STATE_DIR/submitted-pane.log"
+
+  # Fixture proof: the address is genuinely pane-qualified, not a window whose
+  # NAME happens to be "<win>.<pane>" (which would resolve under either reading
+  # and prove nothing).
+  if "$REAL_TMUX" -L "$SOCKET" list-windows -t '=supervisor' -F '#{window_name}' \
+     | grep -Fqx "$win.$pane_idx"; then
+    fail "Scenario D: fixture invalid - a window is literally named '$win.$pane_idx'"
+  fi
+
+  start_composer_loop "$pane_target" "$pane_log" \
+    || fail "Scenario D: the second supervisor pane's composer never became ready"
+  : > "$LOG_FILE"
+
+  rc=0
+  # shellcheck disable=SC2030,SC2031 # Subshell-local by design: each call
+  # runs inject_msg under exactly one supervisor-target configuration, and
+  # neither may leak into the other or back into the surrounding test.
+  (
+    export PATH="$TMUX_SHIM_DIR:$PATH"
+    export FM_SUPERVISOR_TARGET="$pane_target"
+    export FM_SUPERVISOR_BACKEND=tmux
+    export FM_INJECT_CONFIRM_SLEEP=0.3
+    export FM_INJECT_CONFIRM_RETRIES=5
+    export LOG="$STATE_DIR/inject-pane.log"
+    inject_msg "Supervisor escalate: away channel reaches a pane-qualified target" "$STATE_DIR"
+  ) || rc=$?
+  out=$(cat "$STATE_DIR/inject-pane.log" 2>/dev/null || true)
+  [ "$rc" -eq 0 ] \
+    || fail "Scenario D: inject_msg refused the pane-qualified '$pane_target' (rc=$rc); the away channel cannot reach an operator-declared pane"$'\n'"$out"
+
+  grep -q 'away channel reaches a pane-qualified target' "$pane_log" \
+    || fail "Scenario D: the digest never reached the addressed pane '$pane_target'"$'\n'"$out"
+  local pane_line pane_hex
+  pane_line=$(grep 'away channel reaches a pane-qualified target' "$pane_log" | head -1)
+  case "$pane_line" in
+    *injection) ;;
+    *) fail "Scenario D: pane-qualified digest misclassified (expected injection): $pane_line" ;;
+  esac
+  pane_hex=$(printf '%s' "$pane_line" | cut -f1)
+  case "$pane_hex" in
+    e281a3*) ;;
+    *) fail "Scenario D: pane-qualified digest does not start with the sentinel marker (hex: $pane_hex)" ;;
+  esac
+  if grep -q 'away channel reaches a pane-qualified target' "$LOG_FILE"; then
+    fail "Scenario D: the digest addressed to pane $pane_idx was delivered into the window's OTHER pane"$'\n'"$(cat "$LOG_FILE")"
+  fi
+  pass "Scenario D: the away-mode injector delivers to an operator-declared session:window.pane target, and only to that pane"
+
+  # (ii) The built-in default, with FM_SUPERVISOR_TARGET unset: the literal
+  # "firstmate:0" of FM_SUPERVISOR_TARGET_DEFAULT - a session plus a window
+  # INDEX, not a window name. The window is renumbered to index 0 so the
+  # default's own address is exercised verbatim regardless of this machine's
+  # base-index setting.
+  "$REAL_TMUX" -L "$SOCKET" new-session -d -s firstmate -x 200 -y 50 \
+    || fail "Scenario D: could not create the default-target session"
+  fm_win=$("$REAL_TMUX" -L "$SOCKET" list-windows -t '=firstmate' -F '#{window_index}' | head -1)
+  [ -n "$fm_win" ] || fail "Scenario D: could not read the default-target window index"
+  if [ "$fm_win" != 0 ]; then
+    "$REAL_TMUX" -L "$SOCKET" move-window -s "firstmate:$fm_win" -t firstmate:0 \
+      || fail "Scenario D: could not renumber the default-target window to index 0"
+  fi
+  [ "$FM_SUPERVISOR_TARGET_DEFAULT" = "firstmate:0" ] \
+    || fail "Scenario D: FM_SUPERVISOR_TARGET_DEFAULT is '$FM_SUPERVISOR_TARGET_DEFAULT'; this fixture builds the session its old value named"
+  if "$REAL_TMUX" -L "$SOCKET" list-windows -t '=firstmate' -F '#{window_name}' | grep -Fqx 0; then
+    fail "Scenario D: fixture invalid - the default target's window is literally NAMED '0'"
+  fi
+  fm_pane=$("$REAL_TMUX" -L "$SOCKET" display-message -p -t firstmate:0 '#{pane_id}')
+  [ -n "$fm_pane" ] || fail "Scenario D: could not read the default-target pane id"
+  fm_log="$STATE_DIR/submitted-default.log"
+  start_composer_loop "$fm_pane" "$fm_log" \
+    || fail "Scenario D: the default-target composer never became ready"
+
+  rc=0
+  # shellcheck disable=SC2030,SC2031 # Subshell-local by design: each call
+  # runs inject_msg under exactly one supervisor-target configuration, and
+  # neither may leak into the other or back into the surrounding test.
+  (
+    export PATH="$TMUX_SHIM_DIR:$PATH"
+    unset FM_SUPERVISOR_TARGET
+    export FM_SUPERVISOR_BACKEND=tmux
+    export FM_INJECT_CONFIRM_SLEEP=0.3
+    export FM_INJECT_CONFIRM_RETRIES=5
+    export LOG="$STATE_DIR/inject-default.log"
+    inject_msg "Supervisor escalate: away channel reaches its default target" "$STATE_DIR"
+  ) || rc=$?
+  out=$(cat "$STATE_DIR/inject-default.log" 2>/dev/null || true)
+  [ "$rc" -eq 0 ] \
+    || fail "Scenario D: inject_msg refused FM_SUPERVISOR_TARGET_DEFAULT ('$FM_SUPERVISOR_TARGET_DEFAULT') (rc=$rc); an unconfigured away channel cannot reach the captain at all"$'\n'"$out"
+  grep -q 'away channel reaches its default target' "$fm_log" \
+    || fail "Scenario D: the digest never reached the default target '$FM_SUPERVISOR_TARGET_DEFAULT'"$'\n'"$out"
+  local fm_line
+  fm_line=$(grep 'away channel reaches its default target' "$fm_log" | head -1)
+  case "$fm_line" in
+    *injection) ;;
+    *) fail "Scenario D: default-target digest misclassified (expected injection): $fm_line" ;;
+  esac
+  pass "Scenario D: the away-mode injector still delivers to its own unconfigured default target"
+
+  "$REAL_TMUX" -L "$SOCKET" kill-session -t '=firstmate' 2>/dev/null || true
+  "$REAL_TMUX" -L "$SOCKET" kill-pane -t "$pane_target" 2>/dev/null || true
+  afk_exit "$STATE_DIR"
+}
+
 test_scenario_a
 test_scenario_b
 test_scenario_c
+test_scenario_d
 
 echo "all e2e injection tests passed"
