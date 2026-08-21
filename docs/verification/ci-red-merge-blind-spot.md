@@ -11,11 +11,18 @@ Run-by-run and job-by-job chronology for the incident that prompted this record 
 ## The gap: nothing here can stop or announce a red merge
 
 `main` has no branch protection and no required status checks configured at all: `GET repos/joliverMI/firstmate/branches/main/protection` returns 404 `Branch not protected` (verified 2026-08-21).
-`.github/workflows/ci.yml` runs on `push` to `main` (after a merge already landed) and on `pull_request` (against the PR's own diff, before merge) - there is no required-status-check gate on `main` itself, so by construction no merge here can ever be blocked by "is `main` currently red".
+`.github/workflows/ci.yml` runs on `push` to `main` (after a merge already landed) and on `pull_request`, and neither is a gate: with no required status check configured, nothing blocks a merge regardless of what either run reported.
 
-This is not hypothetical.
-PR #1 merged at `2026-08-16T23:28:25Z`; its own post-merge check runs did not start until `2026-08-16T23:28:30Z`, five seconds later - there was no possible way to see that check's result before the merge that produced it landed.
-The same structure applies to every merge in this fork: a PR's own `pull_request`-triggered CI can be green while an unrelated, already-red `main` sits unchecked, because nothing prompts anyone to look at `main`'s own CI state before merging into it.
+A `pull_request` run is not blind to `main`, and this record does not claim otherwise.
+`actions/checkout@v6` in `.github/workflows/ci.yml` sets no `ref:`, so the run checks out `refs/pull/N/merge` - the PR's head already merged into `main`'s tip at that moment.
+PR #6's pre-merge job log shows exactly that: `HEAD is now at b57e38c Merge 213584d... into 4f0a4f5...`, where `4f0a4f5` was `main`'s red tip.
+That run passed.
+`main`'s red state was exercised before the merge and still came back green, because the failure was intermittent rather than deterministic.
+A pre-merge run against a red `main` is therefore real evidence that can still read "green", which is a harder problem than an unchecked merge would be.
+
+Nor does a PR's own run have to finish before its merge lands.
+PR #6 merged at `2026-08-17T21:03:36Z` while its own CI run `32068680937` was still in progress; that run did not complete until `21:11:16Z`, 7m40s after the merge.
+Push-triggered CI is necessarily later still: PR #1 merged at `2026-08-16T23:28:25Z` and its post-merge checks did not start until `2026-08-16T23:28:30Z`.
 
 No push-based or scheduled signal surfaces a red `main` run to anyone either.
 The only way to learn `main` went red is to open the Actions tab or query the API for `main` specifically, and nothing in this fork's workflow currently prompts that.
@@ -38,10 +45,17 @@ The longest stretch inside window A with no pushes at all is `2026-08-17T00:19:3
 That single gap is longer than the 11 hours the original report claimed for the whole incident.
 
 The two windows ended for different reasons, and the contrast matters.
-Window A ended by luck: its closing merge (PR #6) touched none of the failing code or its tests, so an unrelated push simply happened to land on a non-failing run of the same flaky suite.
-Window B ended by partial mitigation: PR #12 (`b19134b`) raised `FM_PI_ARM_READY_TIMEOUT_MS` / `FM_OPENCODE_ARM_READY_TIMEOUT_MS` in `tests/fm-pi-watch-extension.test.sh` from 250ms to 2000ms, and PR #11 (`882004e`, the first green run) replaced that suite's lock case's fixed 120ms sleep with a direct `coordinator.ensureArmed(...)` await.
-[`arm-readiness-determinism-proof.md`](../arm-readiness-determinism-proof.md) calls those two changes `main`'s own independent partial mitigation for two of the four failing assertions.
-Neither addressed the underlying `ensureArm` coalescing defect; the actual fix (PR #14, merged `2026-08-19T22:11:31Z`) landed after both windows had already closed.
+Window A ended by luck: its closing merge (PR #6) touched none of the failing code or its tests, so an unrelated push simply happened to land on a non-failing run of the same intermittent suite.
+Window B ended because the test that could see the failure stopped being able to see it.
+Both of window B's suite failures were `OpenCode watch plugin must arm only when this session owns the fleet lock`, and the first green run that closed the window was PR #11 (`882004e`), which replaced that exact case's fixed 120ms sleep with a direct `coordinator.ensureArmed(...)` await.
+[`arm-readiness-determinism-proof.md`](../arm-readiness-determinism-proof.md) records what that did and did not do: the await "is what stops this branch's inherited copy of that case from reconstructing cause A", and of the changes already on `main` at that point, "None of those addresses cause A".
+The production `ensureArm` race was still there; only the test's ability to reproduce it had changed.
+Nobody noticed that shift either, which is the same blind spot in a more damaging form - the window closed because the witness was removed, not because the defect was.
+PR #14 (merged `2026-08-19T22:11:31Z`) is what actually fixed the race, after both windows had already closed.
+
+PR #12 (`b19134b`) does not belong in that story, even though it landed inside window B and raised `FM_PI_ARM_READY_TIMEOUT_MS` / `FM_OPENCODE_ARM_READY_TIMEOUT_MS` in `tests/fm-pi-watch-extension.test.sh` from 250ms to 2000ms.
+Its own push run was window B's last red run, and the raise applies only to this suite's six unready-arm cases, none of whose assertions failed anywhere in window B.
+The only one of those that ever failed on `main` at all - `Pi must deliver the actionable wake after bounded hung-successor recovery` - is window A's failure signature.
 
 ## What the red runs actually looked like
 
@@ -57,11 +71,11 @@ The remaining two jobs, both in one run, are outside that suite's attributed cau
   PR #11 (`882004e`) records that this suite's server-start wait "previously trusted `bin/fm-dashboard.sh`'s 1-second process-liveness sleep as proof the server was ready, which flakes on a busier CI runner (confirmed pre-existing on `main`, not introduced here)", and replaced it with a poll of the real `/api/health` check.
   The same PR added captured-output reporting to `tests/lib.sh`'s exit-code assertion, precisely because this failure could only ever report `expected exit 0, got 1`.
   The failure predates that merge and has not recurred since it.
-  That job also logged `not ok - OpenCode watch plugin must not treat external healthy output as an owned arm`, which is in `tests/fm-pi-watch-extension.test.sh` but is not one of the two assertions PR #14's cause table covers.
+  That job also logged `not ok - OpenCode watch plugin must not treat external healthy output as an owned arm`, which is in `tests/fm-pi-watch-extension.test.sh` but is not one of the assertions PR #14's cause table covers.
 - `not ok - next bounded scan did not resume with the following child` in `tests/fm-inactive-reconcile.test.sh` remains genuinely unattributed to any cause, and has not recurred.
 
 Separately, two CI jobs on unrelated shards each hit `ci.yml`'s 15-minute `tests-portable-serial` timeout, confirmed by an identical GitHub check-run annotation ("The job has exceeded the maximum execution time of 15m0s"): one on 2026-08-17 inside window A, and one on 2026-08-21 (after the fix, and itself followed by a clean run).
-Neither is attributed to the same cause as the suite failures.
+Neither is attributed to any cause, and the second shows the class is still live: it landed after both windows and after PR #14.
 
 ## Current state
 
@@ -77,4 +91,4 @@ None of the following is implemented here; each is a decision or a follow-up, no
 - **No branch protection on `main`.** Whether to add required status checks (and which ones) is a policy decision that changes how every future merge to this fork works - left to the captain/Admiral rather than decided unilaterally here.
 - **No red-`main` notification of any kind.** This record deliberately does not propose or build one; it only names the gap, per instruction.
 - **The `gh` / `gh-axi` default-repo-resolution hazard** should be flagged to whoever owns tooling defaults for this fleet: an unqualified `run list`/`run view` silently targets the upstream parent instead of the configured fork in any clone that has not pinned `remote.origin.gh-resolved`.
-- **One non-suite test failure** (`tests/fm-inactive-reconcile.test.sh`) **and two 15-minute shard timeouts** remain unattributed to any specific cause. Neither class has recurred since - evidence of absence, not proof of a fix.
+- **One non-suite test failure** (`tests/fm-inactive-reconcile.test.sh`) **and the 15-minute shard timeouts** remain unattributed to any specific cause. The test failure has not recurred, which is evidence of absence rather than proof of a fix; the timeout class demonstrably did recur (job `96651633862`, run `32441040308`, 2026-08-21T02:46Z), after both windows and after PR #14.
