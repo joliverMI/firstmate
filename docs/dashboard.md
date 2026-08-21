@@ -154,6 +154,7 @@ Those are the two statuses with a reason column (`waiting_reason`, `needs_attent
 Passing `--reason` to `bin/fm-dashboard.sh status <id> working|paused|testing|complete` exits 0 and records the text only as a status-history note, which neither the `status` subcommand nor `show` ever surfaces - so it is written somewhere nobody reads.
 That is pre-existing behaviour this task deliberately did not change; it is named here so it is a known gap rather than a surprise.
 What this task did do is stop `add` from adding a second way into the same hole: `add --reason` is refused outright for any status but `needs-attention`, and the refusal only points at the `status` subcommand when the status given is one that genuinely stores a reason there.
+The gap now has a deliberate producer rather than only accidental ones: the mechanical card link's advance-on-landing writes a held `needs_attention_reason`/`waiting_reason` into exactly this note so the status change cannot destroy it (see "The mechanical card link" above), which preserves the text without yet making it visible anywhere.
 
 ## Link policy (standing order 17)
 
