@@ -55,6 +55,14 @@ discrepancy_count_for() {  # <task_id>
   audit_status_json | jq --arg t "$1" '[.log[] | select(.task_id==$t and .kind=="discrepancy")] | length'
 }
 
+# Narrower: only the entries the not-started check itself writes, told apart by
+# the opening the audit log actually carries for them. Lets a test say "this
+# finding was raised" without an unrelated finding on the same card counting.
+not_started_finding_count_for() {  # <task_id>
+  audit_status_json | jq --arg t "$1" \
+    '[.log[] | select(.task_id==$t and .kind=="discrepancy" and (.text | startswith("still not_started, but")))] | length'
+}
+
 test_claim_is_exclusive_and_release_frees_it() {
   "$DASH" audit-claim --json >"$FM_HOME/claim1.json" || fail "first claim failed"
   assert_contains "$(cat "$FM_HOME/claim1.json")" '"claimed": true' "first claim was not granted"
@@ -303,6 +311,62 @@ test_sweep_flags_a_blocked_not_started_card_once_not_once_per_sweep() {
   pass "the sweep flags a blocked not-started card once per pairing, not once per sweep"
 }
 
+# Regression: the board lets a card go back to `not_started` from any status,
+# so it can arrive here still carrying a finding some earlier check raised
+# about it. Keying the stay-quiet rule on the card alone made that old,
+# unrelated entry silence this check for good - a card invisible by
+# construction, the exact failure the not-started check exists to end.
+test_an_unrelated_finding_on_the_card_does_not_silence_the_not_started_check() {
+  local target_id waiter_id flagged
+  target_id=$("$DASH" add --title "Put back to never-started" --captain firstmate \
+    --prompt "already carries an older finding from another check" | awk '{print $1}')
+  [ -n "$target_id" ] || fail "could not add the not-started target card"
+  waiter_id=$("$DASH" add --title "Blocked on the card that was put back" --captain firstmate \
+    --prompt "blocked" | awk '{print $1}')
+  [ -n "$waiter_id" ] || fail "could not add the waiting card"
+  "$DASH" status "$waiter_id" waiting --waiting-on "$target_id" --reason "needs that work first" >/dev/null \
+    || fail "could not set waiting status"
+  # What a card that was flagged while it claimed `working` and then reset
+  # carries into not_started: a discrepancy of its own, newer than the block.
+  "$DASH" audit-log "$target_id" "card claims working, but the linked crew reads: state: idle" \
+    --kind discrepancy >/dev/null || fail "could not record the unrelated finding"
+
+  "$SWEEP" --forced || fail "sweep script exited non-zero"
+
+  flagged=$(not_started_finding_count_for "$target_id")
+  [ "$flagged" -ge 1 ] \
+    || fail "an unrelated finding already on the card silenced the not-started check entirely"
+  pass "a finding another check raised about the same card never silences the not-started check"
+}
+
+# Two waiting cards can be blocked on one not-started card. The finding is
+# about that card's own claim, so it is one finding, not one per waiter - and
+# the log snapshot the sweep reads predates its own writes, so the run has to
+# remember what it already said.
+test_two_waiting_cards_on_one_not_started_card_produce_one_finding_per_sweep() {
+  local target_id first_waiter second_waiter before after
+  target_id=$("$DASH" add --title "One blocker, two blocked cards" --captain firstmate \
+    --prompt "named by two waiting cards" | awk '{print $1}')
+  [ -n "$target_id" ] || fail "could not add the shared not-started target"
+  first_waiter=$("$DASH" add --title "First card blocked on it" --captain firstmate \
+    --prompt "blocked" | awk '{print $1}')
+  second_waiter=$("$DASH" add --title "Second card blocked on it" --captain firstmate \
+    --prompt "blocked too" | awk '{print $1}')
+  [ -n "$first_waiter" ] && [ -n "$second_waiter" ] || fail "could not add both waiting cards"
+  "$DASH" status "$first_waiter" waiting --waiting-on "$target_id" --reason "needs it first" >/dev/null \
+    || fail "could not set the first waiting status"
+  "$DASH" status "$second_waiter" waiting --waiting-on "$target_id" --reason "needs it too" >/dev/null \
+    || fail "could not set the second waiting status"
+  before=$(not_started_finding_count_for "$target_id")
+
+  "$SWEEP" --forced || fail "sweep script exited non-zero"
+
+  after=$(not_started_finding_count_for "$target_id")
+  [ "$after" -eq $((before + 1)) ] \
+    || fail "one sweep logged $((after - before)) findings for a card two waiting cards name; expected exactly one"
+  pass "two waiting cards blocked on one not-started card are a single finding in one sweep"
+}
+
 test_sweep_flags_stale_unreplied_needs_attention_but_not_a_reply() {
   local id
   id=$("$DASH" add --title "Needs a call" --captain firstmate --prompt "needs-attention aging" | awk '{print $1}')
@@ -402,6 +466,8 @@ test_sweep_flags_waiting_on_completed_card
 test_sweep_counts_not_started_cards_and_never_flags_an_unverifiable_one
 test_sweep_flags_a_not_started_card_that_live_work_is_waiting_on
 test_sweep_flags_a_blocked_not_started_card_once_not_once_per_sweep
+test_an_unrelated_finding_on_the_card_does_not_silence_the_not_started_check
+test_two_waiting_cards_on_one_not_started_card_produce_one_finding_per_sweep
 test_sweep_flags_stale_unreplied_needs_attention_but_not_a_reply
 test_force_button_endpoint_runs_a_real_sweep
 test_force_button_refuses_while_a_sweep_is_already_running

@@ -36,10 +36,12 @@
 #      one, not a guess. Age alone is never the signal here - most
 #      not-started cards are legitimately queued, and unlike needs_attention
 #      above this check applies no age threshold at all. Flagged once per
-#      pairing, not once per sweep: an existing discrepancy entry for the
-#      card dated at or after the waiting card's last transition into
-#      `waiting` means it has already been reported and the sweep stays quiet
-#      until that pairing clears or changes.
+#      pairing, not once per sweep: one of this check's own earlier entries
+#      for the card, dated at or after the waiting card's last transition
+#      into `waiting`, means it has already been reported and the sweep stays
+#      quiet until that pairing clears or changes. A finding some other check
+#      wrote about the same card never silences it, and two waiting cards
+#      naming one target are still a single finding about that target.
 #   review is optional to him by design (the skill's own asymmetry), so it is
 #   never checked here at all - see "Why `needs-attention` is a separate
 #   status from `review`" in docs/dashboard.md.
@@ -214,8 +216,20 @@ if [ -n "$BLOCKED_PAIRS" ]; then
   # boundary past the old entry and the sweep speaks again.
   AUDIT_LOG_JSON=$("$DASH" audit-status --json) \
     || fail_sweep "sweep failed reading the audit log: dashboard unreachable mid-sweep"
+  # Only this check's own past entries count as "already reported", matched by
+  # the exact opening this check writes. Any card can be put back to
+  # not_started from any status, so a card that collected an unrelated finding
+  # while it was `working` would otherwise arrive here pre-silenced - a card
+  # invisible by construction, which is the failure this whole check exists to
+  # end rather than reproduce.
+  NOT_STARTED_FINDING_OPENER="still not_started, but"
+  flagged_this_sweep=""
   while IFS=$'\t' read -r waiter_id target_id; do
     [ -n "$waiter_id" ] && [ -n "$target_id" ] || continue
+    # Two waiting cards can name the same target; the finding is about the
+    # target's own claim, so it is one finding either way. The log snapshot
+    # above predates this run's own writes, so the run tracks them itself.
+    case " $flagged_this_sweep " in *" $target_id "*) continue ;; esac
     waiter_json=$("$DASH" show "$waiter_id" --json 2>/dev/null) || continue
     waiting_since=$(printf '%s' "$waiter_json" \
       | jq -r '[.status_history[] | select(.to_status=="waiting")] | last | .changed_at // empty')
@@ -225,10 +239,14 @@ if [ -n "$BLOCKED_PAIRS" ]; then
     # Inclusive on the boundary itself: both timestamps are whole seconds, and
     # the first flag for a pairing is normally written in the same second the
     # block was recorded, so a strict > would let that first entry re-log.
-    already=$(printf '%s' "$AUDIT_LOG_JSON" | jq -r --arg t "$target_id" --arg since "$waiting_since" \
-      '([.log[] | select(.task_id==$t and .kind=="discrepancy" and .created_at >= $since)] | length) > 0')
+    already=$(printf '%s' "$AUDIT_LOG_JSON" \
+      | jq -r --arg t "$target_id" --arg since "$waiting_since" --arg opener "$NOT_STARTED_FINDING_OPENER" \
+        '([.log[] | select(.task_id==$t and .kind=="discrepancy" and .created_at >= $since
+                            and ((.text // "") | startswith($opener)))] | length) > 0')
     [ "$already" = "true" ] && continue
-    log_discrepancy "$target_id" "still not_started, but $waiter_id is waiting specifically on it"
+    if log_discrepancy "$target_id" "$NOT_STARTED_FINDING_OPENER $waiter_id is waiting specifically on it"; then
+      flagged_this_sweep="$flagged_this_sweep $target_id"
+    fi
   done <<<"$BLOCKED_PAIRS"
 fi
 
