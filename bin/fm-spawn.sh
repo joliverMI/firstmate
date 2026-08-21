@@ -1738,53 +1738,21 @@ real_path_or_raw() {  # <path>
 # abort cleanup is disarmed first and the orphaned orca ids are named instead,
 # with orca's own inspection tooling rather than treehouse's (orca does not use
 # the treehouse pool).
-refuse_spawn_worktree_collision() {  # <source> <inspect-target> <other-id> <reason>
-  local source=$1 inspect_target=$2 other_id=$3 reason=$4 hint
+refuse_spawn_worktree_collision() {  # <source> <inspect-target> <other-id>
+  local source=$1 inspect_target=$2 other_id=$3 hint
   ORCA_ABORT_CLEANUP=0
   if [ "$BACKEND" = orca ]; then
     hint="orca worktree id '${ORCA_WORKTREE_ID:-unknown}' and terminal '${ORCA_TERMINAL:-none}' are deliberately left in place because they may be $other_id's own - inspect them with 'orca worktree show --worktree id:${ORCA_WORKTREE_ID:-unknown}' and reclaim them yourself once you know whose they are"
   else
     hint="the isolated-copy pool may be exhausted (a hard cap, a stale lease, or a crashed holder can all look like room when there is none) - free it (inspect $other_id, then 'treehouse status') before retrying"
   fi
-  echo "error: $source resolved to worktree '$WT', already recorded as task $other_id's own isolated copy $reason; refusing to spawn $ID onto a copy another task may still be using. ${hint}. Inspect target $inspect_target" >&2
+  echo "error: $source resolved to worktree '$WT', already recorded as task $other_id's own isolated copy; refusing to spawn $ID onto a copy another task may still be using. ${hint}. Inspect target $inspect_target" >&2
   exit 1
-}
-
-# release_dead_holder_worktree_claim: drop just the `worktree=` line from a
-# confirmed-dead holder's record, atomically and under that record's own meta
-# lock, leaving the rest of the record intact. Only ever called once the holder's
-# endpoint has been confirmed gone, so the claim it drops is provably stale. A
-# record that vanished under the lock is already claim-free and counts as
-# released; any other failure returns non-zero so the caller refuses instead of
-# leaving two records claiming one copy.
-release_dead_holder_worktree_claim() {  # <holder-meta>
-  local meta=$1 base status=0
-  [ -f "$meta" ] || return 0
-  base=$(basename "$meta")
-  SPAWN_META_LOCK=$(fm_meta_lock_path "$meta") || return 1
-  fm_lock_acquire_wait "$SPAWN_META_LOCK"
-  SPAWN_META_LOCK_HELD=1
-  if [ ! -f "$meta" ]; then
-    fm_lock_release "$SPAWN_META_LOCK" || status=1
-    SPAWN_META_LOCK_HELD=0
-    return "$status"
-  fi
-  SPAWN_META_TMP="$STATE/.$base.claim.${BASHPID:-$$}"
-  if [ ! -w "$meta" ] \
-     || ! awk -F= '$1 != "worktree"' "$meta" > "$SPAWN_META_TMP" \
-     || ! mv -f "$SPAWN_META_TMP" "$meta"; then
-    status=1
-    rm -f "$SPAWN_META_TMP" 2>/dev/null || true
-  fi
-  SPAWN_META_TMP=
-  fm_lock_release "$SPAWN_META_LOCK" || status=1
-  SPAWN_META_LOCK_HELD=0
-  return "$status"
 }
 
 validate_spawn_worktree() {  # <source> <inspect-target>
   local source=$1 inspect_target=$2 wt_real proj_real wt_top wt_top_real
-  local other_meta other_id other_wt other_real other_backend other_target other_state
+  local other_meta other_id other_wt other_real
   wt_real=
   if ! wt_real=$(cd "$WT" 2>/dev/null && pwd -P); then
     wt_real=
@@ -1815,54 +1783,21 @@ validate_spawn_worktree() {  # <source> <inspect-target>
     [ -n "$other_wt" ] || continue
     other_real=$(real_path_or_raw "$other_wt")
     if [ "$other_real" = "$wt_real" ]; then
-      # A record claiming the worktree only blocks this spawn while its own
-      # endpoint could still be running. The liveness answer comes from the
-      # shared recovery-grade primitive (fm_backend_agent_alive in
-      # bin/fm-backend.sh), and ONLY a literal `dead` licenses reuse: `alive`,
-      # `unknown`, and any other answer refuse. `unknown` is what that
-      # primitive already returns for an unreadable record, an unverified or
-      # unimplemented backend, a remote endpoint it deliberately never probes
-      # locally, and any failed probe, so treating everything but `dead` as
-      # non-permitting covers all of them without special cases.
-      #
-      # Known dependency: fm_backend_agent_state/fm_backend_agent_alive is
-      # being corrected by a separate, concurrent task because it has reported
-      # some dead endpoints as alive. This check is correct under both the
-      # current and the corrected behavior - a false `alive` only ever costs an
-      # extra refusal, never a wrongful reuse and never a wrongful clear of the
-      # holder's own claim below.
-      #
-      # Known remaining case: a teardown that already returned the worktree to
-      # the pool but exited before removing its own record (the herdr
-      # endpoint-confirmation-ambiguous path is the clearest one) leaves a
-      # record whose endpoint reads ambiguous rather than dead, so this guard
-      # still refuses that genuinely free slot. Clearing `worktree=` at the
-      # moment fm-teardown.sh returns the worktree is the root fix and is filed
-      # as its own separate task, not folded in here.
-      other_backend=$(fm_backend_of_meta "$other_meta")
-      other_target=$(fm_backend_target_of_meta "$other_meta") || other_target=
-      other_state=unknown
-      if [ -n "$other_target" ]; then
-        other_state=$(fm_backend_agent_alive "$other_backend" "$other_target" 2>/dev/null) || other_state=unknown
-      fi
-      if [ "$other_state" != dead ]; then
-        refuse_spawn_worktree_collision "$source" "$inspect_target" "$other_id" \
-          "whose endpoint reads '${other_state:-unknown}' rather than a confirmed-dead one"
-      fi
-      # Reuse past a confirmed-dead holder is only safe if that holder stops
-      # claiming the copy at the same moment, and strictly BEFORE this task
-      # publishes its own record naming it (that publication happens far later
-      # in this script, so this position is the ordering guarantee): two records
-      # claiming one copy is the original hazard with a delay fuse, because the
-      # next ordinary cleanup of the dead holder would return the copy the new
-      # live task is working in. A crash between the two steps leaves ZERO
-      # records claiming the worktree, which is recoverable; two is not. Only
-      # the literal `dead` gate above reaches this clearing, so an ambiguous
-      # answer can never erase a live worker's own record.
-      if ! release_dead_holder_worktree_claim "$other_meta"; then
-        refuse_spawn_worktree_collision "$source" "$inspect_target" "$other_id" \
-          "whose endpoint is confirmed gone but whose stale claim on that copy could not be cleared"
-      fi
+      # Accepted limitation, stated here so a refusal on a genuinely free slot
+      # is recognizable as intentional rather than a bug to "fix" by loosening
+      # this guard: a record alone is enough to refuse. No liveness of the
+      # holding task is consulted and no other task's record is ever mutated
+      # from here, so a slot whose stale record still claims it - because
+      # fm-teardown.sh returns the worktree to the pool before it removes that
+      # task's meta, or because it bailed at one of the exit points that
+      # deliberately retain the record - stays refused until that record is
+      # cleaned up. That is the deliberate trade: a stuck refusal is
+      # recoverable, silently reusing a copy a stale-but-uncertain record might
+      # still describe is not. The queued follow-up task owns both halves of the
+      # real fix - correcting fm-teardown.sh's worktree-return-then-record-
+      # removal ordering, and working out how to reclaim a confirmed-dead
+      # holder's worktree safely - with its own review, not bolted onto this one.
+      refuse_spawn_worktree_collision "$source" "$inspect_target" "$other_id"
     fi
   done
 }
