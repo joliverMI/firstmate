@@ -780,9 +780,20 @@ test_teardown_preserves_needs_attention_reason_in_history_on_landing() {
   [ -z "$(card_field "$card" needs_attention_reason)" ] \
     || fail "needs_attention_reason must clear once the card leaves needs_attention (store.py's own contract)"
 
+  # The reason text is ALSO present in an earlier status_history row (the
+  # needs_attention transition set up above), regardless of what teardown
+  # does - asserting only "the JSON blob contains this text somewhere" would
+  # pass unchanged against the old code that discarded it, since that earlier
+  # row survives either way. The thing that actually distinguishes old from
+  # new behavior is whether THIS transition - needs_attention -> review, the
+  # one teardown itself just made - carries the reason as its own note.
   shown=$("$DASH" show "$card" --json)
-  assert_contains "$shown" "approve the \$400 renewal" \
-    "the needs_attention reason was silently discarded instead of carried into the card's status history"
+  local last_to last_note
+  last_to=$(printf '%s' "$shown" | jq -r '.status_history[-1].to_status // empty')
+  last_note=$(printf '%s' "$shown" | jq -r '.status_history[-1].note // empty')
+  [ "$last_to" = review ] || fail "the most recent status history entry was not the needs_attention -> review transition (got to_status=$last_to)"
+  [ "$last_note" = "approve the \$400 renewal" ] \
+    || fail "the needs_attention -> review transition's own history note did not carry the reason forward (got note=[$last_note]) - the reason was silently discarded instead of carried into the card's status history"
   pass "teardown preserves a needs_attention card's reason in its status history instead of silently nulling it"
 }
 
