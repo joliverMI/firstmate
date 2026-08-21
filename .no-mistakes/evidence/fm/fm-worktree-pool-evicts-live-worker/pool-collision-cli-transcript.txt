@@ -1,0 +1,89 @@
+firstmate: spawning onto an isolated copy another live task already owns
+End-to-end CLI transcript, real bin/fm-spawn.sh, real git worktrees + origin.
+Backend terminal and the treehouse binary are stubbed so the pool's answer
+can be forced to the occupied copy; everything downstream is the real code path.
+
+==================================================================
+  BEFORE FIX (base e2786ac)   (firstmate at /home/joliv/.no-mistakes/worktrees/4cc5c0885385/01M0JA1BXB2K09E2W7MAD9HWYG)
+==================================================================
+
+Setup: task 'shipwright-a' is live in pool copy /tmp/fm-collision-demo.F9Om2V/pool-copy-1
+       with in-flight, unlanded work committed at 7f5ecc9:
+7f5ecc9 wip: shipwright-a's unlanded work
+       $ ls pool-copy-1
+         feature.txt
+         README.md
+
+The pool now hands that same copy back for a second task, 'shipwright-b'.
+
+$ fm-spawn.sh shipwright-b <project> --mode no-mistakes --yolo off
+  warning: /tmp/fm-collision-demo.F9Om2V/home/data/shipwright-b/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+  spawned shipwright-b harness=codex kind=ship mode=no-mistakes yolo=off window=firstmate:fm-shipwright-b worktree=/tmp/fm-collision-demo.F9Om2V/pool-copy-1
+
+exit status: 0
+
+--- what happened to shipwright-a's in-flight work --------------------
+$ git -C pool-copy-1 log --oneline -1
+  7036587 initial
+$ ls pool-copy-1
+  README.md
+  => shipwright-a's unlanded commit 7f5ecc9 is GONE (worktree reset out from under it)
+
+--- firstmate's own record of who owns that copy ----------------------
+$ grep -H worktree= state/*.meta
+  shipwright-a.meta:worktree=/tmp/fm-collision-demo.F9Om2V/pool-copy-1
+  shipwright-b.meta:worktree=/tmp/fm-collision-demo.F9Om2V/pool-copy-1
+  => 2 task record(s) claim pool copy /tmp/fm-collision-demo.F9Om2V/pool-copy-1
+
+==================================================================
+  AFTER FIX (branch fm/fm-worktree-pool-evicts-live-worker)   (firstmate at /home/joliv/.no-mistakes/worktrees/4cc5c0885385/01M0JA1BXB2K09E2W7MAD9HWYG)
+==================================================================
+
+Setup: task 'shipwright-a' is live in pool copy /tmp/fm-collision-demo.nP8iXv/pool-copy-1
+       with in-flight, unlanded work committed at f1c7de6:
+f1c7de6 wip: shipwright-a's unlanded work
+       $ ls pool-copy-1
+         feature.txt
+         README.md
+
+The pool now hands that same copy back for a second task, 'shipwright-b'.
+
+$ fm-spawn.sh shipwright-b <project> --mode no-mistakes --yolo off
+  warning: /tmp/fm-collision-demo.nP8iXv/home/data/shipwright-b/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+  error: treehouse get resolved to worktree '/tmp/fm-collision-demo.nP8iXv/pool-copy-1', already recorded as task shipwright-a's own isolated copy; refusing to spawn shipwright-b onto a copy another task may still be using. the isolated-copy pool may be exhausted (a hard cap, a stale lease, or a crashed holder can all look like room when there is none) - free it (inspect shipwright-a, then 'treehouse status') before retrying; a close was requested for this attempt's own window fm-shipwright-b (verify it is gone - a failed close is silent), while the copy itself is left alone because it may be shipwright-a's. Inspect target firstmate:fm-shipwright-b
+
+exit status: 1
+
+--- what happened to shipwright-a's in-flight work --------------------
+$ git -C pool-copy-1 log --oneline -1
+  f1c7de6 wip: shipwright-a's unlanded work
+$ ls pool-copy-1
+  feature.txt
+  README.md
+  => shipwright-a's unlanded commit f1c7de6 is INTACT
+
+--- firstmate's own record of who owns that copy ----------------------
+$ grep -H worktree= state/*.meta
+  shipwright-a.meta:worktree=/tmp/fm-collision-demo.nP8iXv/pool-copy-1
+  => 1 task record(s) claim pool copy /tmp/fm-collision-demo.nP8iXv/pool-copy-1
+
+==================================================================
+  NO FALSE-POSITIVE: a copy teardown genuinely retired stays reusable
+==================================================================
+
+1) First task takes pool copy 1.
+$ fm-spawn.sh pool-first-task <project> --mode no-mistakes --yolo off
+  spawned pool-first-task harness=codex kind=ship mode=no-mistakes yolo=off window=firstmate:fm-pool-first-task worktree=/tmp/fm-reuse-demo.6bJq0x/pool-copy-1
+  exit status: 0
+
+2) That task finishes; fm-teardown.sh returns the copy and retires its record.
+$ rm -f state/pool-first-task.meta state/pool-first-task.turn-ended
+
+3) The pool hands the same copy to the next task - this must NOT be refused.
+$ fm-spawn.sh pool-next-task <project> --mode no-mistakes --yolo off
+  spawned pool-next-task harness=codex kind=ship mode=no-mistakes yolo=off window=firstmate:fm-pool-next-task worktree=/tmp/fm-reuse-demo.6bJq0x/pool-copy-1
+  exit status: 0
+
+--- who firstmate records on pool copy 1 now --------------------------
+  pool-next-task.meta:worktree=/tmp/fm-reuse-demo.6bJq0x/pool-copy-1
+

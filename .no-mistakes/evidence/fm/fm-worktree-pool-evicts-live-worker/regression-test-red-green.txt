@@ -1,0 +1,27 @@
+Regression suite tests/fm-spawn-pool-worktree-collision.test.sh
+run against the SAME test file with bin/fm-spawn.sh at base, then at HEAD.
+
+### RED - bin/fm-spawn.sh checked out at base e2786ac
+
+FM_TEST_BEGIN 2026-08-21T16:20:07Z tests/fm-spawn-pool-worktree-collision.test.sh family=backend-dispatch expected_gate_skip=none
+--- output ---
+warning: /tmp/fm-spawn-pool-collision.KWLpe8/collision/home/data/collision-new-z1/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+spawned collision-new-z1 harness=codex kind=ship mode=no-mistakes yolo=off window=firstmate:fm-collision-new-z1 worktree=/tmp/fm-spawn-pool-collision.KWLpe8/collision/wt
+not ok - spawn must refuse a worktree already owned by another tracked task: expected exit 1, got 0
+FM_TEST_END 2026-08-21T16:20:09Z tests/fm-spawn-pool-worktree-collision.test.sh exit=1 duration_ms=1885 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=1 skipped_gate=0 duration_ms=1913
+FM_TEST_SUMMARY_FAMILY family=backend-dispatch count=1 duration_ms=1885 failed=1
+FM_TEST_SLOWEST rank=1 script=tests/fm-spawn-pool-worktree-collision.test.sh duration_ms=1885
+
+### GREEN - bin/fm-spawn.sh at d25e3b9 (this change)
+
+FM_TEST_BEGIN 2026-08-21T16:20:09Z tests/fm-spawn-pool-worktree-collision.test.sh family=backend-dispatch expected_gate_skip=none
+ok - a worktree already recorded for another tracked task is refused, not silently reused
+ok - a relaunch into a worktree another record claims refuses with record advice, not pool advice
+ok - an unrelated task tracked against its own distinct worktree does not block a fresh spawn
+ok - a worktree a finished task's teardown retired is handed to a new task without refusal
+# all fm-spawn-pool-worktree-collision tests passed
+FM_TEST_END 2026-08-21T16:20:18Z tests/fm-spawn-pool-worktree-collision.test.sh exit=0 duration_ms=8639 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=8666
+FM_TEST_SUMMARY_FAMILY family=backend-dispatch count=1 duration_ms=8639 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-spawn-pool-worktree-collision.test.sh duration_ms=8639
