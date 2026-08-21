@@ -380,7 +380,7 @@ EOF
   *)  # no-mistakes
     SETUP2="
 2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`.
-3. Always run \`bin/fm-pr-destination-guard.sh .\`, whether or not step 2 just ran \`no-mistakes init\`. It pins this repo's pull-request destination to its own \`origin\` (never gh's ambient default) and verifies the pin in both this checkout and its no-mistakes gate. Treat a non-zero exit as a blocker: append \`blocked: {its exact error}\` and stop rather than starting \`/no-mistakes\` unpinned."
+3. Always run \`$FM_ROOT/bin/fm-pr-destination-guard.sh .\`, whether or not step 2 just ran \`no-mistakes init\`. It pins this repo's pull-request destination to its own \`origin\` (never gh's ambient default) and verifies the pin in both this checkout and its no-mistakes gate. Treat a non-zero exit as a blocker: append \`blocked: {its exact error}\` and stop rather than starting \`/no-mistakes\` unpinned."
     RULE1='1. Never push to the default branch. Never merge a PR.'
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done

@@ -710,8 +710,33 @@ test_scout_and_secondmate_scaffold() {
   pass "fm-brief: scout and secondmate code paths still scaffold well-formed briefs"
 }
 
+# The crewmate runs this brief from a disposable worktree of the *task's own*
+# project, which for any registered project is not firstmate and carries no
+# bin/fm-pr-destination-guard.sh. A firstmate-relative path there resolves to
+# nothing (exit 127), and the same Setup step tells the crewmate to treat a
+# non-zero exit as a blocker - so a relative path does not merely skip the
+# guard, it stops the task. The emitted step must therefore name the guard by a
+# path that resolves no matter where the crewmate is standing.
+test_no_mistakes_setup_guard_path_resolves_outside_firstmate() {
+  local home id brief guard elsewhere
+  home="$TMP_ROOT/guard-path-home"
+  mkdir -p "$home/data"
+  id="brief-guard-path-b1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "brief was not scaffolded"
+  guard=$(tr -s " " "\n" < "$brief" | grep -F "fm-pr-destination-guard.sh" | head -n1 | tr -d '`')
+  [ -n "$guard" ] || fail "the no-mistakes Setup step must name the pull-request destination guard"
+  elsewhere="$TMP_ROOT/not-firstmate"
+  mkdir -p "$elsewhere"
+  ( cd "$elsewhere" && [ -x "$guard" ] ) \
+    || fail "the brief tells the crewmate to run '$guard', which resolves to no executable from a worktree that is not firstmate"
+  pass "fm-brief.sh: the no-mistakes Setup guard is named by a path a project worktree can actually run"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
+test_no_mistakes_setup_guard_path_resolves_outside_firstmate
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
 test_ship_mode_is_required_and_closed_set

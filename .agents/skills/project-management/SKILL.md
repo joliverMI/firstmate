@@ -75,7 +75,7 @@ The captain's request to create that local project authorizes this local initial
 Run no-mistakes initialization only for `no-mistakes` and `no-mistakes-prod-only` projects:
 
 ```sh
-cd projects/<name> && no-mistakes init && no-mistakes doctor && bin/fm-pr-destination-guard.sh .
+(cd projects/<name> && no-mistakes init && no-mistakes doctor) && bin/fm-pr-destination-guard.sh projects/<name>
 ```
 
 Initialization configures the local gate and does not vendor a no-mistakes skill into the project.
