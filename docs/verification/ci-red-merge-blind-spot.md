@@ -4,7 +4,7 @@ Audience: maintainer verification.
 
 This record answers a report that `joliverMI/firstmate`'s `main` had been failing CI on the portable serial shards for at least 11 hours, with merges continuing to land on top of it.
 The report was already stale by the time it was investigated (2026-08-21): `main` was green, and the underlying test failure had already been root-caused and fixed - see [`arm-readiness-determinism-proof.md`](../arm-readiness-determinism-proof.md) for that cause analysis.
-What survives as durable knowledge is not the fix - it is that nothing in this fork tells anyone when `main` goes red, and nothing stops a merge from landing on top of it while it is red.
+What survives as durable knowledge is not the fix - it is that nothing in this fork's own configuration tells anyone when `main` goes red, and nothing stops a merge from landing on top of it while it is red.
 That gap is unchanged today and is this record's subject.
 Run-by-run and job-by-job chronology for the incident that prompted this record stays in that task's PR evidence; only the durable structural facts and the few numbers that size the gap are kept here.
 
@@ -24,8 +24,12 @@ Nor does a PR's own run have to finish before its merge lands.
 PR #6 merged at `2026-08-17T21:03:36Z` while its own CI run `32068680937` was still in progress; that run did not complete until `21:11:16Z`, 7m40s after the merge.
 Push-triggered CI is necessarily later still: PR #1 merged at `2026-08-16T23:28:25Z` and its post-merge checks did not start until `2026-08-16T23:28:30Z`.
 
-No push-based or scheduled signal surfaces a red `main` run to anyone either.
-The only way to learn `main` went red is to open the Actions tab or query the API for `main` specifically, and nothing in this fork's workflow currently prompts that.
+Repository configuration surfaces nothing on its own: there is no branch protection, and no workflow here wires up any notification, issue-filing, or alert step.
+Beyond the repository, GitHub Actions does notify by default - the actor who triggered a run is emailed when that run fails, which here is the account performing each merge to `main`.
+That path is unverified: it depends on per-account notification settings this investigation had no access to.
+If it behaved as documented, a failure notification most likely reached that account on each of the seven red pushes, and nothing was acted on for roughly 45 hours regardless.
+That is the more serious of the two available readings.
+Either nobody was told, which is a tooling gap, or somebody probably was told and it changed nothing, which is a process gap - and the evidence better supports the second.
 
 ## The compounding hazard: unqualified `gh` / `gh-axi` can target the wrong repository
 
@@ -72,9 +76,12 @@ The remaining two jobs, both in one run, are outside that suite's attributed cau
   The same PR added captured-output reporting to `tests/lib.sh`'s exit-code assertion, precisely because this failure could only ever report `expected exit 0, got 1`.
   The failure predates that merge and has not recurred since it.
   That job also logged `not ok - OpenCode watch plugin must not treat external healthy output as an owned arm`, which is in `tests/fm-pi-watch-extension.test.sh` but is not one of the assertions PR #14's cause table covers.
-  PR #14 (`b98e098`) did nonetheless add a suite-wide `export FM_WATCH_ARM_NO_LOGIN_SHELL=1` at `tests/fm-pi-watch-extension.test.sh:71` (confirmed with `git log -S`), which strips the unbounded `/etc/profile`-sourcing cost out of every timed wait in the suite - including this case's bounded 250-by-20ms wait for the guard log, which is exactly cause B's shape of a bounded wait racing an unbounded cost.
-  That is a reasoned connection, not a verified one: nobody has re-run this specific assertion under load against both the pre-fix and post-fix suite, the way the four originally-reported assertions were reproduced and reverted in [`arm-readiness-determinism-proof.md`](../arm-readiness-determinism-proof.md).
-  A plausible mechanism is not a confirmation, so it stays listed as unconfirmed below.
+  No mechanism has been found for it.
+  An earlier revision of this record proposed one - PR #14's suite-wide `export FM_WATCH_ARM_NO_LOGIN_SHELL=1` stripping a profile-sourcing cost out of this case's bounded wait - and it is wrong on inspection, on two independent grounds.
+  The 250-by-20ms guard-log loop runs only after `await guardHooks.event(...)` has already resolved, and the arm spawn lives inside that awaited call via `letWatchArmRun` into `coordinator.ensureArmed`, so a slow profile lengthens the await rather than expiring the later loop.
+  And overrunning the readiness budget (the 12s default, which this case does not override) resolves `"timeout"`, which `letWatchArmRun` does not accept, so the guard would have run rather than been suppressed - the opposite of the failure actually logged.
+  This branch has now had to withdraw a reasoned-but-unverified mechanism twice: once in `ede2d97`, for a load-failure claim in [`arm-readiness-determinism-proof.md`](../arm-readiness-determinism-proof.md), and once here.
+  The corrected practice is to record that no mechanism is known rather than reason toward a plausible one, since a story that merely sounds right is the same substitute for verification this record exists to name.
 - `not ok - next bounded scan did not resume with the following child` in `tests/fm-inactive-reconcile.test.sh` remains genuinely unattributed to any cause, and has not recurred.
 
 Separately, two CI jobs on unrelated shards each hit `ci.yml`'s 15-minute `tests-portable-serial` timeout, confirmed by an identical GitHub check-run annotation ("The job has exceeded the maximum execution time of 15m0s"): one on 2026-08-17 inside window A, and one on 2026-08-21 (after the fix, and itself followed by a clean run).
@@ -94,6 +101,6 @@ The one exception in that span is not a test failure: run `32441040308` (2026-08
 None of the following is implemented here; each is a decision or a follow-up, not a defect fixed by this record.
 
 - **No branch protection on `main`.** Whether to add required status checks (and which ones) is a policy decision that changes how every future merge to this fork works - left to the captain/Admiral rather than decided unilaterally here.
-- **No red-`main` notification of any kind.** This record deliberately does not propose or build one; it only names the gap, per instruction.
+- **No red-`main` notification wired in this repository.** This record deliberately does not propose or build one; it only names the gap, per instruction. GitHub's own default actor notification may already cover the "was anyone told" half, in which case the gap left to close is response rather than delivery.
 - **The `gh` / `gh-axi` default-repo-resolution hazard** should be flagged to whoever owns tooling defaults for this fleet: an unqualified `run list`/`run view` silently targets the upstream parent instead of the configured fork in any clone that has not pinned `remote.origin.gh-resolved`.
-- **Two test failures and the 15-minute shard timeouts** remain without a confirmed cause. `tests/fm-inactive-reconcile.test.sh` has no candidate explanation at all; `OpenCode watch plugin must not treat external healthy output as an owned arm` has the plausible PR #14 login-shell mechanism described above but no run that confirms it. Neither test failure has recurred, which is evidence of absence rather than proof of a fix; the timeout class demonstrably did recur (job `96651633862`, run `32441040308`, 2026-08-21T02:46Z), after both windows and after PR #14.
+- **Two test failures and the 15-minute shard timeouts** remain without a confirmed cause. Neither `tests/fm-inactive-reconcile.test.sh` nor `OpenCode watch plugin must not treat external healthy output as an owned arm` has any surviving candidate explanation; the one drafted for the latter was checked against the source and disproved, as described above. Neither test failure has recurred, which is evidence of absence rather than proof of a fix; the timeout class demonstrably did recur (job `96651633862`, run `32441040308`, 2026-08-21T02:46Z), after both windows and after PR #14.
