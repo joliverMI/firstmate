@@ -109,6 +109,8 @@ test_worktree_already_owned_by_another_task_is_refused() {
   assert_contains "$out" "holder-task" "refusal did not name the task that already owns the worktree"
   assert_contains "$out" "alive" "refusal did not report the holder's endpoint state"
   assert_absent "$home/state/$id.meta" "spawn must not record the colliding worktree for the new task"
+  assert_grep "worktree=$wt" "$home/state/holder-task.meta" \
+    "a live holder's own claim on its copy must survive the refusal untouched"
   pass "a worktree already recorded for another live task is refused, not silently reused"
 }
 
@@ -150,6 +152,8 @@ test_collision_with_ambiguous_holder_liveness_still_refuses() {
   assert_contains "$out" "ambiguous-holder-task" "refusal did not name the ambiguous holder"
   assert_contains "$out" "unknown" "an ambiguous holder answer must be reported as unknown, not dead"
   assert_absent "$home/state/$id.meta" "an ambiguous holder must not let the spawn record the colliding worktree"
+  assert_grep "worktree=$wt" "$home/state/ambiguous-holder-task.meta" \
+    "an ambiguous holder's claim must never be cleared - only a confirmed-dead one may be"
   pass "an ambiguous holder-liveness answer refuses the collision instead of licensing reuse"
 }
 
@@ -190,7 +194,49 @@ test_collision_with_unprobeable_holder_backend_still_refuses() {
   expect_code 1 "$status" "an unprobeable holder backend must still refuse" "$out"
   assert_contains "$out" "zellij-holder-task" "refusal did not name the unprobeable holder"
   assert_absent "$home/state/$id.meta" "an unprobeable holder must not let the spawn record the colliding worktree"
+  assert_grep "worktree=$wt" "$home/state/zellij-holder-task.meta" \
+    "an unprobeable holder's claim must never be cleared - only a confirmed-dead one may be"
   pass "a holder whose backend cannot be probed refuses the collision instead of licensing reuse"
+}
+
+# A truncated record that claims a worktree but carries no usable endpoint field
+# cannot be probed at all, so it must produce the same concrete refusal as any
+# other unconfirmable holder - not a bare, message-less abort, and not a cleared
+# claim.
+test_collision_with_endpointless_holder_record_refuses_cleanly() {
+  local case_dir home proj wt fakebin out status
+  case_dir="$TMP_ROOT/endpointless-holder"
+  home="$case_dir/home"
+  proj="$case_dir/project"
+  wt="$case_dir/wt"
+  fm_git_worktree "$proj" "$wt" "wt-endpointless"
+  fakebin=$(make_collision_fakebin "$case_dir/fake" "$wt")
+  mkdir -p "$home/data" "$home/projects" "$home/state" "$home/config"
+  printf 'codex\n' > "$home/config/crew-harness"
+  touch "$home/state/.last-watcher-beat"
+
+  fm_write_meta "$home/state/endpointless-holder-task.meta" \
+    "worktree=$wt" \
+    "project=$proj" \
+    "harness=codex" \
+    "kind=ship" \
+    "mode=no-mistakes" \
+    "yolo=off"
+
+  local id=endpointless-new-z8
+  mkdir -p "$home/data/$id"
+  printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+
+  out=$(FM_FAKE_WINDOWS="fm-some-other-task" FM_FAKE_PANE_COMMAND="bash" \
+    run_collision_spawn "$home" "$proj" "$fakebin" "$wt" "$id")
+  status=$?
+  expect_code 1 "$status" "a holder record with no usable endpoint field must refuse" "$out"
+  assert_contains "$out" "endpointless-holder-task" \
+    "the refusal must still name the holder rather than aborting silently"
+  assert_absent "$home/state/$id.meta" "an unprobeable record must not let the spawn record the colliding worktree"
+  assert_grep "worktree=$wt" "$home/state/endpointless-holder-task.meta" \
+    "a record that cannot be probed must keep its claim"
+  pass "a holder record with no usable endpoint field refuses with a message instead of aborting"
 }
 
 # The behavior change: a holder record whose endpoint is CONFIRMED gone (a
@@ -198,7 +244,7 @@ test_collision_with_unprobeable_holder_backend_still_refuses() {
 # slot, so a worktree whose owner has crashed or whose teardown stalled after
 # the endpoint went away is handed out again instead of being poisoned forever.
 test_collision_with_confirmed_dead_holder_is_reused() {
-  local case_dir home proj wt fakebin out status
+  local case_dir home proj wt fakebin out status claimants
   case_dir="$TMP_ROOT/dead-holder"
   home="$case_dir/home"
   proj="$case_dir/project"
@@ -228,6 +274,12 @@ test_collision_with_confirmed_dead_holder_is_reused() {
   expect_code 0 "$status" "a confirmed-dead holder must not block the worktree" "$out"
   assert_grep "worktree=$wt" "$home/state/$id.meta" \
     "meta did not record the worktree reclaimed from a confirmed-dead holder"
+  assert_no_grep "^worktree=" "$home/state/dead-holder-task.meta" \
+    "the dead holder's stale claim must be cleared, or two records own one copy"
+  assert_grep "kind=ship" "$home/state/dead-holder-task.meta" \
+    "clearing the stale claim must leave the rest of the dead holder's record intact"
+  claimants=$(grep -l "^worktree=$wt\$" "$home/state"/*.meta | wc -l)
+  [ "$claimants" -eq 1 ] || fail "exactly one record may claim the reused worktree, found $claimants"
   pass "a worktree whose holder's endpoint is confirmed gone is reused rather than refused"
 }
 
@@ -312,6 +364,7 @@ test_worktree_freed_by_teardown_can_be_reused() {
 test_worktree_already_owned_by_another_task_is_refused
 test_collision_with_ambiguous_holder_liveness_still_refuses
 test_collision_with_unprobeable_holder_backend_still_refuses
+test_collision_with_endpointless_holder_record_refuses_cleanly
 test_collision_with_confirmed_dead_holder_is_reused
 test_unrelated_task_does_not_block_a_distinct_worktree
 test_worktree_freed_by_teardown_can_be_reused
