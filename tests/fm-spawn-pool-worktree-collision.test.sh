@@ -4,17 +4,26 @@
 #
 # validate_spawn_worktree already refuses a path that is not a real, distinct
 # git worktree, but it never checked that path against worktrees THIS SAME home
-# already recorded for OTHER still-tracked tasks. A hard cap, a stale lease, a
-# crashed holder, or a race between two spawns can all end with the pool
-# provider handing back a worktree another task already owns; without the
-# cross-check, fm-spawn.sh silently accepted it and recorded the same worktree
-# for two tasks, so whichever task tore down first would return that worktree
-# out from under the other task's still-live, uncommitted work.
+# already recorded for OTHER still-tracked tasks. What these tests cover is that
+# acceptance-side gap, and nothing upstream of it.
 #
-# This test simulates that hand-back with a fake tmux whose pane always reports
-# an already-claimed worktree (the "how" a real pool got there - cap, lease,
-# race - does not matter to fm-spawn.sh; only what it does with the answer
-# does) and asserts the spawn refuses rather than recording the collision.
+# The reported condition itself is UNCONFIRMED and is not what this suite
+# proves. Four candidate triggers were driven directly against a real treehouse
+# pool - a hard cap with a live holder, a hard cap with a dirty holder, a 9-way
+# concurrent race for the last free slot, and a stale/crashed lease - on both
+# the CI-pinned and the current release, and none reproduced it: the pool
+# refused cleanly every time. So this is a guard against a failure mode that
+# could not be triggered, not a fix for one that was, and the original report
+# stays unconfirmed at the pool-provider layer.
+#
+# What is proven is only what fm-spawn.sh does with the answer it is given: IF
+# a worktree another tracked task already records were ever handed back, the
+# unguarded acceptance would record one copy for two tasks, and whichever task
+# tore down first would return it out from under the other's still-live,
+# uncommitted work. These tests supply that answer directly with a fake tmux
+# whose pane reports an already-claimed worktree - the "how" a real pool could
+# get there does not matter to fm-spawn.sh - and assert it refuses rather than
+# recording the collision.
 set -u
 
 # shellcheck source=tests/lib.sh

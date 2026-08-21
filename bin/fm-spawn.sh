@@ -1745,13 +1745,25 @@ spawn_kill_collision_window() {
     zellij) fm_backend_kill zellij "$T" "${ZELLIJ_TAB_ID:-}" "$W" ;;
     cmux) fm_backend_kill cmux "$T" '' "$W" ;;
     herdr)
-      # fm_backend_herdr_kill takes the presentation-order lock itself, and
-      # since it runs in this same process fm_lock_try_acquire would treat the
-      # lock this spawn already holds as its own to reclaim and then release -
-      # leaving HERDR_PRESENTATION_ORDER_LOCK_HELD claiming a lock that is gone,
-      # so the EXIT trap would skip re-acquisition and close the projection
-      # panes unlocked. Hand the lock back first: the kill then acquires it on
-      # its own terms, and the trap re-acquires legitimately afterwards.
+      # Exactly one guaranteed close, never zero and never an unlocked one.
+      #
+      # Projected: the EXIT trap is already armed to close this very pane
+      # (HERDR_PROJECTION_ABORT_TASK_PANE is $HERDR_PANE_ID, the pane $T names)
+      # and then the seeded pane, under the presentation-order lock this
+      # process still holds. Closing it here would mean handing that lock back
+      # first, and a concurrent spawn could take it in between - leaving the
+      # trap unable to re-acquire, so it would abandon the projection cleanup
+      # and leak the seeded pane, workspace, and journal. Leave both the lock
+      # and the close to the trap.
+      #
+      # Flat: no lock is held and no projection cleanup is armed, so this is
+      # the only close there will be. fm_backend_herdr_kill takes the lock
+      # itself, and in this same process fm_lock_try_acquire would treat a lock
+      # this spawn held as its own to reclaim and release, so hand it back
+      # first - a no-op on the flat path, and correct if it is ever held.
+      if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ]; then
+        return 0
+      fi
       spawn_herdr_presentation_order_lock_release
       fm_backend_kill herdr "$T"
       ;;
