@@ -21,12 +21,24 @@
 # origin remote is set up by `no-mistakes init` and is not this script's
 # concern.
 #
+# Verification is a destination check, not an existence check: the pin must read
+# back through `gh repo set-default --view` AND name this project's own
+# origin owner/repository. A pin that merely exists proves nothing - a repointed
+# origin pins gh just as successfully to the wrong repository - so a read that
+# fails, reads back empty, or names anything else is a refusal, never a pass.
+#
 # Usage: fm-pr-destination-guard.sh <project-dir>
-# Exit 0: the destination is pinned and verified (or origin is not GitHub, so
-#         this guard's fork-parent default does not apply).
-# Exit 1: origin is missing, the gate cannot be discovered, or the pin could
-#         not be verified after being applied. Never silently proceeds.
+# Exit 0: the destination is pinned and verified to be this project's own
+#         repository (or origin is not GitHub, so this guard's fork-parent
+#         default does not apply).
+# Exit 1: origin is missing or unparseable, the gate cannot be discovered, or
+#         the pin could not be read back and confirmed to name this project's
+#         own repository. Never silently proceeds.
 set -eu
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=bin/fm-pr-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-pr-lib.sh"
 
 DIR=${1:?usage: fm-pr-destination-guard.sh <project-dir>}
 [ -d "$DIR" ] || { echo "error: not a directory: $DIR" >&2; exit 1; }
@@ -45,8 +57,19 @@ case "$ORIGIN_URL" in
     ;;
 esac
 
+# The project checkout's own origin is the single source of truth for where this
+# project's pull requests belong. The gate is checked against this same value,
+# not against its own origin: a gate whose origin drifted to the fork parent
+# would otherwise verify happily against itself.
+if ! fm_pr_github_remote_owner_repo "$ORIGIN_URL"; then
+  echo "error: $DIR's origin ($ORIGIN_URL) is on github.com but is not a parseable owner/repository URL; the pull-request destination cannot be verified" >&2
+  exit 1
+fi
+EXPECTED="$FM_PR_REMOTE_OWNER/$FM_PR_REMOTE_REPO"
+EXPECTED_LC=$(fm_pr_lower "$EXPECTED")
+
 pin_and_verify() {  # <dir> <label>
-  local dir=$1 label=$2 resolved
+  local dir=$1 label=$2 resolved viewed
   if ! ( cd "$dir" && gh repo set-default origin ) >/dev/null 2>&1; then
     echo "error: could not pin the pull-request destination for $label ($dir)" >&2
     exit 1
@@ -54,6 +77,19 @@ pin_and_verify() {  # <dir> <label>
   resolved=$(cd "$dir" && git config --get remote.origin.gh-resolved 2>/dev/null || true)
   if [ -z "$resolved" ]; then
     echo "error: pull-request destination pin did not take effect for $label ($dir) - remote.origin.gh-resolved is still unset" >&2
+    exit 1
+  fi
+  if ! viewed=$(cd "$dir" && gh repo set-default --view 2>/dev/null); then
+    echo "error: could not read back the pinned pull-request destination for $label ($dir); it stays unverified and this guard refuses rather than assume it" >&2
+    exit 1
+  fi
+  viewed=$(printf '%s' "$viewed" | head -n1 | tr -d '[:space:]')
+  if [ -z "$viewed" ]; then
+    echo "error: the pinned pull-request destination for $label ($dir) read back empty; an unnamed destination is never a verified one" >&2
+    exit 1
+  fi
+  if [ "$(fm_pr_lower "$viewed")" != "$EXPECTED_LC" ]; then
+    echo "error: $label ($dir) resolves pull requests to $viewed, not this project's own $EXPECTED; refusing to proceed" >&2
     exit 1
   fi
 }
@@ -67,5 +103,4 @@ if [ -z "$GATE" ] || [ ! -d "$GATE" ]; then
 fi
 pin_and_verify "$GATE" "the no-mistakes gate"
 
-OWNER_REPO=$(cd "$DIR" && gh repo set-default --view 2>/dev/null || true)
-echo "pinned: $OWNER_REPO is the sole pull-request destination for $DIR and its no-mistakes gate"
+echo "pinned: $EXPECTED is the sole pull-request destination for $DIR and its no-mistakes gate"

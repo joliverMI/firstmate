@@ -234,8 +234,18 @@ EOF
       command -v no-mistakes >/dev/null 2>&1 || die "no-mistakes is unavailable for project $NAME"
       (cd "$DEST" && no-mistakes init >/dev/null && no-mistakes doctor >/dev/null) \
         || die "no-mistakes initialization failed for project $NAME"
-      "$SCRIPT_DIR/fm-pr-destination-guard.sh" "$DEST" \
-        || die "could not pin the pull-request destination for project $NAME"
+      # gh is an optional tool on a remote host (see bin/fm-remote-doctor.sh's
+      # OPTIONAL_TOOLS) and provisioning never opens a pull request, so an
+      # unpinnable destination warns loudly here instead of aborting a
+      # provisioning run that has already cloned the project. The refusal is
+      # not skipped, only deferred: the same guard runs again in every
+      # no-mistakes-mode ship brief's Setup step and blocks the task there.
+      "$SCRIPT_DIR/fm-pr-destination-guard.sh" "$DEST" || {
+        printf 'warning: ***  the pull-request destination for project %s is UNPINNED on this host  ***\n' "$NAME" >&2
+        printf 'warning: gh is optional on a remote host and may be missing, unauthenticated, or unable to reach GitHub from here.\n' >&2
+        printf 'warning: no pull request will be opened blindly - bin/fm-pr-destination-guard.sh runs again before every no-mistakes task and refuses until this is pinned.\n' >&2
+        printf 'warning: install and authenticate gh on this host, then run bin/fm-pr-destination-guard.sh %s to clear this.\n' "$DEST" >&2
+      }
     fi
   fi
   printf '%s\n' "$REGISTRY_LINE" >> "$PROJECT_REG"

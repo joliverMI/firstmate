@@ -121,6 +121,29 @@ SH
   pass "fm-pr-check.sh only refuses on a confirmed mismatch, never on an unknown origin"
 }
 
+# Every remote URL form below addresses exactly the same repository as the
+# reported PR, so none of them may be read as a foreign destination: a trailing
+# slash after .git, the scp-style and ssh:// forms, and GitHub's
+# case-insensitive owner/repository names.
+test_accepts_equivalent_forms_of_its_own_origin() {
+  local form dir out code n=0
+  for form in \
+    'https://github.com/joliverMI/firstmate.git/' \
+    'git@github.com:joliverMI/firstmate.git' \
+    'ssh://git@github.com/joliverMI/firstmate.git' \
+    'https://github.com/JoliverMI/FirstMate.git'; do
+    n=$((n + 1))
+    dir=$(make_case "own-origin-form-$n" "$form")
+    out=$(run_check_entry "$dir" task-a https://github.com/joliverMI/firstmate/pull/1 2>&1)
+    code=$?
+    expect_code 0 "$code" "origin '$form' addresses the task's own project" "$out"
+    assert_grep "pr=https://github.com/joliverMI/firstmate/pull/1" "$dir/home/state/task-a.meta" \
+      "a PR on the task's own project must be recorded when origin is '$form'"
+  done
+  pass "the ownership check reads every equivalent form of the project's own origin as its own"
+}
+
 test_refuses_a_pr_against_the_wrong_repository
 test_accepts_a_pr_against_its_own_repository
+test_accepts_equivalent_forms_of_its_own_origin
 test_skips_the_check_when_origin_cannot_be_determined

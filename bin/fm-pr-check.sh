@@ -56,7 +56,9 @@ WT=$(grep '^worktree=' "$META" | tail -1 | cut -d= -f2- || true)
 if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ]; then
   OWN_ORIGIN=$(git -C "$WT" config --get remote.origin.url 2>/dev/null || true)
   if [ -n "$OWN_ORIGIN" ] && fm_pr_github_remote_owner_repo "$OWN_ORIGIN"; then
-    if [ "${FM_PR_REMOTE_OWNER,,}/${FM_PR_REMOTE_REPO,,}" != "${FM_PR_OWNER,,}/${FM_PR_REPO,,}" ]; then
+    OWN_REPO_ID=$(fm_pr_lower "$FM_PR_REMOTE_OWNER/$FM_PR_REMOTE_REPO")
+    PR_REPO_ID=$(fm_pr_lower "$FM_PR_OWNER/$FM_PR_REPO")
+    if [ "$OWN_REPO_ID" != "$PR_REPO_ID" ]; then
       echo "error: PR $URL targets $FM_PR_OWNER/$FM_PR_REPO, not this task's own project $FM_PR_REMOTE_OWNER/$FM_PR_REMOTE_REPO; refusing to record or arm it" >&2
       exit 1
     fi

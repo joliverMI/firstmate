@@ -209,8 +209,17 @@ fm_pr_url_parse() {
   FM_PR_NUMBER=${BASH_REMATCH[3]}
 }
 
+# fm_pr_lower <text>: lowercase <text>. GitHub owner and repository names are
+# case-insensitive, so every comparison of two of them goes through this.
+# Written with tr rather than ${x,,} because that expansion is bash 4+ only and
+# these scripts also run on macOS's system bash 3.2.
+fm_pr_lower() {
+  printf '%s' "${1-}" | tr '[:upper:]' '[:lower:]'
+}
+
 # fm_pr_github_remote_owner_repo <git-remote-url>: parse a GitHub remote URL
-# (https or ssh form, with or without a trailing .git) into
+# (https, scp-style ssh, or ssh:// form, with or without a trailing slash and
+# with or without a trailing .git) into
 # FM_PR_REMOTE_OWNER/FM_PR_REMOTE_REPO. Returns 1 and clears both for any
 # non-GitHub or unparseable URL. Used to compare a task's own project remote
 # against a reported PR's owner/repository (see bin/fm-pr-check.sh), never to
@@ -220,9 +229,9 @@ fm_pr_github_remote_owner_repo() {
   local LC_ALL=C
   FM_PR_REMOTE_OWNER=
   FM_PR_REMOTE_REPO=
-  stripped=${raw%.git}
-  stripped=${stripped%/}
-  pattern='^(https://github\.com/|git@github\.com:)([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9._-]+)$'
+  stripped=${raw%/}
+  stripped=${stripped%.git}
+  pattern='^(https://github\.com/|git@github\.com:|ssh://git@github\.com/|ssh://github\.com/)([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9._-]+)$'
   [[ "$stripped" =~ $pattern ]] || return 1
   # Consumed by bin/fm-pr-check.sh, which compares this against a reported PR's
   # owner/repository.
