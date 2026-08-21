@@ -322,6 +322,31 @@ test_a_collapsed_but_outstanding_finding_still_counts_and_never_reads_clean() {
   pass "a collapsed but still-outstanding finding keeps counting toward the run total and never reads clean"
 }
 
+# fail_sweep's own error entry is fleet-scoped (no card) and kind=error, so it
+# collapses on a NULL task_id - a distinct SQL path from every task-scoped
+# discrepancy above. It matters because a condition that fails one read while
+# the small audit-log POST still lands recurs on the timer's cadence, and the
+# log matters most exactly when the sweep is failing.
+test_a_repeating_fleet_level_error_collapses_and_a_different_one_does_not() {
+  local rows
+  "$DASH" audit-log --fleet "sweep failed listing paused cards" --kind error \
+    --key "fail-sweep:sweep failed listing paused cards" >/dev/null || fail "first error entry was refused"
+  sleep 1
+  "$DASH" audit-log --fleet "sweep failed listing paused cards" --kind error \
+    --key "fail-sweep:sweep failed listing paused cards" >/dev/null || fail "repeat error entry was refused"
+  "$DASH" audit-log --fleet "sweep failed reading the audit log" --kind error \
+    --key "fail-sweep:sweep failed reading the audit log" >/dev/null || fail "distinct error entry was refused"
+
+  rows=$(audit_status_json | jq '[.log[] | select(.task_id == null and .kind == "error")]')
+  [ "$(printf '%s' "$rows" | jq 'length')" -eq 2 ] \
+    || fail "expected the repeat to collapse and the distinct failure to stand alone, got $(printf '%s' "$rows" | jq -c '[.[] | {text, occurrences}]')"
+  [ "$(printf '%s' "$rows" | jq -r '[.[] | select(.text == "sweep failed listing paused cards")] | .[0].occurrences')" -eq 2 ] \
+    || fail "the repeated fleet-level failure did not collapse into one row with a growing seen-count"
+  [ "$(printf '%s' "$rows" | jq -r '[.[] | select(.text == "sweep failed reading the audit log")] | .[0].occurrences')" -eq 1 ] \
+    || fail "a genuinely different failure message collapsed onto an unrelated failure's row"
+  pass "a repeating sweep failure updates one fleet-level row while a different failure still opens its own"
+}
+
 test_sweep_flags_waiting_on_completed_card() {
   "$DASH" audit-interval 1 >/dev/null || fail "could not reset the interval"
   local done_id waiter_id
@@ -580,12 +605,69 @@ test_sweep_flags_stale_unreplied_needs_attention_but_not_a_reply() {
     || fail "could not add the admiral's reply"
   sleep 1
 
+  # Row count alone cannot prove this: the check is keyed on the card's
+  # needs_attention changed_at, and his reply is a note rather than a status
+  # change, so a broken reply short-circuit would collapse onto the very row
+  # already standing - same count, higher seen-count. The row must be
+  # untouched, not merely un-duplicated.
   local before after
-  before=$("$DASH" audit-status --json | jq '[.log[] | select(.task_id=="'"$id"'")] | length')
+  before=$(discrepancy_rows_for "$id")
+  [ "$(printf '%s' "$before" | jq 'length')" -eq 1 ] \
+    || fail "expected exactly one row for the card before the post-reply sweep, got $(printf '%s' "$before" | jq 'length')"
   FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES=0 "$SWEEP" --forced || fail "sweep script exited non-zero (replied case)"
-  after=$("$DASH" audit-status --json | jq '[.log[] | select(.task_id=="'"$id"'")] | length')
-  [ "$after" = "$before" ] || fail "a needs-attention card the admiral already replied to was flagged again"
+  after=$(discrepancy_rows_for "$id")
+  [ "$(printf '%s' "$after" | jq 'length')" = "$(printf '%s' "$before" | jq 'length')" ] \
+    || fail "a needs-attention card the admiral already replied to was flagged again"
+  [ "$(printf '%s' "$after" | jq -r '.[0].occurrences')" = "$(printf '%s' "$before" | jq -r '.[0].occurrences')" ] \
+    || fail "the replied card's existing row had its seen-count bumped, so it was re-flagged into the same row"
+  [ "$(printf '%s' "$after" | jq -r '.[0].last_seen_at')" = "$(printf '%s' "$before" | jq -r '.[0].last_seen_at')" ] \
+    || fail "the replied card's existing row had its last-seen time advanced, so it was re-flagged into the same row"
   pass "the sweep flags a stale unreplied needs-attention card and stops once he has replied"
+}
+
+# Regression, the needs_attention twin of "started then abandoned is flagged
+# again" above: the needs-attention key deliberately embeds the card's own
+# last move into needs_attention rather than being flat, so a card he replied
+# to that later genuinely cycles back into needs_attention is a fresh
+# occurrence. Without the boundary in the key it would collapse onto - and so
+# be silenced by - the very row his earlier reply already closed.
+test_a_needs_attention_card_that_cycles_back_in_gets_a_fresh_row() {
+  local id rows first_key second_key
+  id=$("$DASH" add --title "Asked twice" --captain firstmate --prompt "cycles back in" | awk '{print $1}')
+  [ -n "$id" ] || fail "could not add the needs-attention card"
+  "$DASH" status "$id" needs-attention --reason "pick a name" >/dev/null || fail "could not set needs-attention"
+
+  FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES=0 "$SWEEP" --forced || fail "first sweep exited non-zero"
+  rows=$(discrepancy_rows_for "$id")
+  [ "$(printf '%s' "$rows" | jq 'length')" -eq 1 ] \
+    || fail "the first ask did not produce exactly one row, got $(printf '%s' "$rows" | jq 'length')"
+  first_key=$(printf '%s' "$rows" | jq -r '.[0].key')
+  [ -n "$first_key" ] && [ "$first_key" != "null" ] || fail "the needs-attention finding was written with no key"
+
+  # He answers, the card moves on, and only later is he asked something new.
+  # Board timestamps are whole seconds, so the second ask has to land in a
+  # later second than the first for the boundary to move at all.
+  "$DASH" note "$id" --tab communication --author admiral --text "call it blue" >/dev/null \
+    || fail "could not add the admiral's reply"
+  "$DASH" status "$id" working >/dev/null || fail "could not move the card off needs-attention"
+  sleep 1
+  "$DASH" status "$id" needs-attention --reason "now pick a shade" >/dev/null \
+    || fail "could not put the card back into needs-attention"
+
+  FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES=0 "$SWEEP" --forced || fail "sweep after the second ask exited non-zero"
+  rows=$(discrepancy_rows_for "$id")
+  [ "$(printf '%s' "$rows" | jq 'length')" -eq 2 ] \
+    || fail "a card asked a second time did not get a fresh row; rows: $(printf '%s' "$rows" | jq -c '[.[] | {key, occurrences}]')"
+  second_key=$(printf '%s' "$rows" | jq -r --arg k "$first_key" '[.[] | select(.key != $k)] | .[0].key')
+  [ -n "$second_key" ] && [ "$second_key" != "null" ] \
+    || fail "the second ask reused the first ask's key instead of opening its own"
+  [ "$(printf '%s' "$rows" | jq -r --arg k "$second_key" '[.[] | select(.key == $k)] | .[0].occurrences')" -eq 1 ] \
+    || fail "the second ask's row did not start a fresh seen-count"
+  [ "$(printf '%s' "$rows" | jq -r --arg k "$first_key" '[.[] | select(.key == $k)] | .[0].occurrences')" -eq 1 ] \
+    || fail "the row his earlier reply already closed was reopened by the second ask"
+
+  "$DASH" status "$id" complete >/dev/null || fail "could not clear the cycled card"
+  pass "a needs-attention card that cycles back in after a reply gets a fresh row, not the closed one"
 }
 
 test_force_button_endpoint_runs_a_real_sweep() {
@@ -666,6 +748,7 @@ test_a_recurring_identical_finding_collapses_into_one_row_with_a_growing_count
 test_a_genuinely_new_finding_on_a_different_card_does_not_collapse
 test_an_unrelated_finding_on_the_same_card_never_suppresses_a_general_collapse
 test_a_collapsed_but_outstanding_finding_still_counts_and_never_reads_clean
+test_a_repeating_fleet_level_error_collapses_and_a_different_one_does_not
 test_sweep_flags_waiting_on_completed_card
 test_sweep_counts_not_started_cards_and_never_flags_an_unverifiable_one
 test_sweep_flags_a_not_started_card_that_live_work_is_waiting_on
@@ -675,6 +758,7 @@ test_two_waiting_cards_on_one_not_started_card_produce_one_finding_per_sweep
 test_a_quiet_but_outstanding_block_still_counts_toward_the_run_total
 test_a_target_started_then_abandoned_is_flagged_again
 test_sweep_flags_stale_unreplied_needs_attention_but_not_a_reply
+test_a_needs_attention_card_that_cycles_back_in_gets_a_fresh_row
 test_force_button_endpoint_runs_a_real_sweep
 test_force_button_refuses_while_a_sweep_is_already_running
 test_stale_claim_is_reclaimed_after_max_sweep_seconds

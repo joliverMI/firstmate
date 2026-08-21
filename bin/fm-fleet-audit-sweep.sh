@@ -56,7 +56,11 @@
 # recurring identical finding updates its one existing row - last-seen time
 # and a seen-count - instead of appending a new one every cycle (see
 # write_discrepancy's own comment, fm-dashboard.sh audit-log --key, and
-# bin/fleet-dashboard/server/store.py's record_audit_finding). Check 6
+# bin/fleet-dashboard/server/store.py's record_audit_finding). fail_sweep's
+# own error entry is keyed the same way and for the same reason: a condition
+# that keeps failing one read while the small audit-log POST still lands
+# recurs on the timer's cadence too, and the log matters most exactly when
+# the sweep is failing, so it must not be the thing that buries it. Check 6
 # (not_started) predates this mechanism and keeps its own bespoke,
 # time-boundary-aware suppression rather than retiring onto a plain key: its
 # "started then abandoned is flagged again" case needs a *new* row the moment
@@ -89,8 +93,14 @@
 # Exit 1: an internal failure. When the dashboard was reachable, the failure
 # is also recorded via audit-log/audit-release so a broken sweep never looks
 # identical to a clean one (see docs/dashboard.md "Connectivity failure is
-# loud"). When the dashboard itself is unreachable there is nothing to record
-# it in; the caller's own exit-code handling and the tick script's separate
+# loud") - the entry is keyed per failure message, so a failure that keeps
+# repeating updates its one row rather than flooding the log, while a
+# genuinely different failure still opens its own. A failed sweep records no
+# run at all (fail_sweep exits before audit-run), so the board's last-run
+# tile stays frozen on the previous run's numbers; that staleness, not the
+# error entry's cadence, is what keeps a broken sweep from reading as clean.
+# When the dashboard itself is unreachable there is nothing to record it in;
+# the caller's own exit-code handling and the tick script's separate
 # heartbeat call are what surface that outage instead.
 set -u
 set -o pipefail
@@ -116,8 +126,12 @@ iso_to_epoch() {  # <iso8601>
     || date -u -d "$1" +%s 2>/dev/null
 }
 
-fail_sweep() {  # <text>
-  "$DASH" audit-log --fleet "$1" --kind error >/dev/null 2>&1 || true
+# <key> defaults to the message text itself, which is fixed per call site, so
+# a new call site is namespaced automatically with no slug list to keep in
+# sync; a site whose text carries per-run detail passes an explicit stable key
+# instead, so its repeats still collapse onto one row.
+fail_sweep() {  # <text> [<key>]
+  "$DASH" audit-log --fleet "$1" --kind error --key "fail-sweep:${2:-$1}" >/dev/null 2>&1 || true
   "$DASH" audit-release >/dev/null 2>&1 || true
   exit 1
 }
@@ -130,7 +144,8 @@ fail_sweep() {  # <text>
 # finding under repeats of itself. Every call site below that can recur
 # passes a key namespaced to that check, so one check's repeats can never
 # collapse onto, or be mistaken for, another check's finding on the same
-# card. The not_started check further down deliberately keeps its own older,
+# card, and fail_sweep above keys its error entry the same way. The
+# not_started check further down deliberately keeps its own older,
 # time-boundary-aware suppression instead of a key - see its comment for why.
 write_discrepancy() {  # <task_id> <text> [<key>] - record the text, count nothing
   local task_id=$1 text=$2 key=${3:-}
@@ -330,4 +345,5 @@ DURATION=$((COMPLETED_EPOCH - START_EPOCH))
 run_args=(--duration-seconds "$DURATION" --checked "$CHECKED" --discrepancies "$DISCREPANCIES" --started-at "$STARTED_AT")
 [ "$FORCED" -eq 1 ] && run_args+=(--forced)
 "$DASH" audit-run "${run_args[@]}" >/dev/null \
-  || fail_sweep "sweep completed ($CHECKED checked, $DISCREPANCIES discrepancy(ies)) but audit-run could not record it"
+  || fail_sweep "sweep completed ($CHECKED checked, $DISCREPANCIES discrepancy(ies)) but audit-run could not record it" \
+       "audit-run-unrecorded"
