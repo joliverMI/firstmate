@@ -1,0 +1,130 @@
+=== The card the Admiral caught: a progress report in the needs-attention reason ===
+
+(created card anchor-light-flickering-on-the-foredeck-f3lg in not-started)
+
+$ /home/joliv/.no-mistakes/worktrees/4cc5c0885385/01M0GZDC24S8JFM230NDS5TAZW/bin/fm-dashboard.sh status anchor-light-flickering-on-the-foredeck-f3lg needs-attention --reason You reported flares not changing the lights - being chased now
+fm-dashboard.sh: server refused (400): that reason reads as a progress report, not something he can act on (matched 'being chased' at the start or end of a clause) - say what he needs to decide, approve, or supply: 'You reported flares not changing the lights - being chased now'
+  [exit 1]
+
+=== Same status with no reason at all: also refused (was previously allowed, and the UI filled in 'Needs his decision or action to continue.') ===
+
+$ /home/joliv/.no-mistakes/worktrees/4cc5c0885385/01M0GZDC24S8JFM230NDS5TAZW/bin/fm-dashboard.sh status anchor-light-flickering-on-the-foredeck-f3lg needs-attention
+fm-dashboard.sh: status: needs-attention requires --reason - say what he needs to decide, approve, or supply
+  [exit 1]
+
+=== The server refuses it too, not just the CLI - direct HTTP call, bypassing bin/fm-dashboard.sh entirely ===
+
+$ curl -sS -i -X POST http://127.0.0.1:$PORT/api/tasks/anchor-light-flickering-on-the-foredeck-f3lg/status -d '{"status":"needs_attention"}'
+HTTP/1.0 400 Bad Request
+Server: FleetDashboard/1.0 Python/3.12.3
+Date: Fri, 21 Aug 2026 02:42:51 GMT
+Content-Type: application/json
+Content-Length: 115
+
+{"error": "needs-attention requires --reason - say what he needs to decide, approve, or supply, not what happened"}
+$ curl -sS -i -X POST .../status -d '{"status":"needs_attention","reason":"still chasing the supplier"}'
+HTTP/1.0 400 Bad Request
+Server: FleetDashboard/1.0 Python/3.12.3
+Date: Fri, 21 Aug 2026 02:42:51 GMT
+Content-Type: application/json
+Content-Length: 218
+
+{"error": "that reason reads as a progress report, not something he can act on (matched 'still chasing' at the start or end of a clause) - say what he needs to decide, approve, or supply: 'still chasing the supplier'"}
+=== A real ask - something he can DO - goes through and lands on the card ===
+
+$ /home/joliv/.no-mistakes/worktrees/4cc5c0885385/01M0GZDC24S8JFM230NDS5TAZW/bin/fm-dashboard.sh status anchor-light-flickering-on-the-foredeck-f3lg needs-attention --reason pick the replacement fixture: chandlery has bronze at $180 or steel at $95
+anchor-light-flickering-on-the-foredeck-f3lg	needs_attention	firstmate	-	Anchor light flickering on the foredeck
+  [exit 0]
+
+$ /home/joliv/.no-mistakes/worktrees/4cc5c0885385/01M0GZDC24S8JFM230NDS5TAZW/bin/fm-dashboard.sh show anchor-light-flickering-on-the-foredeck-f3lg
+id:       anchor-light-flickering-on-the-foredeck-f3lg
+title:    Anchor light flickering on the foredeck
+status:   needs_attention
+captain:  firstmate
+agent:    
+starred:  false
+needs attention: pick the replacement fixture: chandlery has bronze at $180 or steel at $95
+
+--- prompt ---
+The flares aren't changing the lights.
+
+  [exit 0]
+
+=== A genuine ask that merely mentions a report word mid-sentence is NOT refused ===
+
+$ /home/joliv/.no-mistakes/worktrees/4cc5c0885385/01M0GZDC24S8JFM230NDS5TAZW/bin/fm-dashboard.sh status anchor-light-flickering-on-the-foredeck-f3lg working
+anchor-light-flickering-on-the-foredeck-f3lg	working	firstmate	-	Anchor light flickering on the foredeck
+  [exit 0]
+
+$ /home/joliv/.no-mistakes/worktrees/4cc5c0885385/01M0GZDC24S8JFM230NDS5TAZW/bin/fm-dashboard.sh status anchor-light-flickering-on-the-foredeck-f3lg needs-attention --reason approve the $400 monitoring subscription renewal
+anchor-light-flickering-on-the-foredeck-f3lg	needs_attention	firstmate	-	Anchor light flickering on the foredeck
+  [exit 0]
+
+=== Creating a card straight into needs-attention is governed the same way ===
+
+$ /home/joliv/.no-mistakes/worktrees/4cc5c0885385/01M0GZDC24S8JFM230NDS5TAZW/bin/fm-dashboard.sh add --title Haul-out date --captain firstmate --prompt yard called --status needs-attention
+fm-dashboard.sh: add: --status needs-attention requires --reason - say what he needs to decide, approve, or supply
+  [exit 1]
+
+$ /home/joliv/.no-mistakes/worktrees/4cc5c0885385/01M0GZDC24S8JFM230NDS5TAZW/bin/fm-dashboard.sh add --title Haul-out date --captain firstmate --prompt yard called --status needs-attention --reason looking into the yard's two open slots
+fm-dashboard.sh: server refused (400): that reason reads as a progress report, not something he can act on (matched 'looking into' at the start or end of a clause) - say what he needs to decide, approve, or supply: "looking into the yard's two open slots"
+  [exit 1]
+
+$ /home/joliv/.no-mistakes/worktrees/4cc5c0885385/01M0GZDC24S8JFM230NDS5TAZW/bin/fm-dashboard.sh add --title Haul-out date --captain firstmate --prompt yard called --status needs-attention --reason choose Nov 3 or Nov 17 for the haul-out - yard needs an answer today
+haul-out-date-f9vo	needs_attention	firstmate	-	Haul-out date
+  [exit 0]
+
+=== Other statuses are untouched: working with a vague note, and review/waiting, still need no ask ===
+
+$ /home/joliv/.no-mistakes/worktrees/4cc5c0885385/01M0GZDC24S8JFM230NDS5TAZW/bin/fm-dashboard.sh status anchor-light-flickering-on-the-foredeck-f3lg working
+anchor-light-flickering-on-the-foredeck-f3lg	working	firstmate	-	Anchor light flickering on the foredeck
+  [exit 0]
+
+$ /home/joliv/.no-mistakes/worktrees/4cc5c0885385/01M0GZDC24S8JFM230NDS5TAZW/bin/fm-dashboard.sh status anchor-light-flickering-on-the-foredeck-f3lg waiting --reason waiting on the chandlery to call back
+anchor-light-flickering-on-the-foredeck-f3lg	waiting	firstmate	-	Anchor light flickering on the foredeck
+  [exit 0]
+
+$ /home/joliv/.no-mistakes/worktrees/4cc5c0885385/01M0GZDC24S8JFM230NDS5TAZW/bin/fm-dashboard.sh list
+anchor-light-flickering-on-the-foredeck-f3lg	waiting	firstmate	-	Anchor light flickering on the foredeck
+haul-out-date-f9vo	needs_attention	firstmate	-	Haul-out date
+  [exit 0]
+
+
+=== Existing cards are not migrated: a needs-attention card written before the guard (with the old placeholder reason) still stands ===
+
+(row inserted straight into the board's database, as a pre-guard card would be)
+$ fm-dashboard.sh show legacy-weak-card
+id:       legacy-weak-card
+title:    Bilge pump wiring
+status:   needs_attention
+captain:  firstmate
+agent:    
+starred:  false
+needs attention: Needs his decision or action to continue.
+
+--- prompt ---
+His words.
+
+
+$ fm-dashboard.sh list --status needs-attention
+anchor-light-flickering-on-the-foredeck-f3lg	needs_attention	firstmate	-	Anchor light flickering on the foredeck
+haul-out-date-f9vo	needs_attention	firstmate	-	Haul-out date
+legacy-weak-card	needs_attention	firstmate	-	Bilge pump wiring
+
+=== Every other status still needs no ask at all ===
+
+$ fm-dashboard.sh status varnish-the-coaming-p6h8 working
+varnish-the-coaming-p6h8	working	captain_river	-	Varnish the coaming
+  [exit 0]
+$ fm-dashboard.sh status varnish-the-coaming-p6h8 paused
+varnish-the-coaming-p6h8	paused	captain_river	-	Varnish the coaming
+  [exit 0]
+$ fm-dashboard.sh status varnish-the-coaming-p6h8 testing
+varnish-the-coaming-p6h8	testing	captain_river	-	Varnish the coaming
+  [exit 0]
+$ fm-dashboard.sh status varnish-the-coaming-p6h8 complete
+varnish-the-coaming-p6h8	complete	captain_river	-	Varnish the coaming
+  [exit 0]
+$ fm-dashboard.sh status varnish-the-coaming-p6h8 not-started
+varnish-the-coaming-p6h8	not_started	captain_river	-	Varnish the coaming
+  [exit 0]
