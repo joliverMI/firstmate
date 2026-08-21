@@ -30,18 +30,26 @@ TMP_ROOT=$(fm_test_tmproot fm-spawn-pool-collision)
 # there. The fake treehouse is a no-op, exactly like the sibling settle-loop
 # test: this suite is about what fm-spawn.sh does with the reported path, not
 # about reproducing the pool provider's own internals.
+# FM_FAKE_TMUX_LOG records every fake tmux invocation, so a test can assert what
+# the refusal did to the endpoint it created. FM_FAKE_WINDOWS is the session
+# inventory and FM_FAKE_PANE_COMMAND the pane's foreground command: together they
+# drive fm_backend_agent_state, which a relaunch consults before anything else
+# (a recorded window plus an idle shell reads `dead`, the positively agent-free
+# endpoint a relaunch requires).
 make_collision_fakebin() {
   local dir=$1 path=$2 fakebin
   fakebin=$(fm_fakebin "$dir")
   cat > "$fakebin/tmux" <<SH
 #!/usr/bin/env bash
 set -u
+[ -z "\${FM_FAKE_TMUX_LOG:-}" ] || printf '%s\n' "\$*" >> "\$FM_FAKE_TMUX_LOG"
 case "\$*" in
   *"#{pane_current_path}"*) printf '%s\n' "\${FM_FAKE_PANE_PATH:-$path}"; exit 0 ;;
+  *"#{pane_current_command}"*) printf '%s\n' "\${FM_FAKE_PANE_COMMAND:-firstmate}"; exit 0 ;;
 esac
 case "\${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
-  list-windows) exit 0 ;;
+  list-windows) [ -z "\${FM_FAKE_WINDOWS:-}" ] || printf '%s\n' "\${FM_FAKE_WINDOWS}"; exit 0 ;;
   has-session|new-session|new-window|kill-window) exit 0 ;;
   send-keys) exit 0 ;;
 esac
@@ -59,8 +67,22 @@ run_collision_spawn() {
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" \
     FM_FAKE_PANE_PATH="$wt_target" \
+    FM_FAKE_TMUX_LOG="${FM_FAKE_TMUX_LOG:-}" \
     PATH="$fakebin:$PATH" \
     "$SPAWN" "$id" "$proj" --mode no-mistakes --yolo off 2>&1
+}
+
+run_collision_relaunch() {
+  local home=$1 fakebin=$2 wt_target=$3 id=$4
+  FM_ROOT_OVERRIDE='' FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" \
+    FM_FAKE_PANE_PATH="$wt_target" \
+    FM_FAKE_WINDOWS="fm-$id" FM_FAKE_PANE_COMMAND="bash" \
+    FM_FAKE_TMUX_LOG="${FM_FAKE_TMUX_LOG:-}" \
+    PATH="$fakebin:$PATH" \
+    "$SPAWN" "$id" --relaunch 2>&1
 }
 
 # A worktree already recorded as a DIFFERENT, still-tracked task's own copy
@@ -91,14 +113,78 @@ test_worktree_already_owned_by_another_task_is_refused() {
   mkdir -p "$home/data/$id"
   printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
 
-  out=$(run_collision_spawn "$home" "$proj" "$fakebin" "$wt" "$id")
+  local tmuxlog="$case_dir/tmux.log"
+  : > "$tmuxlog"
+  out=$(FM_FAKE_TMUX_LOG="$tmuxlog" run_collision_spawn "$home" "$proj" "$fakebin" "$wt" "$id")
   status=$?
   expect_code 1 "$status" "spawn must refuse a worktree already owned by another tracked task" "$out"
   assert_contains "$out" "holder-task" "refusal did not name the task that already owns the worktree"
+  assert_grep "kill-window" "$tmuxlog" \
+    "the refusal must close the window this spawn created instead of stranding it on the copy"
+  assert_no_grep "worktree rm" "$tmuxlog" \
+    "the refusal must leave the pooled copy itself alone - it may be the holder's"
   assert_absent "$home/state/$id.meta" "spawn must not record the colliding worktree for the new task"
   assert_grep "worktree=$wt" "$home/state/holder-task.meta" \
     "the guard must never mutate the record of the task that owns the worktree"
   pass "a worktree already recorded for another tracked task is refused, not silently reused"
+}
+
+# A relaunch acquires nothing from the pool - it reuses the task's OWN recorded
+# worktree - but it is still the case the guard has to cover, because a relaunch
+# is only allowed once the prior endpoint reads positively agent-free
+# (bin/fm-spawn.sh requires fm_backend_agent_state = dead before it adopts the
+# endpoint, and the pane-cwd check that follows is a bare directory read that a
+# crashed harness's idle shell also passes). So a dead task's recorded worktree
+# may since have been handed to a live task, and relaunching into it is the same
+# catastrophe by another door. The refusal must therefore still fire, and must
+# say what is actually wrong - two records claiming one path - without the
+# pool-exhaustion advice that belongs to the fresh-acquisition path.
+test_relaunch_into_a_claimed_worktree_refuses_without_pool_advice() {
+  local case_dir home proj wt fakebin out status owner
+  case_dir="$TMP_ROOT/relaunch-collision"
+  home="$case_dir/home"
+  proj="$case_dir/project"
+  wt="$case_dir/wt"
+  fm_git_worktree "$proj" "$wt" "wt-relaunch-collision"
+  fakebin=$(make_collision_fakebin "$case_dir/fake" "$wt")
+  mkdir -p "$home/data" "$home/projects" "$home/state" "$home/config"
+  printf 'codex\n' > "$home/config/crew-harness"
+  touch "$home/state/.last-watcher-beat"
+
+  owner=relaunch-owner-z9
+  mkdir -p "$home/data/$owner"
+  printf 'brief for %s\n' "$owner" > "$home/data/$owner/brief.md"
+  fm_write_meta "$home/state/$owner.meta" \
+    "window=firstmate:fm-$owner" \
+    "endpoint_task_id=$owner" \
+    "worktree=$wt" \
+    "project=$proj" \
+    "harness=codex" \
+    "kind=ship" \
+    "mode=no-mistakes" \
+    "yolo=off"
+
+  fm_write_meta "$home/state/relaunch-holder-task.meta" \
+    "window=firstmate:fm-relaunch-holder-task" \
+    "worktree=$wt" \
+    "project=$proj" \
+    "harness=codex" \
+    "kind=ship" \
+    "mode=no-mistakes" \
+    "yolo=off"
+
+  out=$(run_collision_relaunch "$home" "$fakebin" "$wt" "$owner")
+  status=$?
+  expect_code 1 "$status" "a relaunch into a worktree another record claims must refuse" "$out"
+  assert_contains "$out" "relaunch-holder-task" "the relaunch refusal did not name the record that also claims the worktree"
+  assert_contains "$out" "stale record" "the relaunch refusal must point at the stale record as the thing to retire"
+  assert_not_contains "$out" "treehouse status" \
+    "a relaunch makes no pool call, so it must not send the operator to the pool"
+  assert_not_contains "$out" "hard cap" \
+    "a relaunch makes no pool call, so pool-exhaustion wording is misleading there"
+  assert_grep "worktree=$wt" "$home/state/$owner.meta" \
+    "a refused relaunch must leave the task's own record untouched"
+  pass "a relaunch into a worktree another record claims refuses with record advice, not pool advice"
 }
 
 # An unrelated task tracked in the same home, recorded against its OWN
@@ -180,6 +266,7 @@ test_worktree_freed_by_teardown_can_be_reused() {
 }
 
 test_worktree_already_owned_by_another_task_is_refused
+test_relaunch_into_a_claimed_worktree_refuses_without_pool_advice
 test_unrelated_task_does_not_block_a_distinct_worktree
 test_worktree_freed_by_teardown_can_be_reused
 
