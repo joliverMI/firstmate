@@ -1,0 +1,50 @@
+# The fleet auditor now treats 'testing' as a live-crew claim it must corroborate,
+# while 'review' is optional to the Admiral and is never age-checked.
+
+# board going in:
+ballast-trim-sea-trial-yrag	testing	captain_dj	-	Ballast trim sea trial
+bilge-pump-swap-md8i	review	firstmate	-	Bilge pump swap
+card-galley	review	captain_river	-	Galley inventory reconciliation
+card-charts	review	captain_dj	-	Correct the coastal chart overlays
+card-rigging	review	firstmate	-	Re-rig the mainsail halyard
+
+$ bin/fm-crew-state.sh sea-trial-crew   # the crew behind the testing card
+state: blocked · source: status-log · the trial berth is unavailable
+
+$ FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES=0 bin/fm-fleet-audit-sweep.sh --forced
+exit=0
+
+$ curl -s $B/api/audit/status | jq '{last_run, discrepancies: [.log[]|select(.kind=="discrepancy")|{task_id,text}]}'
+{
+  "last_run": {
+    "id": 1,
+    "started_at": "2026-08-21T01:30:53Z",
+    "completed_at": "2026-08-21T01:30:53Z",
+    "duration_seconds": 0.0,
+    "tasks_checked": 5,
+    "discrepancies_found": 1,
+    "forced": 1
+  },
+  "discrepancies": [
+    {
+      "task_id": "ballast-trim-sea-trial-yrag",
+      "text": "card claims testing, but the linked crew reads: state: blocked · source: status-log · the trial berth is unavailable"
+    }
+  ]
+}
+
+# Not one of the four review cards was flagged - review is his to look at whenever,
+# nothing is lost if he never does. The testing card WAS flagged, because the fleet
+# is not actually exercising it.
+
+# --- and the converse: put a live crew behind that same testing card -------
+$ bin/fm-crew-state.sh sea-trial-crew
+state: working · source: status-log · running the ballast trial
+$ bin/fm-fleet-audit-sweep.sh --forced
+exit=0
+$ curl -s $B/api/audit/status | jq '.last_run | {tasks_checked, discrepancies_found}'
+{
+  "tasks_checked": 5,
+  "discrepancies_found": 0
+}
+# genuinely-in-flight testing is corroborated and produces no finding.

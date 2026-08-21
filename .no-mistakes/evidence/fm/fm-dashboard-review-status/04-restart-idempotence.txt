@@ -1,0 +1,29 @@
+# The live board is upgraded with 'restart'. The migration must not fire again,
+# or the genuinely in-flight testing card would be silently relabelled review.
+
+$ fm-dashboard.sh list --status testing        # before restart
+ballast-trim-sea-trial-yrag	testing	captain_dj	-	Ballast trim sea trial
+
+$ fm-dashboard.sh restart
+stopped (pid 2965092)
+fleet dashboard started (pid 2988796) - http://127.0.0.1:8477/  log: /tmp/fm-dash-demo-2955262/state/dashboard.log
+
+$ cat $FM_HOME/state/dashboard.log             # no second migration report
+fleet dashboard listening on http://127.0.0.1:8477  (db: /tmp/fm-dash-demo-2955262/data/dashboard.db)
+
+$ fm-dashboard.sh list --status testing        # after restart - still testing
+ballast-trim-sea-trial-yrag	testing	captain_dj	-	Ballast trim sea trial
+
+$ curl -s $B/api/tasks | jq -r '.tasks[]|[.status,.id]|@tsv' | sort | uniq -c -w16
+      1 complete
+      1 needs_attention
+      1 not_started
+      1 paused
+      4 review
+      1 testing
+      1 waiting
+      1 working
+
+# and no card is left carrying a status the UI cannot render:
+statuses the web bundle can render: ['complete', 'needs_attention', 'not_started', 'paused', 'review', 'testing', 'waiting', 'working']
+cards on the live board with an unrenderable status: none

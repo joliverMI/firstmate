@@ -1,0 +1,23 @@
+$ curl -s $BOARD/api/tasks | jq -r '.tasks[] | "\(.status)  \(.id)"' | sort
+complete	card-lantern	Replace the stern lantern housing
+needs_attention	card-mutiny	Crew rotation conflict needs a call
+not_started	card-compass	Compass deviation card re-swing
+paused	card-signal	Signal-flag protocol refresh
+review	card-charts	Correct the coastal chart overlays
+review	card-galley	Galley inventory reconciliation
+review	card-rigging	Re-rig the mainsail halyard
+waiting	card-anchor	Anchor winch bearing replacement
+working	card-hull	Hull scan for the dry-dock window
+
+# every migrated card carries its own audit trail (status_history over the HTTP API):
+$ curl -s $BOARD/api/tasks/card-rigging | jq -c '.status_history[]'
+{"id":1,"task_id":"card-rigging","from_status":"testing","to_status":"review","changed_at":"2026-08-21T01:29:33Z","note":"migrated: testing/review split - this card meant ready for his review"}
+$ curl -s $BOARD/api/tasks/card-charts | jq -c '.status_history[]'
+{"id":2,"task_id":"card-charts","from_status":"testing","to_status":"review","changed_at":"2026-08-21T01:29:33Z","note":"migrated: testing/review split - this card meant ready for his review"}
+$ curl -s $BOARD/api/tasks/card-galley | jq -c '.status_history[]'
+{"id":3,"task_id":"card-galley","from_status":"testing","to_status":"review","changed_at":"2026-08-21T01:29:33Z","note":"migrated: testing/review split - this card meant ready for his review"}
+
+# updated_at deliberately untouched, so a mechanical relabel does not reorder his board:
+card-galley	review	2026-08-16T08:15:00Z
+card-charts	review	2026-08-15T11:30:00Z
+card-rigging	review	2026-08-14T09:00:00Z

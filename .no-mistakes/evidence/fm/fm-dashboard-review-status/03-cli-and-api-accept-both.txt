@@ -1,0 +1,35 @@
+# --- CLI: hyphens on the CLI, underscores in the store --------------------
+$ fm-dashboard.sh --help | grep '^statuses'
+statuses: needs-attention not-started working paused waiting testing review complete
+
+$ fm-dashboard.sh list --status testing
+ballast-trim-sea-trial-yrag	testing	captain_dj	-	Ballast trim sea trial
+$ fm-dashboard.sh list --status review
+bilge-pump-swap-md8i	review	firstmate	-	Bilge pump swap
+card-galley	review	captain_river	-	Galley inventory reconciliation
+card-charts	review	captain_dj	-	Correct the coastal chart overlays
+card-rigging	review	firstmate	-	Re-rig the mainsail halyard
+
+$ fm-dashboard.sh status card-compass bogus-status    # no statuses invented
+fm-dashboard.sh: unknown status 'bogus-status' - valid: needs-attention not-started working paused waiting testing review complete
+exit=1
+
+# --- HTTP API: this is what the board on his phone calls -------------------
+$ curl -sX POST $B/api/tasks/card-compass/status -d '{"status":"testing"}' | jq -c '{id,status}'
+{"id":"card-compass","status":"testing"}
+$ curl -sX POST $B/api/tasks/card-compass/status -d '{"status":"review"}' | jq -c '{id,status}'
+{"id":"card-compass","status":"review"}
+$ curl -sX POST $B/api/tasks/card-compass/status -d '{"status":"in-review"}'   # must be refused
+{"error": "unknown status: 'in-review'. Valid: needs_attention, not_started, working, paused, waiting, testing, review, complete"} <- HTTP 400
+
+$ curl -s '$B/api/tasks?status=review' | jq -r '.tasks[].id'
+card-compass
+bilge-pump-swap-md8i
+card-galley
+card-charts
+card-rigging
+$ curl -s '$B/api/tasks?status=testing' | jq -r '.tasks[].id'
+ballast-trim-sea-trial-yrag
+
+# the status change is persisted with its own history entry, same as any other:
+{"id":"card-compass","status":"review","status_history":[{"id":6,"task_id":"card-compass","from_status":"not_started","to_status":"not_started","changed_at":"2026-08-21T01:29:57Z","note":null},{"id":7,"task_id":"card-compass","from_status":"not_started","to_status":"testing","changed_at":"2026-08-21T01:30:16Z","note":null},{"id":8,"task_id":"card-compass","from_status":"testing","to_status":"review","changed_at":"2026-08-21T01:30:16Z","note":null}]}

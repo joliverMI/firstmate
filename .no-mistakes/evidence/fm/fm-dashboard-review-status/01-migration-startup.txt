@@ -1,0 +1,9 @@
+$ fm-dashboard.sh --help | grep statuses
+statuses: needs-attention not-started working paused waiting testing review complete
+
+$ fm-dashboard.sh start
+fleet dashboard started (pid 2965092) - http://127.0.0.1:8477/  log: /tmp/fm-dash-demo-2955262/state/dashboard.log
+
+$ cat $FM_HOME/state/dashboard.log   # the server's own startup migration report
+dashboard: migrated 3 card(s) from testing to review (testing/review split): card-rigging, card-charts, card-galley
+fleet dashboard listening on http://127.0.0.1:8477  (db: /tmp/fm-dash-demo-2955262/data/dashboard.db)
