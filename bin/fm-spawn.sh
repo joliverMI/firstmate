@@ -152,9 +152,10 @@
 #   recorded in this home's state as another tracked task's own isolated copy,
 #   whether it came from the pool or from a relaunch's recorded worktree.
 #   Before a fresh ship or scout worker starts, its clean task worktree fetches
-#   origin, resolves the current remote default branch, and resets to its tip.
-#   An unreachable origin, unresolved default branch, or non-clean worktree
-#   refuses the spawn rather than risking a PR based on stale history.
+#   the development remote (the default branch's own configured upstream, falling
+#   back to origin), resolves that remote's current default branch, and resets to
+#   its tip. An unreachable remote, unresolved default branch, or non-clean
+#   worktree refuses the spawn rather than risking a PR based on stale history.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
