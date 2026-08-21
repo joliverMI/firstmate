@@ -47,7 +47,7 @@ That single gap is longer than the 11 hours the original report claimed for the 
 The two windows ended for different reasons, and the contrast matters.
 Window A ended by luck: its closing merge (PR #6) touched none of the failing code or its tests, so an unrelated push simply happened to land on a non-failing run of the same intermittent suite.
 Window B ended because the test that could see the failure stopped being able to see it.
-Both of window B's suite failures were `OpenCode watch plugin must arm only when this session owns the fleet lock`, and the first green run that closed the window was PR #11 (`882004e`), which replaced that exact case's fixed 120ms sleep with a direct `coordinator.ensureArmed(...)` await.
+Two of window B's three failures from that suite were `OpenCode watch plugin must arm only when this session owns the fleet lock`, and the first green run that closed the window was PR #11 (`882004e`), which replaced that exact case's fixed 120ms sleep with a direct `coordinator.ensureArmed(...)` await.
 [`arm-readiness-determinism-proof.md`](../arm-readiness-determinism-proof.md) records what that did and did not do: the await "is what stops this branch's inherited copy of that case from reconstructing cause A", and of the changes already on `main` at that point, "None of those addresses cause A".
 The production `ensureArm` race was still there; only the test's ability to reproduce it had changed.
 Nobody noticed that shift either, which is the same blind spot in a more damaging form - the window closed because the witness was removed, not because the defect was.
@@ -72,6 +72,9 @@ The remaining two jobs, both in one run, are outside that suite's attributed cau
   The same PR added captured-output reporting to `tests/lib.sh`'s exit-code assertion, precisely because this failure could only ever report `expected exit 0, got 1`.
   The failure predates that merge and has not recurred since it.
   That job also logged `not ok - OpenCode watch plugin must not treat external healthy output as an owned arm`, which is in `tests/fm-pi-watch-extension.test.sh` but is not one of the assertions PR #14's cause table covers.
+  PR #14 (`b98e098`) did nonetheless add a suite-wide `export FM_WATCH_ARM_NO_LOGIN_SHELL=1` at `tests/fm-pi-watch-extension.test.sh:71` (confirmed with `git log -S`), which strips the unbounded `/etc/profile`-sourcing cost out of every timed wait in the suite - including this case's bounded 250-by-20ms wait for the guard log, which is exactly cause B's shape of a bounded wait racing an unbounded cost.
+  That is a reasoned connection, not a verified one: nobody has re-run this specific assertion under load against both the pre-fix and post-fix suite, the way the four originally-reported assertions were reproduced and reverted in [`arm-readiness-determinism-proof.md`](../arm-readiness-determinism-proof.md).
+  A plausible mechanism is not a confirmation, so it stays listed as unconfirmed below.
 - `not ok - next bounded scan did not resume with the following child` in `tests/fm-inactive-reconcile.test.sh` remains genuinely unattributed to any cause, and has not recurred.
 
 Separately, two CI jobs on unrelated shards each hit `ci.yml`'s 15-minute `tests-portable-serial` timeout, confirmed by an identical GitHub check-run annotation ("The job has exceeded the maximum execution time of 15m0s"): one on 2026-08-17 inside window A, and one on 2026-08-21 (after the fix, and itself followed by a clean run).
@@ -79,7 +82,9 @@ Neither is attributed to any cause, and the second shows the class is still live
 
 ## Current state
 
-`main` is green: HEAD `e2786ac` (PR #17), CI run [`32443727353`](https://github.com/joliverMI/firstmate/actions/runs/32443727353), 12/12 jobs including both `Behavior portable serial 3` and `4`.
+Observed 2026-08-21; this section is a dated snapshot, not a standing claim.
+`main` was green at HEAD `e2786ac` (PR #17), CI run [`32443727353`](https://github.com/joliverMI/firstmate/actions/runs/32443727353), 12/12 jobs including both `Behavior portable serial 3` and `4`.
+`main` has since advanced to `5a53eee`, whose push run [`32493420147`](https://github.com/joliverMI/firstmate/actions/runs/32493420147) (2026-08-21T14:40Z) also succeeded.
 `git diff --stat b98e098..e2786ac -- .opencode .pi tests/fm-pi-watch-extension.test.sh` is empty: nothing has touched the fixed code since PR #14 merged.
 Every run since `32256268913` (2026-08-19T13:06Z, PR #11) that reached a test result has been green, spanning several further merges.
 The one exception in that span is not a test failure: run `32441040308` (2026-08-21T02:46Z, PR #16) concluded `cancelled` because `Behavior portable serial 2` hit the 15-minute job cap, the second of the two timeouts noted above.
@@ -91,4 +96,4 @@ None of the following is implemented here; each is a decision or a follow-up, no
 - **No branch protection on `main`.** Whether to add required status checks (and which ones) is a policy decision that changes how every future merge to this fork works - left to the captain/Admiral rather than decided unilaterally here.
 - **No red-`main` notification of any kind.** This record deliberately does not propose or build one; it only names the gap, per instruction.
 - **The `gh` / `gh-axi` default-repo-resolution hazard** should be flagged to whoever owns tooling defaults for this fleet: an unqualified `run list`/`run view` silently targets the upstream parent instead of the configured fork in any clone that has not pinned `remote.origin.gh-resolved`.
-- **One non-suite test failure** (`tests/fm-inactive-reconcile.test.sh`) **and the 15-minute shard timeouts** remain unattributed to any specific cause. The test failure has not recurred, which is evidence of absence rather than proof of a fix; the timeout class demonstrably did recur (job `96651633862`, run `32441040308`, 2026-08-21T02:46Z), after both windows and after PR #14.
+- **Two test failures and the 15-minute shard timeouts** remain without a confirmed cause. `tests/fm-inactive-reconcile.test.sh` has no candidate explanation at all; `OpenCode watch plugin must not treat external healthy output as an owned arm` has the plausible PR #14 login-shell mechanism described above but no run that confirms it. Neither test failure has recurred, which is evidence of absence rather than proof of a fix; the timeout class demonstrably did recur (job `96651633862`, run `32441040308`, 2026-08-21T02:46Z), after both windows and after PR #14.
