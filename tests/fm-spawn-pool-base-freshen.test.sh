@@ -283,8 +283,8 @@ test_fork_tracking_pool_refreshes_from_fork_not_origin() {
   read_case_record "$rec"
 
   # The checkout develops on a fork while origin is an upstream template it
-  # cannot even reach - this repo's own shape (AGENTS.md task
-  # fm-fleet-follows-fork). Only the fork carries the fork-only tooling.
+  # cannot even reach - this repo's own shape (see
+  # docs/remote-secondmates.md). Only the fork carries the fork-only tooling.
   git clone --quiet --bare "$PROJECT_DIR" "$CASE_DIR/fork.git"
   git -C "$PROJECT_DIR" remote add fork "file://$CASE_DIR/fork.git"
   git clone --quiet "file://$CASE_DIR/fork.git" "$CASE_DIR/fork-publisher"

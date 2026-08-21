@@ -4,8 +4,8 @@
 #
 # A checkout of this repo can have "origin" pointing at the public template it
 # was forked from while the checkout's own branch tracks a separate fork it
-# actually develops on, and the two can genuinely diverge (AGENTS.md task
-# fm-fleet-follows-fork). Every tool that fetches, diffs, or reports
+# actually develops on, and the two can genuinely diverge (see
+# docs/remote-secondmates.md). Every tool that fetches, diffs, or reports
 # divergence against "the development remote" must resolve it through
 # resolve_update_base below rather than hardcoding origin, so it follows
 # whatever a checkout's own branch is actually configured to track.
@@ -48,8 +48,8 @@
 #   RESOLVE_BASE_NOTE   = "" when an upstream was used, else a one-line reason
 resolve_update_base() {
   local dir=$1 default=$2 remote remoteref branch=
-  remote=$(git -C "$dir" for-each-ref --format='%(upstream:remotename)' "refs/heads/$default" 2>/dev/null)
-  remoteref=$(git -C "$dir" for-each-ref --format='%(upstream:remoteref)' "refs/heads/$default" 2>/dev/null)
+  remote=$(git -C "$dir" for-each-ref --format='%(upstream:remotename)' "refs/heads/$default" 2>/dev/null) || true
+  remoteref=$(git -C "$dir" for-each-ref --format='%(upstream:remoteref)' "refs/heads/$default" 2>/dev/null) || true
   case "$remoteref" in
     refs/heads/?*) branch=${remoteref#refs/heads/} ;;
   esac

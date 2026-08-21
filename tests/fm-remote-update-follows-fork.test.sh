@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end proof that a remote secondmate's code root updates from its own
 # CONFIGURED UPSTREAM, not a hardcoded "origin" - the exact remote-fleet shape
-# behind AGENTS.md task fm-fleet-follows-fork: a remote code root whose "origin"
+# behind docs/remote-secondmates.md: a remote code root whose "origin"
 # is the public upstream template and whose "fork" is the repository the fleet
 # actually develops on (fork-only tooling such as bin/fm-dashboard.sh and
 # fm-spawn.sh's --card flag exists only on the fork).
@@ -27,7 +27,7 @@ TMP_ROOT=$(fm_test_tmproot fm-remote-update-follows-fork)
 # fork-only file) and a fork bare repo ("fork", the repo the fleet actually
 # develops on). A remote code root clones from fork, keeps "origin" pointing
 # at the template, and tracks fork/main as main's configured upstream - the
-# shape AGENTS.md task fm-fleet-follows-fork recommends for the remote code
+# shape docs/remote-secondmates.md recommends for the remote code
 # root. A persistent secondmate home starts at the same shared baseline.
 w="$TMP_ROOT/w"
 mkdir -p "$w"
@@ -61,7 +61,7 @@ BASELINE_SHA=$(git -C "$w/remote-home" rev-parse HEAD)
 
 # The fork gains a fork-only file (stands in for bin/fm-dashboard.sh /
 # fm-spawn.sh --card) that the upstream template never receives - the exact
-# divergence AGENTS.md task fm-fleet-follows-fork describes.
+# divergence docs/remote-secondmates.md describes.
 git -C "$w/seed" pull -q fork main >/dev/null 2>&1 || true
 printf '#!/usr/bin/env bash\necho fork-only\n' > "$w/seed/bin/fm-dashboard.sh"
 git -C "$w/seed" add bin/fm-dashboard.sh

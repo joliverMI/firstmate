@@ -44,7 +44,7 @@ make_case() {
 
 # make_fork_case builds a project whose local main tracks a "fork" remote
 # separate from "origin", the two genuinely diverged - this repo's own
-# situation (AGENTS.md task fm-fleet-follows-fork). origin gets an extra
+# situation (see docs/remote-secondmates.md). origin gets an extra
 # commit fork never receives, so a review that wrongly diffs against origin
 # would be diffing against the wrong lineage entirely.
 make_fork_case() {

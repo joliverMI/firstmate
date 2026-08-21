@@ -6,7 +6,7 @@
 # clean fast-forward, never forcing, merging, or stashing" used by every sync
 # path:
 #   - /updatefirstmate (bin/fm-update.sh) pulls from the checkout's own upstream:
-#     base_mode "origin" (see resolve_update_base below for what that resolves to).
+#     base_mode "upstream" (see resolve_update_base below for what that resolves to).
 #   - the local-HEAD secondmate sync (bin/fm-spawn.sh on launch, bin/fm-bootstrap.sh
 #     on startup) follows the PRIMARY checkout's current default-branch commit:
 #     base_mode is that local commit, with NO fetch and no remote dependency.
@@ -207,7 +207,7 @@ validate_secondmate_home() {
 
 # A single fetch refreshes every worktree that shares an object store, so fetch
 # each distinct (git-common-dir, remote) pair at most once. Used ONLY by the
-# origin base mode; the local-HEAD sync never fetches. remote defaults to
+# upstream base mode; the local-HEAD sync never fetches. remote defaults to
 # "origin" for callers that have not resolved a configured upstream.
 FETCHED=""
 fetch_once() {
@@ -276,7 +276,7 @@ live_secondmate_meta_records() {
 #   FF_INSTR  = comma list of changed instruction paths (only when updated)
 #
 # base_mode selects where the fast-forward base comes from:
-#   origin       - fetch the checkout's own configured upstream for <default>
+#   upstream     - fetch the checkout's own configured upstream for <default>
 #                  (fork/main, origin/main, whatever refs/heads/<default> is
 #                  set to track) and advance to it, via resolve_update_base;
 #                  falls back to origin/<default> and says so when no upstream
@@ -312,7 +312,7 @@ ff_target() {
   }
 
   # Resolve the fast-forward base from base_mode (see header).
-  if [ "$base_mode" = origin ]; then
+  if [ "$base_mode" = upstream ]; then
     resolve_update_base "$dir" "$default"
     remote=$RESOLVE_BASE_REMOTE
     base=$RESOLVE_BASE_REF
