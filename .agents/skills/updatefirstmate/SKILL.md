@@ -29,7 +29,7 @@ This touches only the firstmate repo and its own worktrees, never anything under
    bin/fm-update.sh
    ```
    It fast-forwards this firstmate repo's default branch from its own configured upstream (falling back to `origin/<default>` when none is set), then updates every registered local or remote secondmate home through its placement-specific guarded path.
-   It prints one status line per target (`updated <old>..<new>` / `already current` / `skipped: <reason>`), preceded for any target whose default branch has no configured upstream by one informational line naming the `origin/<default>` fallback it used, followed by two action lines that tell you exactly what to do next:
+   It prints one status line per target (`updated <old>..<new>` / `already current` / `skipped: <reason>`), preceded for any target whose default branch has no usable remote upstream (none configured at all, or one that names a local branch) by one informational line naming both that reason and the `origin/<default>` fallback it used, followed by two action lines that tell you exactly what to do next:
    - `reread-firstmate: yes|no`
    - `nudge-secondmates: fm-<id>...|none`
 

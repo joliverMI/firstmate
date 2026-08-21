@@ -6,9 +6,14 @@
 # was forked from while the checkout's own branch tracks a separate fork it
 # actually develops on, and the two can genuinely diverge (see
 # docs/remote-secondmates.md). Every tool that fetches, diffs, or reports
-# divergence against "the development remote" must resolve it through
-# resolve_update_base below rather than hardcoding origin, so it follows
-# whatever a checkout's own branch is actually configured to track.
+# divergence against the lineage a checkout DEVELOPS on - self-update, lint and
+# changed-test selection, the review diff base, pooled-worktree provisioning -
+# must resolve it through resolve_update_base below rather than hardcoding
+# origin, so it follows whatever a checkout's own branch is actually configured
+# to track. PR-LINEAGE questions are the deliberate exception and stay pinned to
+# origin: refs/pull/* and the branch PRs merge into exist only there, because
+# bin/fm-pr-destination-guard.sh pins every PR this fleet opens to origin.
+# bin/fm-teardown.sh's header owns that pin's safety rationale.
 # Usage: . bin/fm-dev-remote-lib.sh   (pure git-config reads; no other setup, no network)
 
 # Resolve which remote and ref a checkout's <default> branch should be updated

@@ -1001,7 +1001,7 @@ families_for_changed_path() {
     bin/fm-dev-remote-lib.sh)
       # The single owner of development-remote resolution. Every tool that
       # fetches, diffs, or reports divergence against "the development remote"
-      # goes through it - directly (review-diff, teardown, lint, this runner)
+      # goes through it - directly (review-diff, lint, this runner)
       # or through fm-ff-lib.sh (update/bootstrap, spawn's pooled worktree
       # base, the stow cascade and config push, the fleet snapshot) - so a
       # change here selects all of their families, not just whichever suites
