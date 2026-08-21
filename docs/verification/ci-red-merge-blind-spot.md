@@ -16,9 +16,13 @@ Run-by-run and job-by-job chronology for the incident that prompted this record 
 A `pull_request` run is not blind to `main`, and this record does not claim otherwise.
 `actions/checkout@v6` in `.github/workflows/ci.yml` sets no `ref:`, so the run checks out `refs/pull/N/merge` - the PR's head already merged into `main`'s tip at that moment.
 PR #6's pre-merge job log shows exactly that: `HEAD is now at b57e38c Merge 213584d... into 4f0a4f5...`, where `4f0a4f5` was `main`'s red tip.
-That run passed.
-`main`'s red state was exercised before the merge and still came back green, because the failure was intermittent rather than deterministic.
-A pre-merge run against a red `main` is therefore real evidence that can still read "green", which is a harder problem than an unchecked merge would be.
+
+PR #12 shows what that mechanism actually produced, with the timing that makes it count.
+Its pre-merge run `32226547720` checked out `Merge 7e98282... into 3c8f796...`, and `3c8f796` was `main`'s red tip at the time - that commit's own push run `32150616824` had failed.
+All four serial shards passed, and the run concluded `success` at `2026-08-19T07:22:15Z`, 1m52s before PR #12 merged at `07:24:07Z`.
+A completed green verdict against a red `main` therefore did exist before that merge, and PR #12's own post-merge push run `32227657272` then went red again immediately.
+A pre-merge run against a red `main` is real evidence that can still read "green", because the failure was intermittent rather than deterministic.
+That is a harder problem than an unchecked merge would be.
 
 Nor does a PR's own run have to finish before its merge lands.
 PR #6 merged at `2026-08-17T21:03:36Z` while its own CI run `32068680937` was still in progress; that run did not complete until `21:11:16Z`, 7m40s after the merge.
@@ -80,12 +84,17 @@ The remaining two jobs, both in one run, are outside that suite's attributed cau
   An earlier revision of this record proposed one - PR #14's suite-wide `export FM_WATCH_ARM_NO_LOGIN_SHELL=1` stripping a profile-sourcing cost out of this case's bounded wait - and it is wrong on inspection, on two independent grounds.
   The 250-by-20ms guard-log loop runs only after `await guardHooks.event(...)` has already resolved, and the arm spawn lives inside that awaited call via `letWatchArmRun` into `coordinator.ensureArmed`, so a slow profile lengthens the await rather than expiring the later loop.
   And overrunning the readiness budget (the 12s default, which this case does not override) resolves `"timeout"`, which `letWatchArmRun` does not accept, so the guard would have run rather than been suppressed - the opposite of the failure actually logged.
-  This branch has now had to withdraw a reasoned-but-unverified mechanism twice: once in `ede2d97`, for a load-failure claim in [`arm-readiness-determinism-proof.md`](../arm-readiness-determinism-proof.md), and once here.
+  This is the second such withdrawal in drafting this record: an earlier round made the same kind of unsupported-mechanism claim about a load-dependent `FM_HOME` failure and dropped it once the reasoning was checked, with the detail kept in this task's PR evidence.
   The corrected practice is to record that no mechanism is known rather than reason toward a plausible one, since a story that merely sounds right is the same substitute for verification this record exists to name.
 - `not ok - next bounded scan did not resume with the following child` in `tests/fm-inactive-reconcile.test.sh` remains genuinely unattributed to any cause, and has not recurred.
 
-Separately, two CI jobs on unrelated shards each hit `ci.yml`'s 15-minute `tests-portable-serial` timeout, confirmed by an identical GitHub check-run annotation ("The job has exceeded the maximum execution time of 15m0s"): one on 2026-08-17 inside window A, and one on 2026-08-21 (after the fix, and itself followed by a clean run).
-Neither is attributed to any cause, and the second shows the class is still live: it landed after both windows and after PR #14.
+Separately, two CI jobs hit `ci.yml`'s 15-minute `tests-portable-serial` timeout, confirmed by an identical GitHub check-run annotation ("The job has exceeded the maximum execution time of 15m0s").
+Neither is attributed to any cause, and neither sits on a shard unrelated to the original report.
+The first is job `95412020578`, `Behavior portable serial 3`, cancelled at `2026-08-17T14:23:26Z` - not beside the red runs but inside one of them, red run `32037964172`, whose shard 4 failed an assertion in the same run.
+It is the only shard-3 non-success anywhere in window A: all four of window A's assertion failures were shard 4 (jobs `95243266311`, `95243272968`, `95249497126`, `95412020616`).
+That single timeout is therefore the whole of the "shard 3" half of the reported premise.
+It also concluded `cancelled` rather than `failure`, so the count of 8 failing serial jobs above excludes it; a maintainer tallying every non-green serial job across the two windows will count 9.
+The second is job `96651633862` on 2026-08-21, after both windows and after PR #14, and itself followed by a clean run - which shows the class is still live.
 
 ## Current state
 
