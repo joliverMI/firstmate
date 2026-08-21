@@ -148,6 +148,9 @@
 #   default-branch commit when safe; skipped syncs warn and launch unchanged.
 #   Ship/scout spawns refuse to launch unless the resolved task path is a real
 #   git worktree root distinct from the primary project checkout.
+#   A ship/scout spawn also refuses when the resolved worktree is already
+#   recorded in this home's state as another tracked task's own isolated copy,
+#   whether it came from the pool or from a relaunch's recorded worktree.
 #   Before a fresh ship or scout worker starts, its clean task worktree fetches
 #   origin, resolves the current remote default branch, and resets to its tip.
 #   An unreachable origin, unresolved default branch, or non-clean worktree
@@ -1731,20 +1734,49 @@ real_path_or_raw() {  # <path>
 # herdr-sm-spaces-k4). Both branches converge on the same $T ("target") string
 # that every downstream operation (send/capture/kill) already treats as opaque
 # per-backend routing (fm_backend_resolve_selector).
+
+# spawn_kill_collision_window: close the window THIS spawn just created, before
+# refusing it. That window is uniquely named for this task and was created by
+# this attempt, so unlike the pooled worktree it is never the holder's and is
+# always ours to close; the worktree and its lease stay untouched for exactly
+# the reason the orca branch below leaves orca's ids alone.
+spawn_kill_collision_window() {
+  case "$BACKEND" in
+    zellij) fm_backend_kill zellij "$T" "${ZELLIJ_TAB_ID:-}" "$W" ;;
+    cmux) fm_backend_kill cmux "$T" '' "$W" ;;
+    *) fm_backend_kill "$BACKEND" "$T" ;;
+  esac
+}
+
 # refuse_spawn_worktree_collision: the single exit for a worktree another
-# tracked task still claims. Nothing this spawn holds is safely ours to reclaim
-# on that path - on the orca backend the worktree is the other task's, and the
-# terminal the same suspect create call reported may be that task's too - so the
-# abort cleanup is disarmed first and the orphaned orca ids are named instead,
-# with orca's own inspection tooling rather than treehouse's (orca does not use
-# the treehouse pool).
+# tracked task still claims. The hint is source-aware because the three ways in
+# leave behind three different things:
+#   orca - the worktree is the other task's and the terminal the same suspect
+#     create call reported may be that task's too, so the abort cleanup is
+#     disarmed and both orphaned ids are named against orca's own inspection
+#     tooling rather than treehouse's (orca does not use the treehouse pool).
+#   relaunch - nothing was acquired at all: the worktree is the task's OWN
+#     recorded one, so pool wording would send an operator hunting a pool that
+#     was never called. What is wrong there is that two records claim one path.
+#   fresh pool spawn - the pool did hand this copy back, so the pool is the
+#     thing to inspect; this spawn's own window is closed first so a retry
+#     cannot strand another window on every attempt.
 refuse_spawn_worktree_collision() {  # <source> <inspect-target> <other-id>
   local source=$1 inspect_target=$2 other_id=$3 hint
   ORCA_ABORT_CLEANUP=0
   if [ "$BACKEND" = orca ]; then
     hint="orca worktree id '${ORCA_WORKTREE_ID:-unknown}' and terminal '${ORCA_TERMINAL:-none}' are deliberately left in place because they may be $other_id's own - inspect them with 'orca worktree show --worktree id:${ORCA_WORKTREE_ID:-unknown}' and reclaim them yourself once you know whose they are"
+  elif [ "$RELAUNCH" -eq 1 ]; then
+    hint="this relaunch acquired no copy of its own - it reuses task $ID's own recorded worktree, and task $other_id's record claims that same path, so one of those two records is stale; retire the stale record (inspect $other_id and $ID) before relaunching"
   else
     hint="the isolated-copy pool may be exhausted (a hard cap, a stale lease, or a crashed holder can all look like room when there is none) - free it (inspect $other_id, then 'treehouse status') before retrying"
+    if [ -n "${T:-}" ]; then
+      if spawn_kill_collision_window; then
+        hint="$hint; this attempt's own window $W was closed, so retrying strands nothing, while the copy itself is left alone because it may be $other_id's"
+      else
+        hint="$hint; this attempt's own window $W could not be closed and is still open on that copy - close it yourself before retrying"
+      fi
+    fi
   fi
   echo "error: $source resolved to worktree '$WT', already recorded as task $other_id's own isolated copy; refusing to spawn $ID onto a copy another task may still be using. ${hint}. Inspect target $inspect_target" >&2
   exit 1
