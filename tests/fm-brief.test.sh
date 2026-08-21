@@ -783,6 +783,61 @@ SH
   pass "fm-brief.sh: the direct-PR create command names the checkout's own origin as --repo"
 }
 
+# A PR body is markdown that routinely names commands and paths in backticks.
+# The emitted create command must be able to carry one verbatim: if the body
+# reaches the shell as an inline double-quoted argument, backticks and $(...)
+# inside it are executed before gh-axi ever sees them and their output replaces
+# the text. This runs the emitted command with a body that would prove it, and
+# asserts both halves - nothing executed, and the body arrived unchanged.
+test_direct_pr_create_command_carries_a_body_the_shell_cannot_execute() {
+  local home id brief cmd repo fakebin body_path recorded marker
+  home="$TMP_ROOT/direct-pr-body-home"
+  mkdir -p "$home/data"
+  id="brief-direct-body-b1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "brief was not scaffolded"
+  # shellcheck disable=SC2016 # The sed script is literal; nothing here should expand.
+  cmd=$(sed -n 's/.*`\(set -- --title[^`]*\)`.*/\1/p' "$brief" | head -n1)
+  [ -n "$cmd" ] || fail "the direct-PR brief must emit one runnable create command"
+  repo="$TMP_ROOT/direct-pr-body-repo"
+  fakebin="$TMP_ROOT/direct-pr-body-fakebin"
+  mkdir -p "$repo" "$fakebin" "$TMP_ROOT/direct-pr-body-tmp"
+  git -C "$repo" init -q
+  git -C "$repo" remote add origin https://github.com/joliverMI/firstmate.git
+  cat > "$fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > ./gh-axi-args
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    --body-file) cp "$2" ./gh-axi-body; shift 2 ;;
+    --body) printf '%s' "$2" > ./gh-axi-body; shift 2 ;;
+    *) shift ;;
+  esac
+done
+SH
+  chmod +x "$fakebin/gh-axi"
+
+  # First run discovers where the emitted command expects the body to live.
+  ( cd "$repo" && TMPDIR="$TMP_ROOT/direct-pr-body-tmp" PATH="$fakebin:$PATH" bash -c "$cmd" ) >/dev/null 2>&1
+  assert_present "$repo/gh-axi-args" "the emitted command must reach the pull-request tool"
+  recorded=$(cat "$repo/gh-axi-args")
+  assert_contains "$recorded" "--body-file" \
+    "the body must be passed by file; an inline body is shell-interpolated before gh-axi sees it"
+  body_path=$(printf '%s' "$recorded" | tr ' ' '\n' | grep -A1 -x -- --body-file | tail -n1)
+  [ -n "$body_path" ] || fail "the create call named no body file to write"
+
+  marker="$TMP_ROOT/direct-pr-body-EXECUTED"
+  printf '%s\n' "Pins \`touch $marker\` and \$(touch $marker) in the destination guard." > "$body_path"
+  rm -f "$repo/gh-axi-body"
+  ( cd "$repo" && TMPDIR="$TMP_ROOT/direct-pr-body-tmp" PATH="$fakebin:$PATH" bash -c "$cmd" ) >/dev/null 2>&1
+  assert_absent "$marker" "a command quoted in the PR body must never be executed by the shell"
+  assert_present "$repo/gh-axi-body" "the create call must deliver the body it was given"
+  diff -q "$body_path" "$repo/gh-axi-body" >/dev/null \
+    || fail "the body gh-axi received differs from the body written; it was interpolated on the way"
+  pass "fm-brief.sh: the direct-PR create command carries a PR body the shell never evaluates"
+}
+
 # gh's fork-parent default is a GitHub behaviour, so a GitLab or self-hosted
 # project was never exposed to it. The emitted command must therefore still
 # open the PR there, exactly as it did before this destination work existed -
@@ -824,6 +879,7 @@ test_no_heredoc_in_command_substitution
 test_no_mistakes_setup_guard_path_resolves_outside_firstmate
 test_direct_pr_create_command_names_its_own_origin
 test_direct_pr_create_command_still_ships_a_non_github_project
+test_direct_pr_create_command_carries_a_body_the_shell_cannot_execute
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
 test_ship_mode_is_required_and_closed_set
