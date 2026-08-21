@@ -1,0 +1,60 @@
+Measured behaviour of the needs-attention reason guard
+(corpora as published in docs/dashboard.md, 'The needs-attention reason guard')
+
+--- report-shaped reasons the guard targets: 15 reasons ---
+  REFUSED  'You reported flares not changing the lights - being chased now'   (matched 'being chased')
+  REFUSED  'Migration is in progress'   (matched 'in progress')
+  REFUSED  'Still investigating the checkout timeout'   (matched 'investigating')
+  REFUSED  'Looking into the failed backup'   (matched 'looking into')
+  REFUSED  'Currently working on the invoice import'   (matched 'working on')
+  REFUSED  'Keeping an eye on the disk usage'   (matched 'keeping an eye on')
+  REFUSED  'Monitoring the alert queue overnight'   (matched 'monitoring the')
+  REFUSED  'No update yet'   (matched 'no update yet')
+  REFUSED  'Will update once the vendor replies'   (matched 'will update')
+  REFUSED  'Rebuild kicked off - update to follow'   (matched 'update to follow')
+  REFUSED  'Tracking down the duplicate charge'   (matched 'tracking down')
+  REFUSED  'Digging into the log spike'   (matched 'digging into')
+  REFUSED  'Emails bouncing since Tuesday - following up on it'   (matched 'following up on')
+  REFUSED  'The permit is under investigation'   (matched 'under investigation')
+  REFUSED  'Still chasing the supplier'   (matched 'still chasing')
+  => 15/15 refused (catch rate)
+
+--- report-shaped reasons outside the fixed list (documented accepted misses): 18 reasons ---
+  accepted 'No change since last time'
+  accepted 'Still on it'
+  accepted 'Checked again, same result'
+  accepted 'Reproduced it, cause unclear'
+  accepted 'Nothing new to report'
+  accepted 'Same as yesterday'
+  accepted 'Waiting on the vendor to call back'
+  accepted 'Ran the script twice, both failed'
+  accepted 'It is not fixed yet'
+  accepted 'Heard back from the supplier, no news'
+  accepted 'The team is looking into the failed backup'
+  accepted 'The crew was investigating the leak'
+  accepted 'We are investigating the checkout timeout'
+  accepted 'I was digging into the bounced payouts'
+  accepted 'We were keeping an eye on the disk usage'
+  accepted "It's still chasing the supplier"
+  accepted 'Monitoring disk usage'
+  accepted 'Still monitoring disk usage'
+  => 0/18 refused (false-positive/over-catch rate)
+
+--- genuine asks (must never be refused): 14 reasons ---
+  accepted 'Pick red or blue for the trim'
+  accepted 'Approve the $400 hosting renewal'
+  accepted 'Confirm the domain transfer by Friday'
+  accepted 'Approve the $400 monitoring subscription renewal'
+  accepted 'Pick which contractor keeps working on the deck'
+  accepted 'Approve the invoice for the in progress work'
+  accepted 'Decide whether to keep the monitoring alerts on overnight'
+  accepted 'Sign the updated contractor agreement'
+  accepted 'Tell me which of the two quotes to accept'
+  accepted 'Send me the router password so the install can finish'
+  accepted 'Choose a delivery date for the countertops'
+  accepted 'Confirm you want the old server decommissioned'
+  accepted 'Is monitoring the pool worth $80 a month?'
+  accepted 'Was looking into the second quote worth the delay?'
+  => 0/14 refused (false-positive/over-catch rate)
+
+Empty reason: REFUSED - needs-attention requires --reason - say what he needs to decide, approve, or supply, not what happened

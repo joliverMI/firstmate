@@ -1,0 +1,147 @@
+### 1. A card that needs him: setting needs-attention with no reason is refused
+created card: deck-rebuild-ltz5
+
+$ bin/fm-dashboard.sh status deck-rebuild-ltz5 needs-attention
+fm-dashboard.sh: status: needs-attention requires --reason - say what he needs to decide, approve, or supply
+[exit 1]
+
+### 2. The server refuses it too, not just the CLI (raw API call)
+
+$ curl -sS -i -X POST .../api/tasks/deck-rebuild-ltz5/status -d {"status":"needs_attention"}
+HTTP/1.0 400 Bad Request
+{"error": "needs-attention requires --reason - say what he needs to decide, approve, or supply, not what happened"}
+### 3. A reason that is only a progress report is refused
+
+$ bin/fm-dashboard.sh status deck-rebuild-ltz5 needs-attention --reason You reported flares not changing the lights - being chased now
+fm-dashboard.sh: server refused (400): that reason reads as a progress report, not something he can act on (matched 'being chased' at the start or end of a clause) - say what he needs to decide, approve, or supply: 'You reported flares not changing the lights - being chased now'
+[exit 1]
+
+$ bin/fm-dashboard.sh status deck-rebuild-ltz5 needs-attention --reason Still investigating the checkout timeout
+fm-dashboard.sh: server refused (400): that reason reads as a progress report, not something he can act on (matched 'investigating' at the start or end of a clause) - say what he needs to decide, approve, or supply: 'Still investigating the checkout timeout'
+[exit 1]
+
+### 4. A real ask is accepted and renders on the card
+
+$ bin/fm-dashboard.sh status deck-rebuild-ltz5 needs-attention --reason pick composite or cedar for the deck boards before Friday
+deck-rebuild-ltz5	needs_attention	firstmate	-	Deck rebuild
+[exit 0]
+
+$ bin/fm-dashboard.sh show deck-rebuild-ltz5
+id:       deck-rebuild-ltz5
+title:    Deck rebuild
+status:   needs_attention
+captain:  firstmate
+agent:    
+starred:  false
+needs attention: pick composite or cedar for the deck boards before Friday
+
+--- prompt ---
+Get the deck rebuilt before the party
+
+[exit 0]
+
+### 5. A real ask that merely mentions a report word mid-sentence still gets through
+
+$ bin/fm-dashboard.sh status deck-rebuild-ltz5 working
+deck-rebuild-ltz5	working	firstmate	-	Deck rebuild
+[exit 0]
+
+$ bin/fm-dashboard.sh status deck-rebuild-ltz5 needs-attention --reason approve the $400 monitoring subscription renewal
+deck-rebuild-ltz5	needs_attention	firstmate	-	Deck rebuild
+[exit 0]
+
+$ bin/fm-dashboard.sh list --status needs-attention
+deck-rebuild-ltz5	needs_attention	firstmate	-	Deck rebuild
+[exit 0]
+
+### 6. Creating a card straight into needs-attention is governed identically
+
+$ bin/fm-dashboard.sh add --title Bad create --captain dj --prompt x --status needs-attention
+fm-dashboard.sh: add: --status needs-attention requires --reason - say what he needs to decide, approve, or supply
+[exit 1]
+
+$ bin/fm-dashboard.sh add --title Reporty create --captain dj --prompt x --status needs-attention --reason looking into the checkout timeout
+fm-dashboard.sh: server refused (400): that reason reads as a progress report, not something he can act on (matched 'looking into' at the start or end of a clause) - say what he needs to decide, approve, or supply: 'looking into the checkout timeout'
+[exit 1]
+
+$ bin/fm-dashboard.sh add --title Good create --captain dj --prompt x --status needs-attention --reason sign the updated contractor agreement
+good-create-4fn1	needs_attention	captain_dj	-	Good create
+[exit 0]
+
+### 7. add --reason is hard-refused for every other status, with the right alternative
+
+$ bin/fm-dashboard.sh add --title Waiting w/ reason --captain river --prompt x --status waiting --reason waiting on the plumber
+fm-dashboard.sh: add: --reason is only accepted with --status needs-attention (got status 'waiting'); use 'fm-dashboard.sh status <id> waiting --reason ...' instead
+[exit 1]
+
+$ bin/fm-dashboard.sh add --title Working w/ reason --captain river --prompt x --status working --reason ready for his eyes
+fm-dashboard.sh: add: --reason is only accepted with --status needs-attention (got status 'working'); a reason is not stored for 'working' - drop --reason or use --status needs-attention
+[exit 1]
+
+### 8. Every other status is untouched - no reason required, nothing blocked
+
+$ bin/fm-dashboard.sh status ordinary-card-ypa9 working
+ordinary-card-ypa9	working	captain_river	-	Ordinary card
+[exit 0]
+
+$ bin/fm-dashboard.sh status ordinary-card-ypa9 paused
+ordinary-card-ypa9	paused	captain_river	-	Ordinary card
+[exit 0]
+
+$ bin/fm-dashboard.sh status ordinary-card-ypa9 testing
+ordinary-card-ypa9	testing	captain_river	-	Ordinary card
+[exit 0]
+
+$ bin/fm-dashboard.sh status ordinary-card-ypa9 review
+ordinary-card-ypa9	review	captain_river	-	Ordinary card
+[exit 0]
+
+$ bin/fm-dashboard.sh status ordinary-card-ypa9 complete
+ordinary-card-ypa9	complete	captain_river	-	Ordinary card
+[exit 0]
+
+$ bin/fm-dashboard.sh status ordinary-card-ypa9 waiting --reason waiting on the plumber
+ordinary-card-ypa9	waiting	captain_river	-	Ordinary card
+[exit 0]
+
+$ bin/fm-dashboard.sh show ordinary-card-ypa9
+id:       ordinary-card-ypa9
+title:    Ordinary card
+status:   waiting
+captain:  captain_river
+agent:    
+starred:  false
+waiting on: (no card) - waiting on the plumber
+
+--- prompt ---
+x
+
+[exit 0]
+### 9. A needs-attention card that predates the guard is left exactly as it is (no migration, no rewrite)
+
+# A card carrying the report-shaped reason "being chased now" was written straight into the DB,
+# as if it had been set before this change. Server restarted; nothing rewrote or dropped it:
+
+$ bin/fm-dashboard.sh show legacy-weak-reason-0001
+id:       legacy-weak-reason-0001
+title:    Legacy card set before the guard
+status:   needs_attention
+captain:  firstmate
+agent:    
+starred:  false
+needs attention: being chased now
+
+--- prompt ---
+legacy prompt
+
+
+$ bin/fm-dashboard.sh list --status needs-attention
+ordinary-card-ypa9	needs_attention	captain_river	-	Ordinary card
+deck-rebuild-ltz5	needs_attention	firstmate	-	Deck rebuild
+good-create-4fn1	needs_attention	captain_dj	-	Good create
+legacy-weak-reason-0001	needs_attention	firstmate	-	Legacy card set before the guard
+
+# ...while setting that same text from now on is still refused:
+$ bin/fm-dashboard.sh status legacy-weak-reason-0001 needs-attention --reason "being chased now"
+fm-dashboard.sh: server refused (400): that reason reads as a progress report, not something he can act on (matched 'being chased' at the start or end of a clause) - say what he needs to decide, approve, or supply: 'being chased now'
+[exit 1]

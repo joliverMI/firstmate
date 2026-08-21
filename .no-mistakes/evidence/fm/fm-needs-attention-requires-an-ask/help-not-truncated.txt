@@ -1,0 +1,31 @@
+### --help must render the whole header comment block, which this change grew by ~14 lines.
+
+# Previous rendering (hardcoded 'sed -n 2,64p') applied to the current, grown header:
+$ fm-dashboard.sh --help | tail -6      # BEFORE (fixed line count)
+agent doing ordinary dashboard work never needs them directly.
+
+statuses: needs-attention not-started working paused waiting testing review complete
+tabs:     interpretation communication needs
+captain shorthands: dj -> captain_dj, river -> captain_river, firstmate -> firstmate
+
+
+$ fm-dashboard.sh --help | tail -6      # AFTER (range derived from the header)
+
+Every call is bounded: --connect-timeout 5s and --max-time 20s, overridable
+with $FM_DASHBOARD_CONNECT_TIMEOUT / $FM_DASHBOARD_MAX_TIME (positive
+seconds; anything else is ignored loudly and the default used).
+Exit codes: 0 success, 4 the board answered and said the id does not exist,
+1 anything else (unreachable board, refused write, bad usage).
+
+# Lines the old fixed range silently dropped from --help:
+  63a64,73
+  > Server URL resolution: $FM_DASHBOARD_URL env var, else the first line of
+  > $FM_HOME/config/dashboard-url, else http://127.0.0.1:8420. A secondmate on
+  > a different host points config/dashboard-url at the primary's tailnet
+  > address (see docs/dashboard.md "Reaching the board from a secondmate").
+  > 
+  > Every call is bounded: --connect-timeout 5s and --max-time 20s, overridable
+  > with $FM_DASHBOARD_CONNECT_TIMEOUT / $FM_DASHBOARD_MAX_TIME (positive
+  > seconds; anything else is ignored loudly and the default used).
+  > Exit codes: 0 success, 4 the board answered and said the id does not exist,
+  > 1 anything else (unreachable board, refused write, bad usage).
