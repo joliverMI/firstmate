@@ -3,9 +3,11 @@
 # firstmate repo and every registered secondmate home.
 #
 # The guarantees under test mirror fm-fleet-sync.sh and prime directive #3:
-#   - The running firstmate repo (on its default branch) fast-forwards from
-#     origin; a leased secondmate home (detached HEAD on the default branch)
-#     fast-forwards the same way.
+#   - The running firstmate repo (on its default branch) fast-forwards from the
+#     base its own default branch is configured to track, falling back to
+#     origin/<default> with an announced reason when it tracks nothing; a leased
+#     secondmate home (detached HEAD on the default branch) fast-forwards the
+#     same way.
 #   - FAST-FORWARD ONLY: a dirty, diverged, offline, or wrong-branch target is
 #     skipped and reported, never forced or stashed, so unlanded work survives.
 #   - The update is a single-parent fast-forward (never a merge commit) and a
@@ -291,6 +293,27 @@ test_unsafe_secondmate_home_skipped_before_git_update() {
   pass "T11 unsafe secondmate home is not fast-forwarded"
 }
 
+# --- T12: no configured upstream keeps origin/<default> and announces it ----
+# fm-update.sh resolves its fast-forward base from the default branch's own
+# configured upstream (resolve_update_base, bin/fm-dev-remote-lib.sh). A
+# checkout with no upstream at all must keep the prior origin/<default>
+# behaviour and SAY which base it fell back to, rather than silently guessing.
+test_no_upstream_announces_origin_fallback() {
+  local w out
+  w=$(new_world t12)
+  git -C "$w/main" branch --unset-upstream main
+  bump_origin "$w" instr
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "firstmate: no upstream configured for main; using origin/main" \
+    "unconfigured upstream is announced instead of silently guessed"
+  assert_contains "$out" "firstmate: updated " "prior origin/main fast-forward behaviour is kept"
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$(git -C "$w/main" rev-parse origin/main)" ] \
+    || fail "firstmate did not fast-forward to origin/main"
+  pass "T12 an unconfigured upstream falls back to origin/<default> and says so"
+}
+
 test_updates_main_and_secondmate
 test_reread_gate_is_instruction_only
 test_dirty_secondmate_skipped
@@ -300,5 +323,6 @@ test_registry_backstop_dedup_and_self_exclusion
 test_firstmate_wrong_branch_skipped
 test_firstmate_detached_head_skipped
 test_unsafe_secondmate_home_skipped_before_git_update
+test_no_upstream_announces_origin_fallback
 
 echo "# all fm-update tests passed"

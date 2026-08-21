@@ -310,9 +310,42 @@ test_fork_tracking_pool_refreshes_from_fork_not_origin() {
   pass "a pooled worktree tracking a fork is provisioned from that fork, even when origin is unreachable"
 }
 
+test_origin_fallback_refusal_explains_itself() {
+  local rec id out status before
+  id='pool-fallback-note-r7'
+  rec=$(make_case fallback-note "$id")
+  read_case_record "$rec"
+
+  # The checkout tracks fork/main, but the FORK's own default branch is named
+  # "trunk" - a name no local branch here carries. freshen_spawn_worktree_base
+  # re-resolves the base against that remote default name, finds no configured
+  # upstream for it, and falls back to origin/trunk. That fallback is allowed;
+  # a refusal that then blames an unreachable origin without saying how origin
+  # entered the picture is not, because the operator is left staring at an
+  # origin error for a checkout that develops on a fork.
+  git clone --quiet --bare "$PROJECT_DIR" "$CASE_DIR/fork.git"
+  git -C "$CASE_DIR/fork.git" branch trunk main
+  git -C "$CASE_DIR/fork.git" symbolic-ref HEAD refs/heads/trunk
+  git -C "$PROJECT_DIR" remote add fork "file://$CASE_DIR/fork.git"
+  git -C "$PROJECT_DIR" fetch --quiet fork
+  git -C "$PROJECT_DIR" branch --quiet --set-upstream-to=fork/main main
+  git -C "$PROJECT_DIR" remote set-url origin "file://$CASE_DIR/missing-origin.git"
+  before=$(git -C "$POOL_DIR" rev-parse HEAD)
+
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "spawn succeeded despite an unreachable fallback base"
+  assert_contains "$out" "no upstream configured for trunk; using origin/trunk" \
+    "spawn refused on origin without explaining why it fell back to origin at all"
+  [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$before" ] \
+    || fail "spawn moved HEAD after refusing on the fallback base"
+  pass "a refusal on the origin fallback carries the resolver's reason for falling back"
+}
+
 test_stale_pool_base_refreshes_before_branching
 test_non_main_default_branch_refreshes_before_branching
 test_fork_tracking_pool_refreshes_from_fork_not_origin
+test_origin_fallback_refusal_explains_itself
 test_direct_pr_and_scout_refresh_before_launch
 test_dirty_pool_refuses_without_discarding_work
 test_unresolved_remote_default_refuses_pool

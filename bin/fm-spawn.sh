@@ -1871,7 +1871,7 @@ validate_spawn_worktree() {  # <source> <inspect-target>
 }
 
 freshen_spawn_worktree_base() {  # <worktree>
-  local worktree=$1 default remote branch target expected actual status
+  local worktree=$1 default remote branch target expected actual status why
   # Which remote does this checkout develop on? resolve_update_base
   # (fm-dev-remote-lib.sh) reads it off the default branch's own configured
   # upstream - e.g. a fork tracking fork/main - so a pooled worktree is
@@ -1910,16 +1910,24 @@ freshen_spawn_worktree_base() {  # <worktree>
   remote=$RESOLVE_BASE_REMOTE
   branch=$RESOLVE_BASE_BRANCH
   target=$RESOLVE_BASE_REF
+  # This re-resolve reads the upstream of the REMOTE's current default branch
+  # name, which need not name a local branch here at all - and then
+  # resolve_update_base falls back to origin/<default>, silently undoing the
+  # fork we resolved above. Carry its one-line reason into every refusal below
+  # so a spawn that dies on an unreachable origin says why it was looking at
+  # origin in the first place, instead of contradicting itself.
+  why=""
+  [ -z "$RESOLVE_BASE_NOTE" ] || why=" ($RESOLVE_BASE_NOTE)"
   if ! git -C "$worktree" remote get-url "$remote" >/dev/null 2>&1; then
-    echo "error: no $remote remote for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+    echo "error: no $remote remote for pooled worktree '$worktree'$why; refusing to launch from a potentially stale base" >&2
     return 1
   fi
   if ! git -C "$worktree" fetch --quiet "$remote" "+refs/heads/$branch:refs/remotes/$target"; then
-    echo "error: could not fetch '$target' for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+    echo "error: could not fetch '$target' for pooled worktree '$worktree'$why; refusing to launch from a potentially stale base" >&2
     return 1
   fi
   expected=$(git -C "$worktree" rev-parse --verify --quiet "$target^{commit}" 2>/dev/null) || {
-    echo "error: '$target' is not a commit for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+    echo "error: '$target' is not a commit for pooled worktree '$worktree'$why; refusing to launch from a potentially stale base" >&2
     return 1
   }
   status=$(git -C "$worktree" status --porcelain) || {

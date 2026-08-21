@@ -211,13 +211,18 @@ test_unreachable_pr_head_falls_back_with_warning() {
   pass "fm-review-diff falls back to local branch with a warning when PR head is unreachable"
 }
 
-test_fork_tracking_checkout_diffs_and_fetches_pr_from_fork() {
+test_fork_tracking_diffs_against_fork_but_fetches_pr_from_origin() {
   local case_dir out
   case_dir=$(make_fork_case fork-tracking)
   stale_and_pr_commits "$case_dir"
-  # The PR lives on the remote this checkout actually develops on (fork), not
-  # on origin - matching how no-mistakes opens PRs against a fork.
-  git -C "$case_dir/wt" push -q fork "pr-head-tmp:refs/pull/9/head"
+  # The two remotes carry different things, and each side of the diff has to
+  # come from the right one. bin/fm-pr-destination-guard.sh pins every PR this
+  # fleet opens to ORIGIN, so refs/pull/9/head exists on origin alone - the
+  # fork has no refs/pull/* namespace at all here. The diff BASE, meanwhile,
+  # must still follow main's configured upstream (fork). Resolving the pull ref
+  # through the fork instead loses the PR head entirely and silently reviews
+  # the stale local branch.
+  git -C "$case_dir/wt" push -q origin "pr-head-tmp:refs/pull/9/head"
   write_task_meta "$case_dir" "pr=https://example.invalid/pull/9"
 
   out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
@@ -225,12 +230,12 @@ test_fork_tracking_checkout_diffs_and_fetches_pr_from_fork() {
   assert_contains "$out" "diff base: fork/main" \
     "fork-tracking: diff base must follow main's configured upstream (fork), not origin"
   assert_contains "$out" '+pr-fixed' \
-    "fork-tracking: diff should use the PR head fetched from fork"
+    "fork-tracking: the PR head must be fetched from origin, where the pull ref lives"
   assert_not_contains "$out" 'stale-local' \
     "fork-tracking: diff must not fall back to the stale local branch"
   assert_not_contains "$(cat "$case_dir/stderr")" 'warning: PR head unavailable' \
-    "fork-tracking: PR head fetch from fork should succeed without falling back"
-  pass "fm-review-diff follows a checkout's configured upstream (fork) for both the base and the PR fetch, not a hardcoded origin"
+    "fork-tracking: the origin-pinned PR head fetch should succeed without falling back"
+  pass "fm-review-diff diffs against the configured upstream (fork) while fetching the PR head from origin"
 }
 
 test_local_branch_upstream_falls_back_to_origin() {
@@ -274,5 +279,5 @@ test_pr_meta_fetches_pull_head_without_recorded_sha
 test_stale_recorded_pr_head_loses_to_fetched_pull_head
 test_no_pr_meta_uses_local_branch
 test_unreachable_pr_head_falls_back_with_warning
-test_fork_tracking_checkout_diffs_and_fetches_pr_from_fork
+test_fork_tracking_diffs_against_fork_but_fetches_pr_from_origin
 test_local_branch_upstream_falls_back_to_origin

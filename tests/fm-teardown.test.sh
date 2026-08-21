@@ -255,6 +255,33 @@ land_on_origin_main() {
   rm -rf "$tmp"
 }
 
+# Add a fork bare repo, register it on the project, and make the project's own
+# default branch track fork/main - the origin=upstream-template / fork=dev-remote
+# split bin/fm-dev-remote-lib.sh describes. The fork starts as a copy of origin,
+# so the two only differ where a test makes them differ. Args: case_dir
+add_fork_tracked_by_default_branch() {
+  local case_dir=$1
+  git clone -q --bare "$case_dir/origin.git" "$case_dir/fork.git"
+  git -C "$case_dir/fork.git" symbolic-ref HEAD refs/heads/main
+  git -C "$case_dir/project" remote add fork "$case_dir/fork.git"
+  git -C "$case_dir/project" fetch -q fork
+  git -C "$case_dir/project" branch --quiet --set-upstream-to=fork/main main
+}
+
+# Land <file>=<content> as one commit on the FORK's default branch only, leaving
+# origin's untouched. Args: case_dir file content
+land_on_fork_main() {
+  local case_dir=$1 file=$2 content=$3 tmp
+  tmp="$case_dir/_land_fork"
+  git clone -q "$case_dir/fork.git" "$tmp"
+  printf '%s\n' "$content" > "$tmp/$file"
+  git -C "$tmp" add -- "$file"
+  git -C "$tmp" -c user.email=t@t -c user.name=t commit -q -m "squash $file on the fork"
+  git -C "$tmp" push -q origin HEAD:main
+  rm -rf "$tmp"
+  git -C "$case_dir/project" fetch -q fork
+}
+
 # Override GitHub lookups to report PR 7 as merged with the supplied head.
 add_gh_pr_merged_for_head() {
   local case_dir=$1 head=$2
@@ -946,6 +973,68 @@ test_content_fallback_refreshes_stale_origin_ref() {
   ! grep -q REFUSED "$case_dir/stderr" || fail "content-stale-ref: teardown printed a REFUSED line"
   pass "content fallback refreshes origin default before comparing trees"
 }
+test_fork_tracking_content_check_stays_pinned_to_origin() {
+  local case_dir rc before
+  case_dir=$(make_case fork-content-pin)
+  write_meta "$case_dir" no-mistakes ship
+  # The project develops on a fork (main tracks fork/main) while origin is the
+  # upstream template PRs are still opened against - see the origin pin in
+  # bin/fm-teardown.sh. The task's content has landed on the FORK's default
+  # branch and nowhere on origin, so it has NOT landed where PRs merge.
+  # Answering "already landed?" against the fork would hard-reset a worktree
+  # whose work is not in the PR lineage at all.
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  add_fork_tracked_by_default_branch "$case_dir"
+  land_on_fork_main "$case_dir" feature.txt hello
+  before=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "fork-content-pin: teardown must refuse work that landed only on the fork, not on origin"
+  grep -q REFUSED "$case_dir/stderr" || fail "fork-content-pin: no REFUSED line in stderr"
+  [ "$(git -C "$case_dir/wt" rev-parse HEAD)" = "$before" ] \
+    || fail "fork-content-pin: teardown moved the worktree HEAD despite refusing"
+  pass "the landed-content check compares against origin's default branch, not the tracked fork's"
+}
+
+test_fork_tracking_pr_head_object_is_fetched_from_origin() {
+  local case_dir rc tmp pr_head
+  case_dir=$(make_case fork-pr-head-pin)
+  write_meta "$case_dir" no-mistakes ship
+  printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  add_fork_tracked_by_default_branch "$case_dir"
+
+  # The merged PR head is a commit built on top of the task's work that exists
+  # ONLY as refs/pull/7/head on origin - never in the project's object store,
+  # and never on the fork, which has no refs/pull/* namespace at all. Resolving
+  # it through the tracked fork cannot find it, so a genuinely merged PR reads
+  # as unlanded and teardown false-refuses.
+  tmp="$case_dir/_prhead"
+  git clone -q "$case_dir/origin.git" "$tmp"
+  git -C "$tmp" fetch -q "$case_dir/wt" fm/task-x1
+  git -C "$tmp" checkout -q FETCH_HEAD
+  git -C "$tmp" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "merge-time fixup"
+  pr_head=$(git -C "$tmp" rev-parse HEAD)
+  git -C "$tmp" push -q origin "HEAD:refs/pull/7/head"
+  rm -rf "$tmp"
+  ! git -C "$case_dir/wt" cat-file -e "$pr_head^{commit}" 2>/dev/null \
+    || fail "fork-pr-head-pin: the PR head must not already be present locally"
+  add_gh_pr_merged_for_head "$case_dir" "$pr_head"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "fork-pr-head-pin: teardown should resolve the merged PR head from origin: $(cat "$case_dir/stderr")"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "fork-pr-head-pin: teardown printed a REFUSED line"
+  pass "the merged-PR head object is fetched from origin even when the default branch tracks a fork"
+}
+
 
 test_dirty_worktree_refuses() {
   local case_dir rc pr_head
@@ -2742,6 +2831,8 @@ test_pr_check_does_not_refresh_stale_pr_head
 test_pr_check_records_remote_head_when_local_lags
 test_content_in_default_fallback_allows
 test_content_fallback_refreshes_stale_origin_ref
+test_fork_tracking_content_check_stays_pinned_to_origin
+test_fork_tracking_pr_head_object_is_fetched_from_origin
 test_dirty_worktree_refuses
 test_gh_error_and_content_absent_refuses
 test_open_pr_on_clean_pushed_branch_refuses
