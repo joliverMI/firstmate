@@ -249,12 +249,11 @@ fi
 pass "real tmux: fm_backend_target_exists rejects a nonexistent dotted window name"
 
 fm_backend_tmux_kill "$SESSION:$DOTTED_WINDOW"
-# Kill by window id as well: fm_backend_tmux_kill addresses the window with the
-# same `=$session:=$window` pin whose pane-split flaw is described above, so it
-# cannot remove a dotted window name and is best-effort (it reports success
-# either way). That is a pre-existing sibling gap, tracked separately and NOT
-# fixed here; this line only stops the leaked window from perturbing the
-# pane-addressing assertions below.
+# Kill by window id as well, belt and braces: fm_backend_tmux_kill now resolves
+# a dotted window NAME through fm_backend_tmux_exact_target_named and really
+# does remove it (asserted directly further below), but it is best-effort and
+# reports success either way, so this fallback guarantees the window cannot
+# leak and perturb the pane-addressing assertions that follow.
 dotted_wid=$(tmux list-windows -t "=$SESSION" -F '#{window_name} #{window_id}' \
   | while read -r n i; do [ "$n" = "$DOTTED_WINDOW" ] && printf '%s' "$i" && break; done)
 kill_window_id "$dotted_wid"
@@ -777,6 +776,61 @@ pass "real tmux: fm_backend_tmux_kill removes a window named with a dot without 
 
 kill_window_id "$kill_sib_wid"
 kill_window_id "$kill_dotted_wid"
+
+# --- an ALREADY-GONE dotted name is never read as, nor killed as, its sibling -
+# The residual half of the same defect, and the more dangerous one: when the
+# dotted window is already gone, a resolver that falls back to reading
+# `<window>.<pane>` answers with a real pane of the truncated sibling, because
+# the sibling's FIRST pane index always exists - no split needed. A recorded
+# `sess:fm-<id>.0` whose window has since been removed then resolves to pane 0
+# of the live `fm-<id>`, and the two consumers that resolve a RECORDED
+# session:window field escalate that from there: fm_backend_tmux_agent_state
+# reads the sibling task's foreground process and reports the dead endpoint
+# `alive`, and fm_backend_tmux_kill destroys the sibling's ENTIRE window,
+# because `kill-window` on a pane id removes the window that pane belongs to
+# (verified on tmux 3.4). Task ids admit dots (fm_task_id_path_safe allows
+# [A-Za-z0-9._-]) and fm-spawn.sh records `window=<session>:fm-<id>`, so a
+# recorded name ending `.0` needs nothing exotic to occur.
+# As in the prefix-collision proof above, the sibling pane runs a process the
+# classifier recognizes as a harness by ARGV[0] (`exec -a claude sleep 300`),
+# so a misresolved read would come back a false ALIVE rather than merely
+# something non-missing.
+GONE_SIBLING="fm-gonesib"
+gone_sib_wid=$(fm_backend_tmux_create_task "$SESSION" "$GONE_SIBLING" "$HOME") \
+  || fail "could not create the already-gone-dotted-target sibling window"
+gone_pane_idx=$(tmux list-panes -t "$gone_sib_wid" -F '#{pane_index}' | head -1)
+[ -n "$gone_pane_idx" ] || fail "could not read the already-gone-dotted-target sibling's first pane index"
+GONE_DOTTED="$GONE_SIBLING.$gone_pane_idx"
+if tmux list-windows -t "=$SESSION" -F '#{window_name}' | grep -Fqx "$GONE_DOTTED"; then
+  fail "fixture is invalid: the supposedly already-gone window '$GONE_DOTTED' actually exists"
+fi
+
+fm_backend_tmux_send_text_line "$SESSION:$GONE_SIBLING" "exec -a claude sleep 300" \
+  || fail "could not start the fake harness process (argv0=claude) in the already-gone-dotted-target sibling pane"
+GONE_READY=false
+for _ in $(seq 1 50); do
+  case "$(fm_backend_tmux_foreground_argv0s "$gone_sib_wid" 2>/dev/null)" in
+    *claude*) GONE_READY=true; break ;;
+  esac
+  sleep 0.1
+done
+[ "$GONE_READY" = true ] || fail "the fake harness process (argv0=claude) never became the already-gone-dotted-target sibling's foreground process"
+
+gone_state=$(fm_backend_agent_state tmux "$SESSION:$GONE_DOTTED")
+[ "$gone_state" != alive ] \
+  || fail "fm_backend_agent_state reported the already-gone '$SESSION:$GONE_DOTTED' alive by reading pane $gone_pane_idx of the live sibling '$GONE_SIBLING'"
+[ "$gone_state" = missing ] \
+  || fail "fm_backend_agent_state should classify an already-gone dotted window in a readable session as missing, got '$gone_state'"
+pass "real tmux: fm_backend_agent_state reads an already-gone dotted window name as missing, never as its same-pane-indexed sibling's live harness"
+
+fm_backend_tmux_kill "$SESSION:$GONE_DOTTED" \
+  || fail "fm_backend_tmux_kill on an already-gone dotted target must stay best-effort (never fail)"
+if ! tmux list-windows -t "=$SESSION" -F '#{window_name}' 2>/dev/null | grep -Fqx "$GONE_SIBLING"; then
+  fail "fm_backend_tmux_kill destroyed the live sibling '$GONE_SIBLING' when asked to remove the already-gone '$GONE_DOTTED'"
+fi
+pass "real tmux: fm_backend_tmux_kill leaves a live sibling intact when the dotted-name window it is asked to remove is already gone"
+
+kill_window_id "$gone_sib_wid"
 
 # --- fm_backend_tmux_send_text_line / fm_backend_tmux_send_literal: gated too -
 # These two were the last unpinned senders, used only by bin/fm-spawn.sh to

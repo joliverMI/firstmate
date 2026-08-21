@@ -288,7 +288,7 @@ isolated_tmux_window_exists() {  # <dir> <socket> <session> <window>
 
 test_isolated_tmux_invalid_and_valid_cleanup() {
   local dir socket socket_id session='endpoint safety' target_id=target control=control target=fm-target
-  local prefix_target=fm-prefix prefix_survivor=fm-prefix2 rc
+  local prefix_target=fm-prefix prefix_survivor=fm-prefix2 rc target_wid
   [ -n "$REAL_TMUX" ] || { echo "skip - tmux not installed"; return 0; }
   dir=$(make_case isolated-real)
   socket=dedicated.sock
@@ -345,6 +345,21 @@ SH
   isolated_tmux_window_exists "$dir" "$socket" "$session" "$prefix_survivor" \
     || fail "missing exact target cleanup removed its prefix-matched neighbor"
 
+  # The window id the recorded NAME actually belongs to, read from the live
+  # server before teardown removes it. fm_backend_tmux_kill addresses whatever
+  # fm_backend_tmux_exact_target_named printed - the id carried on the very
+  # inventory line whose #{window_name} matched byte-exactly - so asserting on
+  # this id proves the destruction was aimed at the recorded window's own
+  # identity, not at a target string tmux would re-parse (a `=session:=window`
+  # pin splits a dotted name's trailing `.` off as a pane specifier and can
+  # take out a sibling window entirely).
+  target_wid=$( ( cd "$dir" && env -u TMUX -u TMUX_PANE "$REAL_TMUX" -S "$socket" \
+    list-windows -t "=$session" -F '#{window_id} #{window_name}' 2>/dev/null ) \
+    | while read -r wid wname; do
+        [ "$wname" = "$target" ] && printf '%s' "$wid" && break
+      done )
+  [ -n "$target_wid" ] || fail "could not read the recorded target window's own id before teardown"
+
   fm_write_meta "$dir/home/state/$target_id.meta" \
     "window=$session:$target" "endpoint_task_id=$target_id" \
     "worktree=$dir/nonexistent-worktree" "project=$dir/nonexistent-project" \
@@ -358,8 +373,8 @@ SH
     && fail "valid cleanup did not remove the exact target window"
   isolated_tmux_window_exists "$dir" "$socket" "$session" "$control" \
     || fail "valid cleanup removed the independent control window"
-  grep -Fqx "tmux <kill-window> <-t> <=$session:=$target>" "$dir/runtime.log" \
-    || fail "valid cleanup did not invoke exactly the recorded target: $(cat "$dir/runtime.log")"
+  grep -Fqx "tmux <kill-window> <-t> <$target_wid>" "$dir/runtime.log" \
+    || fail "valid cleanup did not invoke exactly the recorded target window id '$target_wid': $(cat "$dir/runtime.log")"
 
   ( cd "$dir" && env -u TMUX -u TMUX_PANE "$REAL_TMUX" -S "$socket" kill-server 2>/dev/null ) || true
   pass "fm-teardown: exact tmux cleanup preserves invalid and prefix-matched neighbors while removing only the recorded target"

@@ -31,9 +31,28 @@ case "${1:-}" in
     exit 0
     ;;
   list-windows)
-    if [ -n "${FM_FAKE_TMUX_WINDOW:-}" ]; then
+    # FM_FAKE_TMUX_WINDOW is the live window inventory, one name per line
+    # (a bare selector listing may carry `session:window` entries instead).
+    # bin/backends/tmux.sh's window kill resolves a recorded session:window by
+    # reading '#{window_id} #{window_name}' and comparing the NAME byte-exactly,
+    # then addresses the id it read - so that format has to answer with BOTH
+    # fields, and with an id distinct from the name, or the fake would let an
+    # id/name mix-up pass. Every other format keeps answering with names only.
+    [ -n "${FM_FAKE_TMUX_WINDOW:-}" ] || exit 0
+    win_fmt=name
+    for a in "$@"; do case "$a" in *'#{window_id}'*) win_fmt=id ;; esac; done
+    if [ "$win_fmt" = name ]; then
       printf '%s\n' "$FM_FAKE_TMUX_WINDOW"
+      exit 0
     fi
+    n=0
+    while IFS= read -r w; do
+      [ -n "$w" ] || continue
+      n=$((n + 1))
+      printf '@%s %s\n' "$n" "${w##*:}"
+    done <<EOF
+$FM_FAKE_TMUX_WINDOW
+EOF
     exit 0
     ;;
   list-panes)

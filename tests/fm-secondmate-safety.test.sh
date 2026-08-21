@@ -1889,7 +1889,7 @@ EOF
 }
 
 test_secondmate_force_teardown_discards_child_work() {
-  local home subhome childproj childwt fakebin log
+  local home subhome childproj childwt fakebin log tmux_windows
   home="$TMP_ROOT/force-teardown-home"
   subhome="$TMP_ROOT/force-teardown-subhome"
   childproj="$subhome/projects/alpha"
@@ -1920,19 +1920,26 @@ yolo=off
 EOF
   fakebin=$(make_fake_tmux "$TMP_ROOT/force-teardown-fake")
   log="$TMP_ROOT/force-teardown-fake/tmux.log"
+  # Both recorded windows are live in the fake's inventory, so the exact-NAME
+  # resolver behind the window kill can match them; @1/@2 are the ids that
+  # inventory carries for them, and the kill addresses the id it read rather
+  # than a `=session:=window` string tmux would re-parse.
+  tmux_windows=$'fm-child\nfm-domain'
   if PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/force-teardown-fake/pane.txt" \
+    FM_FAKE_TMUX_WINDOW="$tmux_windows" \
     "$ROOT/bin/fm-teardown.sh" domain >/dev/null 2>&1; then
     fail "teardown allowed a secondmate with in-flight child work"
   fi
   PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/force-teardown-fake/pane.txt" \
+    FM_FAKE_TMUX_WINDOW="$tmux_windows" \
     "$ROOT/bin/fm-teardown.sh" domain --force >/dev/null 2>/dev/null \
     || fail "force teardown failed to discard child work"
   [ ! -d "$subhome" ] || fail "force teardown did not remove the retired secondmate home"
   [ ! -d "$childwt" ] || fail "force teardown did not remove child worktree"
   [ ! -e "$home/state/domain.meta" ] || fail "teardown did not clear parent meta"
   grep -F -- '- domain ' "$home/data/secondmates.md" >/dev/null && fail "force teardown did not remove secondmate registry route"
-  grep -F 'kill-window -t =firstmate:=fm-child' "$log" >/dev/null || fail "force teardown did not kill child window"
-  grep -F 'kill-window -t =firstmate:=fm-domain' "$log" >/dev/null || fail "force teardown did not kill parent window"
+  grep -F 'kill-window -t @1' "$log" >/dev/null || fail "force teardown did not kill child window"
+  grep -F 'kill-window -t @2' "$log" >/dev/null || fail "force teardown did not kill parent window"
   pass "secondmate force teardown discards child work"
 }
 
@@ -2106,11 +2113,12 @@ EOF
     fakebin=$(make_fake_tmux "$TMP_ROOT/symlink-inside-teardown-fake-$opdir")
     log="$TMP_ROOT/symlink-inside-teardown-fake-$opdir/tmux.log"
     PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/symlink-inside-teardown-fake-$opdir/pane.txt" \
+      FM_FAKE_TMUX_WINDOW=fm-domain \
       "$ROOT/bin/fm-teardown.sh" domain --force >/dev/null 2>"$err" \
       || fail "force teardown refused $opdir symlinked inside the secondmate home"
     [ ! -e "$subhome" ] || fail "force teardown did not remove subhome with inside $opdir symlink"
     [ ! -e "$home/state/domain.meta" ] || fail "force teardown did not clear parent meta for inside $opdir symlink"
-    grep -F 'kill-window -t =firstmate:=fm-domain' "$log" >/dev/null || fail "force teardown did not kill parent window for inside $opdir symlink"
+    grep -F 'kill-window -t @1' "$log" >/dev/null || fail "force teardown did not kill parent window for inside $opdir symlink"
   done
   pass "force teardown allows non-state operational directory symlinks inside the subhome"
 }

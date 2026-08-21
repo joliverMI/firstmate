@@ -377,15 +377,29 @@ case "${1:-}" in
     esac
     ;;
   list-windows)
+    # The window kill and the agent-state read resolve a recorded
+    # session:window by reading '#{window_id} #{window_name}' out of this
+    # inventory and comparing the NAME byte-exactly, then address the id they
+    # read - so that format answers with BOTH fields, and with an id distinct
+    # from the name so the fake cannot let an id/name mix-up pass. Every other
+    # format keeps answering with names only.
+    win_fmt=name
+    for arg in "$@"; do case "$arg" in *'#{window_id}'*) win_fmt=id ;; esac; done
+    emit_window() {  # <name> <window-id>
+      case "$win_fmt" in
+        id) printf '%s %s\n' "$2" "$1" ;;
+        *) printf '%s\n' "$1" ;;
+      esac
+    }
     if [ "$mode" = unreadable ] && [ ! -e "$spawned" ] && [ ! -e "$killed" ]; then
       exit 1
     fi
     if [ -e "$spawned" ]; then
-      printf '%s\n' "$mate_window"
+      emit_window "$mate_window" @9
     elif [ ! -e "$killed" ] && { [ "$mode" = ambiguous ] || [ "$mode" = shell ]; }; then
-      printf '%s\n' "$mate_window"
+      emit_window "$mate_window" @9
     else
-      printf '%s\n' main
+      emit_window main @2
     fi
     exit 0
     ;;
@@ -1307,7 +1321,10 @@ EOF
 
   out=$(network_stage_report "$home" "$root")
   assert_not_contains "$out" "SECONDMATE_LIVENESS:" "successful bare-shell recovery should stay non-actionable"
-  assert_contains "$(cat "$log")" "kill-window -t =firstmate:=fm-$SESSION_START_SECOND_MATE_ID" \
+  # @9 is the id the fake's session inventory carries for the mate window: the
+  # kill addresses what the exact-NAME resolver read out of that listing, not a
+  # `=session:=window` string tmux would re-parse.
+  assert_contains "$(cat "$log")" "kill-window -t @9" \
     "the proven bare-shell path did not remove its existing dead endpoint"
   assert_contains "$(cat "$log")" "new-window" "the proven bare-shell path did not relaunch"
   pass "session start: the proven bare-shell recovery path remains intact"

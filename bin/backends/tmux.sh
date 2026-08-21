@@ -54,16 +54,25 @@ fm_backend_tmux_capture() {  # <target> <lines>
 #                                      resolved target)
 #   fm_backend_tmux_send_text_line   - gated (below)
 #   fm_backend_tmux_send_literal     - gated (below)
-#   fm_backend_tmux_kill             - gated (below)
-#   fm_backend_tmux_agent_state      - gated (below); still needs one extra
-#                                      exact-pinned read of its own to keep its
-#                                      missing/unreadable split, see that
-#                                      function's header
+#   fm_backend_tmux_kill             - gated (below, NAME-only)
+#   fm_backend_tmux_agent_state      - gated (below, NAME-only); still needs one
+#                                      extra exact-pinned read of its own to
+#                                      keep its missing/unreadable split, see
+#                                      that function's header
 #
-# The gate itself is fm_backend_tmux_exact_target (bin/fm-backend.sh) - the
-# same function fm_backend_target_exists answers with, so the address a send,
-# a kill, or an agent-state read uses is the address the probe verified, not a
-# second string derived from the target independently. That distinction is
+# The gate for the four sends is fm_backend_tmux_exact_target
+# (bin/fm-backend.sh) - the same function fm_backend_target_exists answers
+# with, so the address a send uses is the address the probe verified, not a
+# second string derived from the target independently.
+#
+# kill and agent_state go through fm_backend_tmux_exact_target_named (below)
+# instead, which is that resolver minus its pane-qualified fallback. Both of
+# them resolve a RECORDED task's own `<session>:<window>` metadata field rather
+# than a caller-supplied target string, and a recorded window component is a
+# NAME - never `window.pane`. Re-reading an unmatched dotted name as some other
+# window's pane answers (or, for kill, destroys) an unrelated task's endpoint
+# under the dead task's label, which is the same false-positive class this
+# gating exists to remove; see that function's header for the verified shape. That distinction is
 # not cosmetic: while an earlier send re-derived `=$session:=$window` on its
 # own, a dotted window NAME that the probe had matched in the session
 # inventory sent into a SIBLING window's pane, because tmux splits the
@@ -91,7 +100,9 @@ fm_backend_tmux_capture() {  # <target> <lines>
 # `=$session:=$window` pin cannot express a dotted window NAME, so
 # `kill-window` split the trailing `.` off as a pane specifier and could
 # remove a DIFFERENT live window entirely rather than merely fail to remove
-# the one it was asked to.
+# the one it was asked to. Resolving by NAME alone closes both directions of
+# that gap: the dotted name is matched literally when the window is live, and
+# refused - not reinterpreted as a sibling's pane - when it is already gone.
 #
 # What remains UNPINNED, derived mechanically rather than from memory - every
 # raw `tmux <subcommand> ... -t <target>` under bin/ that takes a
@@ -235,20 +246,71 @@ fm_backend_tmux_send_literal() {  # <target> <text>
   tmux send-keys -t "$target" -l "$2"
 }
 
+# fm_backend_tmux_exact_target_named: the NAME-only sibling of
+# fm_backend_tmux_exact_target, for the two consumers that resolve a recorded
+# task's own `<session>:<window>` metadata field rather than a caller-supplied
+# target string - fm_backend_tmux_kill and fm_backend_tmux_agent_state. It
+# prints the addressed window's own `@N` id when the window component matches a
+# live window NAME byte-exactly inside the exact-pinned session, and returns
+# nonzero otherwise, with no further interpretation.
+#
+# The one difference from the general resolver is the pane-qualified fallback,
+# and it is the whole point. fm_backend_tmux_exact_target answers a dotted
+# window component that matches no window name by re-reading it as
+# `window.pane`. That reading is correct for a caller-supplied target - an
+# explicit FM_SUPERVISOR_TARGET may legitimately address pane N of window W -
+# but it is wrong for a RECORDED window, which is only ever a name: task ids
+# admit dots (fm_task_id_path_safe) and pane index 0 always exists, so a dead
+# `sess:fm-1.0` beside a live `fm-1` resolved to fm-1's pane 0. agent_state
+# then read that unrelated task's foreground process under the dead task's
+# label - `alive` for a window that does not exist - and kill escalated the
+# same pane-scoped answer into destroying the whole live `fm-1`, because
+# `kill-window -t %N` removes the pane's entire window (verified on tmux 3.4).
+# Matching the name here byte-exactly against the session's own inventory is
+# safe for a dotted name precisely because that name is never handed to tmux as
+# a `-t` target string, so tmux's `.`-splitting parser never gets to reinterpret
+# it; the `@N` id printed back is an address tmux cannot misread either.
+fm_backend_tmux_exact_target_named() {  # <session:window> -> prints the window id
+  local target=$1 session window listing line id rest
+  case "$target" in
+    *:*:*|'':*|*:'') return 1 ;;
+    *:*) ;;
+    *) return 1 ;;
+  esac
+  session=${target%%:*}
+  window=${target#*:}
+  listing=$(LC_ALL=C tmux list-windows -t "=$session" -F '#{window_id} #{window_name}' 2>/dev/null) \
+    || return 1
+  while IFS= read -r line; do
+    id=${line%% *}
+    rest=${line#* }
+    if [ -n "$id" ] && [ "$rest" = "$window" ]; then
+      printf '%s' "$id"
+      return 0
+    fi
+  done <<EOF
+$listing
+EOF
+  return 1
+}
+
 # fm_backend_tmux_kill: remove one explicitly named task window, best-effort.
 # Empty, omitted, and malformed targets return nonzero before invoking
 # anything so tmux can never interpret an empty target as the caller's
 # current window - the same shape gate as before. A well-formed target is
-# then resolved through fm_backend_tmux_exact_target rather than a hand-built
-# `=$session:=$window` pin: that pin cannot express a dotted window NAME -
-# tmux splits the trailing `.` off as a pane specifier before matching the
-# name - so a task window named `fm-release-1.2` made
+# then resolved through fm_backend_tmux_exact_target_named rather than a
+# hand-built `=$session:=$window` pin: that pin cannot express a dotted window
+# NAME - tmux splits the trailing `.` off as a pane specifier before matching
+# the name - so a task window named `fm-release-1.2` made
 # `kill-window -t '=sess:=fm-release-1.2'` remove a DIFFERENT live window,
 # `fm-release-1`, rather than merely fail to remove the one it was asked to
-# (verified live on tmux 3.4). The resolver answers a dotted name with the
-# window's own `@N` id instead, which tmux cannot misread. A target that fails
-# to resolve (already gone, or ambiguous) stays best-effort like the rest of
-# this function: no tmux call is made, and the function still returns success,
+# (verified live on tmux 3.4). The named resolver answers a dotted name with
+# the window's own `@N` id instead, which tmux cannot misread, and it refuses
+# rather than re-reading an unmatched dotted name as some other window's pane -
+# a reading that would put this function right back to killing a live sibling
+# whenever the recorded window is already gone. A target that fails to resolve
+# (already gone, or ambiguous) stays best-effort like the rest of this
+# function: no tmux call is made, and the function still returns success,
 # because a caller cleaning up an endpoint that is already dead - or that a
 # recorded id no longer names uniquely - must not treat that as an error.
 fm_backend_tmux_kill() {  # <target>
@@ -263,7 +325,7 @@ fm_backend_tmux_kill() {  # <target>
   case "$session:$window" in
     :*|*:|*:*:*) return 1 ;;
   esac
-  exact=$(fm_backend_tmux_exact_target "$target") || return 0
+  exact=$(fm_backend_tmux_exact_target_named "$target") || return 0
   tmux kill-window -t "$exact" 2>/dev/null || true
 }
 
@@ -377,9 +439,9 @@ fm_backend_tmux_foreground_argv0s() {  # <target>
 # fm_backend_tmux_agent_state: recovery-grade harness-agent state for one
 # recorded target. See bin/fm-backend.sh's fm_backend_agent_state for the
 # shared state vocabulary and docs/tmux-backend.md "Agent liveness probe" for
-# the empirical basis. Existence is resolved through fm_backend_tmux_exact_target
-# - the same resolver fm_backend_target_exists and the send primitives above
-# use - rather than a second, independent lookup: the OLD code here validated
+# the empirical basis. Existence is resolved through
+# fm_backend_tmux_exact_target_named - the name-only resolver kill shares -
+# rather than a second, independent lookup: the OLD code here validated
 # existence with unpinned `list-windows -t "$session"`, and tmux resolves a
 # target-session by PREFIX exactly like it resolves a target-window, so a
 # recorded `dead-session:fm-1` fell through to a live prefix-colliding
@@ -389,11 +451,22 @@ fm_backend_tmux_foreground_argv0s() {  # <target>
 # live sibling's, which is routine for fm-<task-id> windows (verified live on
 # tmux 3.4: `list-windows -t dead-session` exits 0 off a live `dead-session-2`
 # alone, and `display-message -t dead-session:fm-1` reads that same sibling's
-# pane). When the resolver refuses, an exact-pinned `list-windows -t
-# "=$session"` classifies why: a readable inventory that still omits the
-# window, or a definitive missing-session/server response, is `missing`; any
-# other read failure is `unreadable`, so a transient tmux problem never
-# licenses a duplicate.
+# pane). The NAME-only resolver rather than the general one, because a
+# recorded window component is a name and nothing else: the general resolver's
+# pane-qualified fallback would answer a dead `sess:fm-1.0` with pane 0 of a
+# live `fm-1` and hand this function the very same false `alive`, just reached
+# by a different reading.
+#
+# When the resolver refuses, an exact-pinned `list-windows -t "=$session"`
+# classifies why, and the classification re-confirms the window's own absence
+# rather than inferring it: a readable inventory that still omits the window
+# byte-exactly, or a definitive missing-session/server response, is `missing`;
+# a readable inventory that DOES list the window means the resolver's refusal
+# came from something other than absence, so that reads `unreadable`, as does
+# any other read failure. `missing` licenses recovery and `unreadable` does
+# not, so the two must never collapse into each other: a transient tmux
+# problem reported as confident absence is the same lie as a false `alive`,
+# pointed the other way.
 #
 # The verdict combines two independent name sources rather than trusting either
 # alone. Either source naming a verified harness is enough for `alive`, because
@@ -402,7 +475,7 @@ fm_backend_tmux_foreground_argv0s() {  # <target>
 # authoritative for the negative verdicts, since it is the only source that can
 # distinguish a truly idle pane from a rewritten process title.
 fm_backend_tmux_agent_state() {  # <target>
-  local target=$1 comm session exact windows
+  local target=$1 comm session window exact windows
   local foreground argv0s name fg_seen=0 fg_shell=0 fg_other=0
   case "$target" in
     *:*:*|'':*|*:'') printf 'unreadable'; return 0 ;;
@@ -410,12 +483,19 @@ fm_backend_tmux_agent_state() {  # <target>
     *) printf 'unreadable'; return 0 ;;
   esac
   session=${target%%:*}
-  if ! exact=$(fm_backend_tmux_exact_target "$target"); then
+  window=${target#*:}
+  if ! exact=$(fm_backend_tmux_exact_target_named "$target"); then
     if windows=$(LC_ALL=C tmux list-windows -t "=$session" -F '#{window_name}' 2>&1); then
-      # The resolver already proved this exact window does not exist; a
-      # readable exact-session inventory just settles that it is the window,
-      # not the session, that is absent.
-      printf 'missing'
+      # A readable exact-session inventory settles that the SESSION is not
+      # what is absent; the window's own byte-exact absence from it is what
+      # makes `missing` an authoritative verdict. The resolver reads the same
+      # inventory, so it can only refuse a listed window when its own read
+      # failed - which is `unreadable`, never confirmed absence.
+      if printf '%s\n' "$windows" | grep -Fqx "$window"; then
+        printf 'unreadable'
+      else
+        printf 'missing'
+      fi
     else
       case "$windows" in
         *"can't find session:"*|*"no server running on "*|*"error connecting to "*" (No such file or directory)"|*"error connecting to "*" (Connection refused)")
