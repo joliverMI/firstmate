@@ -5,6 +5,9 @@
 # live only in a private sidecar and are never interpolated into shell source.
 # A GitHub pull request URL and a GitLab merge request URL are both accepted,
 # including a merge request on a self-hosted GitLab instance.
+# A GitHub pull request whose owner/repository is not the task's own project
+# origin is refused rather than recorded; see the check itself for why that
+# backstop exists and when it stays silent.
 # Usage: fm-pr-check.sh <task-id> <pr-url>
 set -eu
 
