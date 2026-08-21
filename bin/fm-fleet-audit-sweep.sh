@@ -16,7 +16,7 @@
 #   1. working  - corroborated against bin/fm-crew-state.sh, but ONLY for a
 #      card whose backlog_ref names a task in THIS FM_HOME; a ref naming
 #      another home, or no ref at all, is not verifiable from here and is
-#      skipped, never logged as a discrepancy (skill point 7).
+#      skipped, never logged as a discrepancy (skill point 8).
 #   2. testing  - the fleet must genuinely be exercising it right now, so it
 #      gets the exact same live-crew corroboration as working (a testing card
 #      is not inert the way a review card is).
@@ -28,6 +28,14 @@
 #   5. needs_attention - flags a card that has sat past
 #      FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES (default 60) with no
 #      admiral-authored communication note since it was flagged.
+#   6. not_started - counted for every not-started card, but flagged only
+#      when a currently-waiting card's own waiting_on_id names it: that
+#      column is only ever non-null while the referencing card is itself
+#      `waiting` (store.py's set_status clears it on every other status), so
+#      it is a structural fact that live work is genuinely blocked on this
+#      one, not a guess. Age alone is never the signal here - most
+#      not-started cards are legitimately queued, and unlike needs_attention
+#      above this check applies no age threshold at all.
 #   review is optional to him by design (the skill's own asymmetry), so it is
 #   never checked here at all - see "Why `needs-attention` is a separate
 #   status from `review`" in docs/dashboard.md.
@@ -87,7 +95,7 @@ log_discrepancy() {  # <task_id> <text>
 # Shared by the working and testing checks: both statuses claim a real crew is
 # actively on the card right now, so both are corroborated the same way -
 # against bin/fm-crew-state.sh, and ONLY for a card whose backlog_ref names a
-# task in THIS FM_HOME (skill point 7: a ref naming another home, or no ref at
+# task in THIS FM_HOME (skill point 8: a ref naming another home, or no ref at
 # all, is not verifiable from here and is skipped, never logged).
 check_live_crew_status() {  # <status-flag>
   local status_flag=$1 json id ref ref_home ref_task state_line state
@@ -173,6 +181,20 @@ while IFS= read -r id; do
   [ "$replied" = "true" ] && continue
   log_discrepancy "$id" "needs-attention for ${age_min}m with no reply from him since it was flagged"
 done < <(printf '%s' "$NA_JSON" | jq -r '.tasks[].id')
+
+# ---- 6. not_started: counted for every not-started card, but flagged only
+# when a currently-waiting card's own waiting_on_id names it (see header).
+# Reuses the waiting snapshot already fetched in step 3 above rather than
+# re-listing it, since that is the exact same live-ness fact either way.
+NOT_STARTED_JSON=$("$DASH" list --status not-started --json) \
+  || fail_sweep "sweep failed listing not-started cards: dashboard unreachable mid-sweep"
+CHECKED=$((CHECKED + $(printf '%s' "$NOT_STARTED_JSON" | jq '.tasks | length')))
+NOT_STARTED_IDS=$(printf '%s' "$NOT_STARTED_JSON" | jq -r '.tasks[].id')
+while IFS=$'\t' read -r waiter_id target_id; do
+  [ -n "$waiter_id" ] && [ -n "$target_id" ] || continue
+  printf '%s\n' "$NOT_STARTED_IDS" | grep -qx "$target_id" || continue
+  log_discrepancy "$target_id" "still not_started, but $waiter_id is waiting specifically on it"
+done < <(printf '%s' "$WAITING_JSON" | jq -r '.tasks[] | [.id, (.waiting_on_id // "")] | @tsv')
 
 COMPLETED_EPOCH=$(date +%s)
 DURATION=$((COMPLETED_EPOCH - START_EPOCH))

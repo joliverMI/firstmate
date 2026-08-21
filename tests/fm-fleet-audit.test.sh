@@ -100,7 +100,7 @@ test_audit_tick_heartbeat_and_due_interval() {
 # live-crew corroboration as `working` (docs/dashboard.md "Why `testing`
 # split into `testing` and `review`") - a `testing` card is counted, and a
 # card with no backlog_ref is unverifiable from here and must not be flagged
-# (skill point 7, same rule `working` already gets).
+# (skill point 8, same rule `working` already gets).
 test_sweep_counts_testing_cards_and_never_flags_an_unverifiable_one() {
   # Two forced sweeps back to back, with only the new card added in between,
   # so the checked-count delta is attributable to that one card alone rather
@@ -194,6 +194,60 @@ test_sweep_flags_waiting_on_completed_card() {
   assert_contains "$status" "already complete" "sweep did not flag a card waiting on an already-complete card"
   assert_contains "$status" "$waiter_id" "discrepancy log did not name the stale-waiting card"
   pass "the sweep flags a card waiting on a card that is already complete"
+}
+
+# Regression: the sweep used to skip not_started entirely, so an approved
+# card nobody ever started looked identical to one legitimately still queued.
+# Age is deliberately not the signal (see the fleet-dashboard skill and the
+# sweep script's own header) - only a currently-waiting card's own
+# waiting_on_id naming a not-started card is a genuine, structural
+# discrepancy. This is the quiet half: a not-started card nothing references
+# must be counted but never flagged, the same unverifiable-stays-silent rule
+# the testing-card test above already proves for a different status.
+test_sweep_counts_not_started_cards_and_never_flags_an_unverifiable_one() {
+  "$SWEEP" --forced || fail "baseline sweep exited non-zero"
+  local before_checked before_log id after_checked after_log
+  before_checked=$(audit_status_json | jq -r '.last_run.tasks_checked')
+
+  id=$("$DASH" add --title "Queued, nothing points at it" --captain firstmate \
+    --prompt "legitimately queued, not started yet" | awk '{print $1}')
+  [ -n "$id" ] || fail "could not add the not-started card"
+  before_log=$(audit_status_json | jq '[.log[] | select(.task_id=="'"$id"'")] | length')
+
+  "$SWEEP" --forced || fail "sweep script exited non-zero"
+
+  after_checked=$(audit_status_json | jq -r '.last_run.tasks_checked')
+  after_log=$(audit_status_json | jq '[.log[] | select(.task_id=="'"$id"'")] | length')
+  [ "$after_checked" -eq $((before_checked + 1)) ] \
+    || fail "expected exactly one more checked card (the new not-started one), before=$before_checked after=$after_checked"
+  [ "$after_log" = "$before_log" ] \
+    || fail "an unreferenced not-started card was flagged; age/queueing alone must not be a discrepancy"
+  pass "the sweep checks not-started cards and never flags one nothing currently references"
+}
+
+# The flagging half: a not-started card that a currently-waiting card is
+# genuinely blocked on - the one structural signal that a not-started card
+# is stuck rather than merely queued.
+test_sweep_flags_a_not_started_card_that_live_work_is_waiting_on() {
+  local target_id waiter_id flagged
+  target_id=$("$DASH" add --title "Approved, never started" --captain firstmate \
+    --prompt "not-started target" | awk '{print $1}')
+  [ -n "$target_id" ] || fail "could not add the not-started target card"
+  waiter_id=$("$DASH" add --title "Blocked on the unstarted card" --captain firstmate \
+    --prompt "blocked" | awk '{print $1}')
+  [ -n "$waiter_id" ] || fail "could not add the waiting card"
+  "$DASH" status "$waiter_id" waiting --waiting-on "$target_id" --reason "needs that work first" >/dev/null \
+    || fail "could not set waiting status"
+
+  "$SWEEP" --forced || fail "sweep script exited non-zero"
+
+  flagged=$(audit_status_json \
+    | jq -r '[.log[] | select(.task_id=="'"$target_id"'" and .kind=="discrepancy") | .text] | join(" | ")')
+  case "$flagged" in
+    *"not_started"*"$waiter_id"*) ;;
+    *) fail "a not-started card that live work is waiting on was not flagged; log entries: ${flagged:-<none>}" ;;
+  esac
+  pass "the sweep flags a not-started card that a currently-waiting card is blocked on"
 }
 
 test_sweep_flags_stale_unreplied_needs_attention_but_not_a_reply() {
@@ -292,6 +346,8 @@ test_audit_tick_heartbeat_and_due_interval
 test_sweep_counts_testing_cards_and_never_flags_an_unverifiable_one
 test_sweep_flags_a_live_crew_status_whose_linked_crew_is_not_working
 test_sweep_flags_waiting_on_completed_card
+test_sweep_counts_not_started_cards_and_never_flags_an_unverifiable_one
+test_sweep_flags_a_not_started_card_that_live_work_is_waiting_on
 test_sweep_flags_stale_unreplied_needs_attention_but_not_a_reply
 test_force_button_endpoint_runs_a_real_sweep
 test_force_button_refuses_while_a_sweep_is_already_running
