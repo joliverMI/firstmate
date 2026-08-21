@@ -18,6 +18,8 @@ GitHub Actions and Dependabot are exempt so their automation keeps working, but 
 1. Fork the repo, then clone the parent repo or set your local `origin` back to the parent (`git@github.com:kunchenguid/firstmate.git`).
 2. Create a branch and make your changes.
 3. Initialize the gate with your fork as the push target: `no-mistakes init --fork-url git@github.com:<you>/firstmate.git` (firstmate expects **no-mistakes v1.31.2+**; without a fork, plain `no-mistakes init` still works for maintainers with push access).
+   Then run `bin/fm-pr-destination-guard.sh .`, which pins `gh` in both your clone and its gate to resolve pull requests to your clone's own `origin` rather than to a destination it picks for you.
+   That matters when your `origin` is itself a GitHub fork, because `gh pr create` then defaults the pull request to the fork's parent repository; [`docs/architecture.md`](docs/architecture.md#pull-request-destination-is-pinned-never-ghs-default) owns that mechanism and what the guard verifies.
 4. Commit your changes.
 5. Push through the gate instead of pushing to `origin`:
 

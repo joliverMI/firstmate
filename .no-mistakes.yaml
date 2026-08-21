@@ -1,5 +1,14 @@
 # Per-repo no-mistakes overrides.
 
+# This repo is a real GitHub fork (joliverMI/firstmate, forked from the public
+# kunchenguid/firstmate). There is no key in this file, or anywhere else
+# no-mistakes reads, that points its PR step's destination at this repo
+# instead of the fork parent: `no-mistakes init --fork-url` solves the
+# opposite workflow (push to a fork, PR against the recorded origin) and does
+# not apply here. The fix is bin/fm-pr-destination-guard.sh, applied outside
+# this file's reach; see docs/architecture.md "Pull request destination is
+# pinned, never gh's default" before assuming a key here can solve this again.
+
 # firstmate is an agent-orchestration repo: its AGENTS.md installs a fleet-captain
 # identity. Disable project-level agent settings/instructions for gate agents so a
 # no-mistakes review/fix/document/test/lint/pr/rebase/ci agent never adopts that

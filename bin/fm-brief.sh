@@ -360,7 +360,13 @@ case "$MODE" in
 Delivery contract: mode=direct-PR
 This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
 The task is complete only when committed on your branch.
-When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
+When it is implemented and committed, push your branch, then open the PR with its destination named in the very same command that creates it. Never let a tool choose that destination: \`gh pr create\` defaults to a fork's parent rather than the fork itself, \`gh repo view\` with no repository argument picks a remote by gh's own preference order (\`upstream\` before \`origin\`), and \`gh-axi\` drops an empty \`--repo\` and falls back to that same default - so a destination that is merely computed earlier, in some other command, fails open onto the parent.
+First write the PR title and body into files, each with a quoted heredoc delimiter so the shell expands and executes nothing inside them. Text you author is never safe to inline: an apostrophe in a title ends the quoted string and kills the whole line with a syntax error before any of it runs, and a markdown body naming commands or paths in backticks would be executed before \`gh-axi\` ever saw it, its output substituted into the body.
+\`cat > "\$(git rev-parse --absolute-git-dir)/fm-pr-title.txt" <<'FM_PR_TITLE'\` … your title, verbatim … \`FM_PR_TITLE\`
+\`cat > "\$(git rev-parse --absolute-git-dir)/fm-pr-body.md" <<'FM_PR_BODY'\` … your body, verbatim … \`FM_PR_BODY\`
+Then name the destination and create the PR as one command, so the create call cannot run at all unless the destination was determined with certainty:
+\`set -- --title "\$(cat "\$(git rev-parse --absolute-git-dir)/fm-pr-title.txt")" --body-file "\$(git rev-parse --absolute-git-dir)/fm-pr-body.md"; OWNER_REPO=\$("$FM_ROOT/bin/fm-pr-destination-guard.sh" . --print-destination); case \$? in 0) gh-axi pr create --repo "\$OWNER_REPO" "\$@" ;; 3) gh-axi pr create "\$@" ;; *) exit 1 ;; esac\`
+Your words go only into those two files; the create command itself is fixed text - run it exactly as written, as one command line, and do not edit or split it. Both files are named by your own worktree's git directory, so they are yours alone - crewmates run concurrently on one host under one user, and a fixed path in a shared directory would let another task's title or body silently replace yours between the write and the create. That guard mode reads this repo's own \`origin\` remote, makes no network call, and never prints a guess: exit 0 means it printed \`owner/repo\` and \`--repo\` carries that verified value straight into the create call - that flag being set from the guard's own value IS the destination guarantee, so there is no separate comparison left to make by eye; exit 3 means this repo is not on a GitHub host, where gh's fork-parent default cannot apply, so the PR is created without a destination override as it always was; any other exit means the destination is undetermined on a repo where the hazard is real, so nothing is created - append \`blocked: {its exact error}\` to the status file and stop. Otherwise append \`done: PR {url}\` to the status file and stop.
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
     ;;
@@ -379,7 +385,8 @@ EOF
     ;;
   *)  # no-mistakes
     SETUP2="
-2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`."
+2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`.
+3. Always run \`$FM_ROOT/bin/fm-pr-destination-guard.sh .\`, whether or not step 2 just ran \`no-mistakes init\`. It pins this repo's pull-request destination to its own \`origin\` (never gh's ambient default) and verifies the pin in both this checkout and its no-mistakes gate. Treat a non-zero exit as a blocker: append \`blocked: {its exact error}\` and stop rather than starting \`/no-mistakes\` unpinned."
     RULE1='1. Never push to the default branch. Never merge a PR.'
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done

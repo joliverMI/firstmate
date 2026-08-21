@@ -24,6 +24,9 @@ FM_PR_PATH=
 FM_PR_OWNER=
 FM_PR_REPO=
 FM_PR_NUMBER=
+FM_PR_REMOTE_OWNER=
+FM_PR_REMOTE_REPO=
+FM_PR_REMOTE_HOST=
 FM_PR_DATA_PROVIDER=
 FM_PR_DATA_URL=
 FM_PR_DATA_HOST=
@@ -205,6 +208,128 @@ fm_pr_url_parse() {
   FM_PR_HOST=$host
   FM_PR_PATH=$path
   FM_PR_NUMBER=${BASH_REMATCH[3]}
+}
+
+# fm_pr_lower <text>: lowercase <text>. GitHub owner and repository names are
+# case-insensitive, so every comparison of two of them goes through this.
+# Written with tr rather than ${x,,} because that expansion is bash 4+ only and
+# these scripts also run on macOS's system bash 3.2.
+fm_pr_lower() {
+  printf '%s' "${1-}" | tr '[:upper:]' '[:lower:]'
+}
+
+# fm_pr_github_host <host>: 0 when <host> is a GitHub host for pull-request
+# purposes. github.com and GitHub's documented ssh.github.com:443 endpoint are
+# the same repository namespace. A "github.com-<alias>" or
+# "ssh.github.com-<alias>" host is an ~/.ssh/config Host alias - the standard
+# way to hold several GitHub accounts on one machine - and resolves to GitHub
+# for the user who configured it, so it is GitHub here too.
+#
+# The alias suffix must be one dotless label, because saying yes here means a
+# pull request is aimed at github.com: "github.com-mirror.example.net" is a
+# different domain that happens to start with the same characters, and naming
+# its owner/repo as a GitHub destination would point a pull request at an
+# unrelated repository on github.com. A dot in the suffix is what tells the two
+# apart, so "github.com-work" is an alias and anything dot-separated is not.
+fm_pr_github_host() {
+  local host
+  host=$(fm_pr_lower "${1-}")
+  case "$host" in
+    github.com|ssh.github.com) return 0 ;;
+    github.com-*|ssh.github.com-*)
+      case "${host#*-}" in
+        ''|*.*) return 1 ;;
+        *) return 0 ;;
+      esac
+      ;;
+  esac
+  return 1
+}
+
+# fm_pr_redact_remote_url <git-remote-url>: the same URL with any userinfo
+# replaced by "***". A remote can legitimately carry a credential
+# (https://x-access-token:<token>@github.com/owner/repo.git is the standard
+# token-clone form), and callers print these URLs into crewmate status files
+# and provisioning logs, so no diagnostic ever echoes one verbatim.
+fm_pr_redact_remote_url() {
+  local raw=${1-} scheme rest authority tail
+  case "$raw" in
+    *://*)
+      scheme="${raw%%://*}://"
+      rest=${raw#*://}
+      authority=${rest%%/*}
+      ;;
+    *)
+      scheme=
+      rest=$raw
+      authority=${rest%%:*}
+      ;;
+  esac
+  tail=${rest#"$authority"}
+  case "$authority" in
+    *@*) authority="***@${authority##*@}" ;;
+  esac
+  printf '%s%s%s' "$scheme" "$authority" "$tail"
+}
+
+# fm_pr_github_remote_owner_repo <git-remote-url>: parse a GitHub remote URL
+# into FM_PR_REMOTE_OWNER/FM_PR_REMOTE_REPO. Returns 1 and clears both for any
+# non-GitHub or unparseable URL. Used to name a project's own repository from
+# its origin remote - by bin/fm-pr-destination-guard.sh, by the direct-PR
+# instructions bin/fm-brief.sh emits, and by bin/fm-pr-check.sh to compare a
+# reported PR's owner/repository against the task's own project.
+#
+# The accepted breadth deliberately matches what a correctly configured project
+# can actually carry (compare bin/fm-project-origin-lib.sh, which owns the
+# wider no-forge-allowlist question): the https/http/ssh/git scheme forms and
+# the scp-style [user@]host:path form, each with optional userinfo, an optional
+# port, an optional leading slash on an scp-style path, and an optional
+# trailing slash and .git. Refusing a legitimate form here blocks every task on
+# that project, so the host - never the spelling of the URL - is what decides.
+#
+# FM_PR_REMOTE_HOST is set to the parsed host as soon as the authority is
+# readable - before the path is examined, and so on the failure return too. That is what lets a caller tell "this
+# is not GitHub, so the fork-parent hazard cannot reach it" apart from "this is
+# GitHub and I could not name it", without asking the question a second way and
+# risking a different answer. See fm_pr_github_host.
+fm_pr_github_remote_owner_repo() {
+  local raw=${1-} stripped rest authority host path pattern
+  local LC_ALL=C
+  FM_PR_REMOTE_OWNER=
+  FM_PR_REMOTE_REPO=
+  FM_PR_REMOTE_HOST=
+  stripped=${raw%/}
+  stripped=${stripped%.git}
+  case "$stripped" in
+    https://*|http://*|ssh://*|git://*)
+      rest=${stripped#*://}
+      authority=${rest%%/*}
+      if [ "$authority" = "$rest" ]; then
+        path=
+      else
+        path=${rest#*/}
+      fi
+      ;;
+    *:*)
+      authority=${stripped%%:*}
+      path=${stripped#*:}
+      path=${path#/}
+      ;;
+    *) return 1 ;;
+  esac
+  host=${authority##*@}
+  host=${host%%:*}
+  # shellcheck disable=SC2034
+  FM_PR_REMOTE_HOST=$(fm_pr_lower "$host")
+  fm_pr_github_host "$FM_PR_REMOTE_HOST" || return 1
+  pattern='^([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9._-]+)$'
+  [[ "$path" =~ $pattern ]] || return 1
+  # Consumed by bin/fm-pr-check.sh, which compares this against a reported PR's
+  # owner/repository.
+  # shellcheck disable=SC2034
+  FM_PR_REMOTE_OWNER=${BASH_REMATCH[1]}
+  # shellcheck disable=SC2034
+  FM_PR_REMOTE_REPO=${BASH_REMATCH[2]}
 }
 
 fm_pr_head_valid() {

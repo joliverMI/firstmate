@@ -710,8 +710,268 @@ test_scout_and_secondmate_scaffold() {
   pass "fm-brief: scout and secondmate code paths still scaffold well-formed briefs"
 }
 
+# The crewmate runs this brief from a disposable worktree of the *task's own*
+# project, which for any registered project is not firstmate and carries no
+# bin/fm-pr-destination-guard.sh. A firstmate-relative path there resolves to
+# nothing (exit 127), and the same Setup step tells the crewmate to treat a
+# non-zero exit as a blocker - so a relative path does not merely skip the
+# guard, it stops the task. The emitted step must therefore name the guard by a
+# path that resolves no matter where the crewmate is standing.
+test_no_mistakes_setup_guard_path_resolves_outside_firstmate() {
+  local home id brief guard elsewhere
+  home="$TMP_ROOT/guard-path-home"
+  mkdir -p "$home/data"
+  id="brief-guard-path-b1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "brief was not scaffolded"
+  guard=$(tr -s " " "\n" < "$brief" | grep -F "fm-pr-destination-guard.sh" | head -n1 | tr -d '`')
+  [ -n "$guard" ] || fail "the no-mistakes Setup step must name the pull-request destination guard"
+  elsewhere="$TMP_ROOT/not-firstmate"
+  mkdir -p "$elsewhere"
+  ( cd "$elsewhere" && [ -x "$guard" ] ) \
+    || fail "the brief tells the crewmate to run '$guard', which resolves to no executable from a worktree that is not firstmate"
+  pass "fm-brief.sh: the no-mistakes Setup guard is named by a path a project worktree can actually run"
+}
+
+# The direct-PR brief's create command is a generated, executable instruction
+# the crewmate runs verbatim, so it is tested by running it and inspecting what
+# reached the tool that opens the pull request. The fixture is fork-shaped -
+# origin is the checkout's own repository, and a second remote points somewhere
+# else - because that is the layout where a destination chosen by a tool, or
+# computed in some earlier command whose shell state is gone, silently becomes
+# the wrong repository. gh-axi drops an empty --repo and falls back to gh's
+# fork-parent default, so "--repo reached the create call with the right value"
+# is the property that matters, not "a variable was assigned somewhere".
+test_direct_pr_create_command_names_its_own_origin() {
+  local home id brief cmd repo fakebin recorded code
+  home="$TMP_ROOT/direct-pr-destination-home"
+  mkdir -p "$home/data"
+  id="brief-direct-dest-b1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "brief was not scaffolded"
+  # shellcheck disable=SC2016 # The sed script is literal; nothing here should expand.
+  cmd=$(sed -n 's/.*`\(set -- --title[^`]*\)`.*/\1/p' "$brief" | head -n1)
+  [ -n "$cmd" ] \
+    || fail "the direct-PR brief must emit one command that names the destination and creates the PR"
+  repo="$TMP_ROOT/direct-pr-fork"
+  fakebin="$TMP_ROOT/direct-pr-fakebin"
+  mkdir -p "$repo" "$fakebin"
+  git -C "$repo" init -q
+  git -C "$repo" remote add origin https://github.com/joliverMI/firstmate.git
+  git -C "$repo" remote add upstream https://github.com/someone-else/firstmate.git
+  cat > "$fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > ./gh-axi-args
+SH
+  cat > "$fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+: > ./gh-was-called
+exit 1
+SH
+  chmod +x "$fakebin/gh-axi" "$fakebin/gh"
+  ( cd "$repo" && PATH="$fakebin:$PATH" bash -c "$cmd" ) >/dev/null 2>&1
+  code=$?
+  expect_code 0 "$code" "the emitted create command must run cleanly in a fork-shaped checkout"
+  assert_present "$repo/gh-axi-args" "the emitted command must reach the pull-request tool"
+  recorded=$(cat "$repo/gh-axi-args")
+  assert_contains "$recorded" "--repo joliverMI/firstmate" \
+    "the create call must name the checkout's own origin, not a remote a tool preferred"
+  assert_absent "$repo/gh-was-called" \
+    "naming the destination must not depend on gh, which is what redirects to the fork parent"
+  pass "fm-brief.sh: the direct-PR create command names the checkout's own origin as --repo"
+}
+
+# A PR body is markdown that routinely names commands and paths in backticks.
+# The emitted create command must be able to carry one verbatim: if the body
+# reaches the shell as an inline double-quoted argument, backticks and $(...)
+# inside it are executed before gh-axi ever sees them and their output replaces
+# the text. This runs the emitted command with a body that would prove it, and
+# asserts both halves - nothing executed, and the body arrived unchanged.
+test_direct_pr_create_command_carries_a_body_the_shell_cannot_execute() {
+  local home id brief cmd repo fakebin body_path recorded marker
+  home="$TMP_ROOT/direct-pr-body-home"
+  mkdir -p "$home/data"
+  id="brief-direct-body-b1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "brief was not scaffolded"
+  # shellcheck disable=SC2016 # The sed script is literal; nothing here should expand.
+  cmd=$(sed -n 's/.*`\(set -- --title[^`]*\)`.*/\1/p' "$brief" | head -n1)
+  [ -n "$cmd" ] || fail "the direct-PR brief must emit one runnable create command"
+  repo="$TMP_ROOT/direct-pr-body-repo"
+  fakebin="$TMP_ROOT/direct-pr-body-fakebin"
+  mkdir -p "$repo" "$fakebin" "$TMP_ROOT/direct-pr-body-tmp"
+  git -C "$repo" init -q
+  git -C "$repo" remote add origin https://github.com/joliverMI/firstmate.git
+  cat > "$fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > ./gh-axi-args
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    --body-file) cp "$2" ./gh-axi-body; shift 2 ;;
+    --body) printf '%s' "$2" > ./gh-axi-body; shift 2 ;;
+    *) shift ;;
+  esac
+done
+SH
+  chmod +x "$fakebin/gh-axi"
+
+  # First run discovers where the emitted command expects the body to live.
+  ( cd "$repo" && TMPDIR="$TMP_ROOT/direct-pr-body-tmp" PATH="$fakebin:$PATH" bash -c "$cmd" ) >/dev/null 2>&1
+  assert_present "$repo/gh-axi-args" "the emitted command must reach the pull-request tool"
+  recorded=$(cat "$repo/gh-axi-args")
+  assert_contains "$recorded" "--body-file" \
+    "the body must be passed by file; an inline body is shell-interpolated before gh-axi sees it"
+  body_path=$(printf '%s' "$recorded" | tr ' ' '\n' | grep -A1 -x -- --body-file | tail -n1)
+  [ -n "$body_path" ] || fail "the create call named no body file to write"
+
+  marker="$TMP_ROOT/direct-pr-body-EXECUTED"
+  printf '%s\n' "Pins \`touch $marker\` and \$(touch $marker) in the destination guard." > "$body_path"
+  rm -f "$repo/gh-axi-body"
+  ( cd "$repo" && TMPDIR="$TMP_ROOT/direct-pr-body-tmp" PATH="$fakebin:$PATH" bash -c "$cmd" ) >/dev/null 2>&1
+  assert_absent "$marker" "a command quoted in the PR body must never be executed by the shell"
+  assert_present "$repo/gh-axi-body" "the create call must deliver the body it was given"
+  diff -q "$body_path" "$repo/gh-axi-body" >/dev/null \
+    || fail "the body gh-axi received differs from the body written; it was interpolated on the way"
+  pass "fm-brief.sh: the direct-PR create command carries a PR body the shell never evaluates"
+}
+
+# PR titles in this repo routinely contain an apostrophe. A title inlined into
+# a quoted shell word cannot carry one - the quote ends mid-line and the whole
+# command dies before any of it runs - so the title, like the body, must reach
+# gh-axi through a file the crewmate wrote, byte for byte.
+test_direct_pr_title_survives_an_apostrophe() {
+  local home id brief write_cmd create_cmd repo fakebin title recorded code
+  home="$TMP_ROOT/direct-pr-title-home"
+  mkdir -p "$home/data"
+  id="brief-direct-title-b1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "brief was not scaffolded"
+  # shellcheck disable=SC2016 # The sed scripts are literal; nothing here should expand.
+  write_cmd=$(sed -n 's/.*`\(cat > [^`]*fm-pr-title[^`]*\)`.*/\1/p' "$brief" | head -n1)
+  [ -n "$write_cmd" ] || fail "the direct-PR brief must emit a command that writes the PR title to a file"
+  # shellcheck disable=SC2016 # The sed scripts are literal; nothing here should expand.
+  create_cmd=$(sed -n 's/.*`\(set -- --title[^`]*\)`.*/\1/p' "$brief" | head -n1)
+  [ -n "$create_cmd" ] || fail "the direct-PR brief must emit one runnable create command"
+  repo="$TMP_ROOT/direct-pr-title-repo"
+  fakebin="$TMP_ROOT/direct-pr-title-fakebin"
+  mkdir -p "$repo" "$fakebin"
+  git -C "$repo" init -q
+  git -C "$repo" remote add origin https://github.com/joliverMI/firstmate.git
+  cat > "$fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    --title) printf '%s' "$2" > ./gh-axi-title; shift 2 ;;
+    *) shift ;;
+  esac
+done
+SH
+  chmod +x "$fakebin/gh-axi"
+  title="fix(bin): pin the destination instead of trusting gh's fork default"
+  ( cd "$repo" && bash -c "$write_cmd
+$title
+FM_PR_TITLE" ) >/dev/null 2>&1
+  ( cd "$repo" && PATH="$fakebin:$PATH" bash -c "$create_cmd" ) >/dev/null 2>&1
+  code=$?
+  expect_code 0 "$code" "an apostrophe in the PR title must not break the create command"
+  assert_present "$repo/gh-axi-title" "the create call must carry a title"
+  recorded=$(cat "$repo/gh-axi-title")
+  [ "$recorded" = "$title" ] \
+    || fail "gh-axi received the title '$recorded', not the title that was written: '$title'"
+  pass "fm-brief.sh: the direct-PR title reaches gh-axi verbatim, apostrophe and all"
+}
+
+# Crewmates run concurrently on one host under one user, so the file the body
+# travels in cannot be a fixed path in a shared directory: one task's body
+# would silently replace another's between the write and the create. The same
+# emitted command run from two different checkouts must therefore name two
+# different body files.
+test_direct_pr_body_file_is_not_shared_between_checkouts() {
+  local home id brief cmd fakebin one two path_one path_two
+  home="$TMP_ROOT/direct-pr-bodypath-home"
+  mkdir -p "$home/data"
+  id="brief-direct-bodypath-b1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "brief was not scaffolded"
+  # shellcheck disable=SC2016 # The sed script is literal; nothing here should expand.
+  cmd=$(sed -n 's/.*`\(set -- --title[^`]*\)`.*/\1/p' "$brief" | head -n1)
+  [ -n "$cmd" ] || fail "the direct-PR brief must emit one runnable create command"
+  fakebin="$TMP_ROOT/direct-pr-bodypath-fakebin"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    --body-file) printf '%s\n' "$2" > ./gh-axi-body-path; shift 2 ;;
+    *) shift ;;
+  esac
+done
+SH
+  chmod +x "$fakebin/gh-axi"
+  for one in first second; do
+    two="$TMP_ROOT/direct-pr-bodypath-$one"
+    mkdir -p "$two"
+    git -C "$two" init -q
+    git -C "$two" remote add origin https://github.com/joliverMI/firstmate.git
+    ( cd "$two" && TMPDIR="$TMP_ROOT/direct-pr-bodypath-shared" PATH="$fakebin:$PATH" bash -c "$cmd" ) >/dev/null 2>&1
+    assert_present "$two/gh-axi-body-path" "the create call must name a body file in checkout '$one'"
+  done
+  path_one=$(cat "$TMP_ROOT/direct-pr-bodypath-first/gh-axi-body-path")
+  path_two=$(cat "$TMP_ROOT/direct-pr-bodypath-second/gh-axi-body-path")
+  [ "$path_one" != "$path_two" ] \
+    || fail "both checkouts named the same body file '$path_one'; concurrent crewmates would overwrite each other"
+  pass "fm-brief.sh: the direct-PR body file is private to each checkout, not a shared path"
+}
+
+# gh's fork-parent default is a GitHub behaviour, so a GitLab or self-hosted
+# project was never exposed to it. The emitted command must therefore still
+# open the PR there, exactly as it did before this destination work existed -
+# a guard that blocks where the hazard cannot reach buys nothing and costs the
+# whole delivery mode.
+test_direct_pr_create_command_still_ships_a_non_github_project() {
+  local home id brief cmd repo fakebin recorded code
+  home="$TMP_ROOT/direct-pr-non-github-home"
+  mkdir -p "$home/data"
+  id="brief-direct-dest-b2"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "brief was not scaffolded"
+  # shellcheck disable=SC2016 # The sed script is literal; nothing here should expand.
+  cmd=$(sed -n 's/.*`\(set -- --title[^`]*\)`.*/\1/p' "$brief" | head -n1)
+  [ -n "$cmd" ] || fail "the direct-PR brief must emit one runnable create command"
+  repo="$TMP_ROOT/direct-pr-gitlab"
+  fakebin="$TMP_ROOT/direct-pr-gitlab-fakebin"
+  mkdir -p "$repo" "$fakebin"
+  git -C "$repo" init -q
+  git -C "$repo" remote add origin https://gitlab.com/owner/repo.git
+  cat > "$fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > ./gh-axi-args
+SH
+  chmod +x "$fakebin/gh-axi"
+  ( cd "$repo" && PATH="$fakebin:$PATH" bash -c "$cmd" ) >/dev/null 2>&1
+  code=$?
+  expect_code 0 "$code" "a non-GitHub project must still be able to open its pull request"
+  assert_present "$repo/gh-axi-args" "the create call must still run for a non-GitHub project"
+  recorded=$(cat "$repo/gh-axi-args")
+  assert_not_contains "$recorded" "--repo" \
+    "there is no GitHub destination to override on a non-GitHub project"
+  pass "fm-brief.sh: the direct-PR create command still ships a project the hazard cannot reach"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
+test_no_mistakes_setup_guard_path_resolves_outside_firstmate
+test_direct_pr_create_command_names_its_own_origin
+test_direct_pr_create_command_still_ships_a_non_github_project
+test_direct_pr_create_command_carries_a_body_the_shell_cannot_execute
+test_direct_pr_body_file_is_not_shared_between_checkouts
+test_direct_pr_title_survives_an_apostrophe
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
 test_ship_mode_is_required_and_closed_set

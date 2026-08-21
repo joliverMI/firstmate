@@ -16,8 +16,10 @@
 #       refuses a home with project clones or project-registry entries, so it
 #       never converts populated homes in place. The charter brief
 #       is copied to data/charter.md, newly cloned no-mistakes projects are
-#       initialized, an ignored .fm-secondmate-parent binding is published before
-#       the .fm-secondmate-home identity marker, and data/secondmates.md is updated.
+#       initialized and have their pull-request destination pinned by
+#       bin/fm-pr-destination-guard.sh, an ignored .fm-secondmate-parent binding
+#       is published before the .fm-secondmate-home identity marker, and
+#       data/secondmates.md is updated.
 #       Seeding is transactional: on validation, clone, init, or registry failure,
 #       generated briefs, new homes, new project clones, and registry edits are
 #       rolled back. Treehouse-acquired homes are returned only when the rollback
@@ -724,6 +726,10 @@ initialize_no_mistakes_project() {
   }
   ( cd "$dst" && no-mistakes init && no-mistakes doctor ) || {
     echo "error: failed to initialize no-mistakes for $project at $dst" >&2
+    return 1
+  }
+  "$SCRIPT_DIR/fm-pr-destination-guard.sh" "$dst" || {
+    echo "error: could not pin the pull-request destination for $project at $dst" >&2
     return 1
   }
 }
