@@ -104,6 +104,14 @@ test_stale_pool_base_refreshes_before_branching() {
       "$branch_head" "$current" "$(cat "$POOL_DIR/advanced-main.txt")"
   fi
 
+  # The first task's own record still claims $POOL_DIR; fm-spawn.sh now
+  # refuses to hand that same worktree to a second task while another task's
+  # meta still owns it (tests/fm-spawn-pool-worktree-collision.test.sh). A real
+  # sequential reuse only happens after fm-teardown.sh retires that record
+  # (bin/fm-teardown.sh's `rm -f -- "$STATE/$ID.meta" ...`), so mirror that
+  # here before reusing the fixture's pool worktree for a second spawn.
+  rm -f "$HOME_DIR/state/pool-current-base-r1.meta" "$HOME_DIR/state/pool-current-base-r1.turn-ended"
+
   id='pool-current-base-repeat-r1'
   mkdir -p "$HOME_DIR/data/$id"
   printf 'brief for %s\n' "$id" > "$HOME_DIR/data/$id/brief.md"

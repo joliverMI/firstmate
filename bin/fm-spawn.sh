@@ -148,6 +148,9 @@
 #   default-branch commit when safe; skipped syncs warn and launch unchanged.
 #   Ship/scout spawns refuse to launch unless the resolved task path is a real
 #   git worktree root distinct from the primary project checkout.
+#   A ship/scout spawn also refuses when the resolved worktree is already
+#   recorded in this home's state as another tracked task's own isolated copy,
+#   whether it came from the pool or from a relaunch's recorded worktree.
 #   Before a fresh ship or scout worker starts, its clean task worktree fetches
 #   origin, resolves the current remote default branch, and resets to its tip.
 #   An unreachable origin, unresolved default branch, or non-clean worktree
@@ -1731,8 +1734,79 @@ real_path_or_raw() {  # <path>
 # herdr-sm-spaces-k4). Both branches converge on the same $T ("target") string
 # that every downstream operation (send/capture/kill) already treats as opaque
 # per-backend routing (fm_backend_resolve_selector).
+
+# spawn_kill_collision_window: close the window THIS spawn just created, before
+# refusing it. That window is uniquely named for this task and was created by
+# this attempt, so unlike the pooled worktree it is never the holder's and is
+# always ours to close; the worktree and its lease stay untouched for exactly
+# the reason the orca branch below leaves orca's ids alone.
+spawn_kill_collision_window() {
+  case "$BACKEND" in
+    zellij) fm_backend_kill zellij "$T" "${ZELLIJ_TAB_ID:-}" "$W" ;;
+    cmux) fm_backend_kill cmux "$T" '' "$W" ;;
+    herdr)
+      # Exactly one guaranteed close, never zero and never an unlocked one.
+      #
+      # Projected: the EXIT trap is already armed to close this very pane
+      # (HERDR_PROJECTION_ABORT_TASK_PANE is $HERDR_PANE_ID, the pane $T names)
+      # and then the seeded pane, under the presentation-order lock this
+      # process still holds. Closing it here would mean handing that lock back
+      # first, and a concurrent spawn could take it in between - leaving the
+      # trap unable to re-acquire, so it would abandon the projection cleanup
+      # and leak the seeded pane, workspace, and journal. Leave both the lock
+      # and the close to the trap.
+      #
+      # Flat: no lock is held and no projection cleanup is armed, so this is
+      # the only close there will be. fm_backend_herdr_kill takes the lock
+      # itself, and in this same process fm_lock_try_acquire would treat a lock
+      # this spawn held as its own to reclaim and release, so hand it back
+      # first - a no-op on the flat path, and correct if it is ever held.
+      if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ]; then
+        return 0
+      fi
+      spawn_herdr_presentation_order_lock_release
+      fm_backend_kill herdr "$T"
+      ;;
+    *) fm_backend_kill "$BACKEND" "$T" ;;
+  esac
+}
+
+# refuse_spawn_worktree_collision: the single exit for a worktree another
+# tracked task still claims. The hint is source-aware because the three ways in
+# leave behind three different things:
+#   orca - the worktree is the other task's and the terminal the same suspect
+#     create call reported may be that task's too, so the abort cleanup is
+#     disarmed and both orphaned ids are named against orca's own inspection
+#     tooling rather than treehouse's (orca does not use the treehouse pool).
+#   relaunch - nothing was acquired at all: the worktree is the task's OWN
+#     recorded one, so pool wording would send an operator hunting a pool that
+#     was never called. What is wrong there is that two records claim one path.
+#   fresh pool spawn - the pool did hand this copy back, so the pool is the
+#     thing to inspect; this spawn's own window is closed first so a retry
+#     cannot strand another window on every attempt.
+refuse_spawn_worktree_collision() {  # <source> <inspect-target> <other-id>
+  local source=$1 inspect_target=$2 other_id=$3 hint
+  ORCA_ABORT_CLEANUP=0
+  if [ "$BACKEND" = orca ]; then
+    hint="orca worktree id '${ORCA_WORKTREE_ID:-unknown}' and terminal '${ORCA_TERMINAL:-none}' are deliberately left in place because they may be $other_id's own - inspect them with 'orca worktree show --worktree id:${ORCA_WORKTREE_ID:-unknown}' and reclaim them yourself once you know whose they are"
+  elif [ "$RELAUNCH" -eq 1 ]; then
+    hint="this relaunch acquired no copy of its own - it reuses task $ID's own recorded worktree, and task $other_id's record claims that same path, so one of those two records is stale; retire the stale record (inspect $other_id and $ID) before relaunching"
+  else
+    hint="the isolated-copy pool may be exhausted (a hard cap, a stale lease, or a crashed holder can all look like room when there is none) - free it (inspect $other_id, then 'treehouse status') before retrying"
+    if [ -n "${T:-}" ]; then
+      # Every backend's kill is best-effort and reports success even when it
+      # closed nothing, so this can only claim the request, never the outcome.
+      spawn_kill_collision_window || true
+      hint="$hint; a close was requested for this attempt's own window $W (verify it is gone - a failed close is silent), while the copy itself is left alone because it may be $other_id's"
+    fi
+  fi
+  echo "error: $source resolved to worktree '$WT', already recorded as task $other_id's own isolated copy; refusing to spawn $ID onto a copy another task may still be using. ${hint}. Inspect target $inspect_target" >&2
+  exit 1
+}
+
 validate_spawn_worktree() {  # <source> <inspect-target>
   local source=$1 inspect_target=$2 wt_real proj_real wt_top wt_top_real
+  local other_meta other_id other_wt other_real
   wt_real=
   if ! wt_real=$(cd "$WT" 2>/dev/null && pwd -P); then
     wt_real=
@@ -1747,6 +1821,50 @@ validate_spawn_worktree() {  # <source> <inspect-target>
     echo "error: $source did not yield an isolated worktree (resolved '$WT'; worktree root '${wt_top:-none}'; primary '$PROJ_ABS'); refusing to launch to avoid tangling the primary checkout. Inspect target $inspect_target" >&2
     exit 1
   fi
+  # The pool provider is trusted to hand back a worktree nobody else is using,
+  # but that trust has no independent check on this side: a hard cap, a stale
+  # lease, or a crashed holder could all end with $source reporting a worktree
+  # this SAME home already recorded for a different, still-tracked task.
+  # Accepting it silently would let this task's freshen/reset step or eventual
+  # teardown tear down that other task's unlanded work - the exact thing hard
+  # rule 3 forbids. Cross-check every other tracked task's own recorded
+  # worktree before trusting this one.
+  #
+  # What this check does and does not cover against concurrent spawns, since a
+  # record-only check cannot see a spawn that has not published its record yet:
+  # within ONE home it needs no such visibility, because $STATE/.task-set.lock
+  # (fm_task_set_lock_path) is taken by every fresh spawn before it acquires any
+  # backend container or worktree and is only released after that spawn's own
+  # record is published, and it is taken with fm_lock_try_acquire, so a second
+  # concurrent fresh spawn in the same home refuses outright rather than racing
+  # this one. That lock is per-home, so two spawns in DIFFERENT homes drawing
+  # from the same pool are not serialized by it and neither can see the other's
+  # not-yet-published record; nothing here claims to cover that case.
+  for other_meta in "$STATE"/*.meta; do
+    [ -e "$other_meta" ] || continue
+    other_id=$(basename "$other_meta" .meta)
+    [ "$other_id" != "$ID" ] || continue
+    other_wt=$(fm_meta_get "$other_meta" worktree)
+    [ -n "$other_wt" ] || continue
+    other_real=$(real_path_or_raw "$other_wt")
+    if [ "$other_real" = "$wt_real" ]; then
+      # Accepted limitation, stated here so a refusal on a genuinely free slot
+      # is recognizable as intentional rather than a bug to "fix" by loosening
+      # this guard: a record alone is enough to refuse. No liveness of the
+      # holding task is consulted and no other task's record is ever mutated
+      # from here, so a slot whose stale record still claims it - because
+      # fm-teardown.sh returns the worktree to the pool before it removes that
+      # task's meta, or because it bailed at one of the exit points that
+      # deliberately retain the record - stays refused until that record is
+      # cleaned up. That is the deliberate trade: a stuck refusal is
+      # recoverable, silently reusing a copy a stale-but-uncertain record might
+      # still describe is not. The queued follow-up task owns both halves of the
+      # real fix - correcting fm-teardown.sh's worktree-return-then-record-
+      # removal ordering, and working out how to reclaim a confirmed-dead
+      # holder's worktree safely - with its own review, not bolted onto this one.
+      refuse_spawn_worktree_collision "$source" "$inspect_target" "$other_id"
+    fi
+  done
 }
 
 freshen_spawn_worktree_base() {  # <worktree>

@@ -615,6 +615,55 @@ test_spawn_refuses_orca_nonisolated_worktree() {
   pass "fm-spawn.sh --backend orca: refuses non-isolated worktrees and closes implicit terminals"
 }
 
+test_spawn_refuses_orca_worktree_owned_by_another_task_without_reclaiming_it() {
+  local proj wt data state config id out status
+  id="orcacollisionz9"
+  proj="$TMP_ROOT/collision-spawn-project"
+  wt="$TMP_ROOT/collision-spawn-wt"
+  data="$TMP_ROOT/collision-spawn-data"
+  state="$TMP_ROOT/collision-spawn-state"
+  config="$TMP_ROOT/collision-spawn-config"
+  fm_git_worktree "$proj" "$wt" "fm/holder"
+  mkdir -p "$data/$id" "$state" "$config"
+  printf 'brief\n' > "$data/$id/brief.md"
+  touch "$state/.last-watcher-beat"
+  fm_write_meta "$state/orcaholderz9.meta" \
+    "window=fm-orcaholderz9" \
+    "worktree=$wt" \
+    "project=$proj" \
+    "harness=claude" \
+    "kind=ship" \
+    "mode=no-mistakes" \
+    "yolo=off" \
+    "backend=orca" \
+    "orca_worktree_id=wt-holder" \
+    "terminal=term-holder"
+  printf 'holder work\n' > "$wt/uncommitted.txt"
+  orca_case collision-spawn
+  printf '1\n' > "$RESP/1.exit"
+  printf '{"ok":true,"result":{"repo":{"id":"repo-collision"}}}\n' > "$RESP/2.out"
+  printf '{"ok":true,"result":{"worktree":{"id":"wt-holder","path":"%s"},"terminal":{"handle":"term-holder"}}}\n' "$wt" > "$RESP/3.out"
+  out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
+    FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
+    FM_PROJECTS_OVERRIDE="$TMP_ROOT/unused-projects" FM_SPAWN_NO_GUARD=1 \
+    "$ROOT/bin/fm-spawn.sh" "$id" "$proj" claude --mode no-mistakes --yolo off --backend orca 2>&1 )
+  status=$?
+  expect_code 1 "$status" "fm-spawn.sh --backend orca should refuse a worktree another task already owns"$'\n'"$out"
+  assert_contains "$out" "orcaholderz9" "Orca refusal should name the task that already owns the worktree"
+  assert_absent "$state/$id.meta" "refused Orca spawn must not record the colliding worktree"
+  assert_not_contains "$(cat "$LOG")" $'orca\x1f''worktree'$'\x1f''rm' \
+    "Orca refusal must not remove the worktree the other task still owns"
+  assert_not_contains "$(cat "$LOG")" $'orca\x1f''terminal'$'\x1f''close' \
+    "Orca refusal must not close a terminal that may belong to the other task"
+  assert_contains "$out" "wt-holder" "Orca refusal must name the orca worktree id it left behind"
+  assert_contains "$out" "term-holder" "Orca refusal must name the orca terminal it left behind"
+  assert_contains "$out" "orca worktree show" "Orca refusal must point at orca's own inspection tooling"
+  assert_not_contains "$out" "treehouse status" "Orca refusal must not send the operator to treehouse, which is not orca's pool"
+  assert_present "$wt/uncommitted.txt" "Orca refusal must leave the other task's uncommitted work in place"
+  assert_grep "worktree=$wt" "$state/orcaholderz9.meta" "the holding task's own record must survive the refusal"
+  pass "fm-spawn.sh --backend orca: refuses a worktree another task owns without reclaiming it"
+}
+
 test_spawn_removes_orca_worktree_when_terminal_create_fails() {
   local proj wt data state config id out status
   id="orcatermfailz8"
@@ -1328,6 +1377,7 @@ test_spawn_writes_orca_metadata_and_launches_harness
 test_spawn_refuses_orca_secondmate_before_home_mutation
 test_spawn_refuses_orca_when_runtime_not_ready
 test_spawn_refuses_orca_nonisolated_worktree
+test_spawn_refuses_orca_worktree_owned_by_another_task_without_reclaiming_it
 test_spawn_removes_orca_worktree_when_terminal_create_fails
 test_spawn_preserves_orca_metadata_when_abort_cleanup_fails
 test_spawn_releases_orca_resources_when_metadata_write_fails
