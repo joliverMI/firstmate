@@ -118,6 +118,72 @@ SH
   printf '%s\n' "$fakebin"
 }
 
+# make_batch_fakebin <dir> <wt1> <wt2>: like make_spawn_fakebin, but a real
+# pool never hands the same worktree to two tasks in one batch (verified
+# empirically against a live treehouse pool: concurrent gets always resolve to
+# distinct worktrees or a clean refusal, never a shared one -
+# tests/fm-spawn-pool-worktree-collision.test.sh guards fm-spawn.sh's own side
+# of that contract). Give each created window its own counted id and answer
+# `#{pane_current_path}` with <wt1> for the first window and <wt2> for every
+# window after, so a batch of two tasks settles into two distinct worktrees
+# exactly as the real pool would.
+make_batch_fakebin() {
+  local dir=$1 wt1=$2 wt2=$3 fakebin idxfile
+  fakebin=$(fm_fakebin "$dir")
+  idxfile="$dir/window-index"
+  printf '0\n' > "$idxfile"
+  cat > "$fakebin/tmux" <<SH
+#!/usr/bin/env bash
+set -u
+IDXFILE='$idxfile'
+WT1='$wt1'
+WT2='$wt2'
+case "\${1:-}" in
+  new-window)
+    n=\$(cat "\$IDXFILE")
+    n=\$((n + 1))
+    printf '%s\n' "\$n" > "\$IDXFILE"
+    printf '@%s\n' "\$n"
+    exit 0
+    ;;
+esac
+case "\$*" in
+  *"#{pane_current_path}"*)
+    n=\$(cat "\$IDXFILE")
+    if [ "\$n" -le 1 ]; then printf '%s\n' "\$WT1"; else printf '%s\n' "\$WT2"; fi
+    exit 0
+    ;;
+esac
+case "\${1:-}" in
+  display-message) printf 'firstmate\n'; exit 0 ;;
+  list-windows) exit 0 ;;
+  has-session|new-session|kill-window) exit 0 ;;
+  send-keys)
+    if [ -n "\${FM_FAKE_LAUNCH_LOG:-}" ]; then
+      prev=
+      for a in "\$@"; do
+        if [ "\$prev" = "-l" ]; then
+          printf '%s\n' "\$a" >> "\$FM_FAKE_LAUNCH_LOG"
+        fi
+        prev=\$a
+      done
+    fi
+    exit 0
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/tmux"
+  fm_fake_exit0 "$fakebin" treehouse
+  cat > "$fakebin/timeout" <<'SH'
+#!/usr/bin/env bash
+shift
+exec "$@"
+SH
+  chmod +x "$fakebin/timeout"
+  printf '%s\n' "$fakebin"
+}
+
 make_spawn_case() {
   local name=$1 harness=$2 case_dir home proj wt fakebin launchlog id
   shift 2
@@ -280,6 +346,13 @@ test_home_defaults_preserve_absolute_or_resolve_relative_paths() {
     "relative FM_HOME leaked into Pi's default cross-process extension path"
   assert_contains "$launch" "< '$home_real/data/$relative_id/brief.md'" \
     "relative FM_HOME leaked into the default cross-process brief path"
+
+  # $relative_id's own record still claims $WT_DIR; fm-spawn.sh now refuses to
+  # hand that same worktree to a second task while another task's meta still
+  # owns it (tests/fm-spawn-pool-worktree-collision.test.sh). A real
+  # sequential reuse only happens after fm-teardown.sh retires that record, so
+  # mirror that here before reusing the fixture's worktree for a second spawn.
+  rm -f "$home_real/state/$relative_id.meta" "$home_real/state/$relative_id.turn-ended"
 
   linked_home="$CASE_DIR/home-link"
   ln -s "$HOME_DIR" "$linked_home"
@@ -780,12 +853,19 @@ test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity() {
 }
 
 test_batch_forwards_shared_profile_flags() {
-  local rec id1 id2 out status
+  local rec id1 id2 out status wt2
   id1=profile-batch-a-z9
   id2=profile-batch-b-z10
   rec=$(make_spawn_case profile-batch claude "$id1" "$id2")
   read_case_record "$rec"
   enable_dispatch_profile "$HOME_DIR"
+
+  # Two tasks in one batch need two distinct worktrees, exactly as a real pool
+  # would hand out - swap in a fake that gives each window its own (see
+  # make_batch_fakebin).
+  wt2="$CASE_DIR/wt2"
+  git -C "$PROJ_DIR" worktree add --quiet -b wt-profile-batch-2 "$wt2"
+  FAKEBIN_DIR=$(make_batch_fakebin "$CASE_DIR/fake-batch" "$WT_DIR" "$wt2")
 
   out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
     "$id1=$PROJ_DIR" "$id2=$PROJ_DIR" --harness codex --model gpt-5 --effort high)
