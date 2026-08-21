@@ -367,6 +367,75 @@ test_two_waiting_cards_on_one_not_started_card_produce_one_finding_per_sweep() {
   pass "two waiting cards blocked on one not-started card are a single finding in one sweep"
 }
 
+# Regression: holding the log text back must never be mistaken for the block
+# resolving. `discrepancies_found` is what turns the Admiral's "Last sweep
+# result" tile green ("Clean - nothing caught"), so a still-outstanding block
+# has to keep counting on every sweep even though its text is written once.
+test_a_quiet_but_outstanding_block_still_counts_toward_the_run_total() {
+  local target_id waiter_id baseline first second logged_first logged_second
+  "$SWEEP" --forced || fail "baseline sweep exited non-zero"
+  baseline=$(audit_status_json | jq -r '.last_run.discrepancies_found')
+
+  target_id=$("$DASH" add --title "Outstanding across sweeps" --captain firstmate \
+    --prompt "never started, still blocking" | awk '{print $1}')
+  [ -n "$target_id" ] || fail "could not add the not-started target card"
+  waiter_id=$("$DASH" add --title "Still blocked on it" --captain firstmate \
+    --prompt "blocked" | awk '{print $1}')
+  [ -n "$waiter_id" ] || fail "could not add the waiting card"
+  "$DASH" status "$waiter_id" waiting --waiting-on "$target_id" --reason "needs that work first" >/dev/null \
+    || fail "could not set waiting status"
+
+  "$SWEEP" --forced || fail "first sweep exited non-zero"
+  first=$(audit_status_json | jq -r '.last_run.discrepancies_found')
+  logged_first=$(not_started_finding_count_for "$target_id")
+  [ "$first" -eq $((baseline + 1)) ] \
+    || fail "the new block did not add exactly one to the run total (baseline=$baseline, now=$first)"
+
+  # Nothing changes; the text is already on record, the block is not.
+  "$SWEEP" --forced || fail "second sweep exited non-zero"
+  second=$(audit_status_json | jq -r '.last_run.discrepancies_found')
+  logged_second=$(not_started_finding_count_for "$target_id")
+  [ "$second" -eq "$first" ] \
+    || fail "a still-outstanding block stopped counting once its text was on record (was $first, now $second)"
+  [ "$logged_second" -eq "$logged_first" ] \
+    || fail "the block's text was written again on the second sweep; it should have been said once"
+  pass "a block that is quiet because it was already described still counts toward the run total"
+}
+
+# Regression: a card that is started and then abandoned back to not_started is
+# a fresh occurrence of the condition, not the old one still running. Keying
+# the quiet period on the waiting card alone let the entry written before the
+# card was ever started answer for the second occurrence too.
+test_a_target_started_then_abandoned_is_flagged_again() {
+  local target_id waiter_id after_first after_restart
+  target_id=$("$DASH" add --title "Started once, then abandoned" --captain firstmate \
+    --prompt "goes working and comes back" | awk '{print $1}')
+  [ -n "$target_id" ] || fail "could not add the not-started target card"
+  waiter_id=$("$DASH" add --title "Blocked across the whole cycle" --captain firstmate \
+    --prompt "blocked" | awk '{print $1}')
+  [ -n "$waiter_id" ] || fail "could not add the waiting card"
+  "$DASH" status "$waiter_id" waiting --waiting-on "$target_id" --reason "needs that work first" >/dev/null \
+    || fail "could not set waiting status"
+
+  "$SWEEP" --forced || fail "first sweep exited non-zero"
+  after_first=$(not_started_finding_count_for "$target_id")
+  [ "$after_first" -ge 1 ] || fail "the first sweep did not flag the blocked not-started card at all"
+
+  # The card is picked up, then abandoned back to not_started. The waiting
+  # card is never touched, so its own waiting-since is unchanged. Board
+  # timestamps are whole seconds, so the cycle has to land in a later second
+  # than the entry above for "afterwards" to be expressible at all.
+  sleep 1
+  "$DASH" status "$target_id" working >/dev/null || fail "could not start the target card"
+  "$DASH" status "$target_id" not-started >/dev/null || fail "could not abandon the target card"
+
+  "$SWEEP" --forced || fail "sweep after the restart exited non-zero"
+  after_restart=$(not_started_finding_count_for "$target_id")
+  [ "$after_restart" -gt "$after_first" ] \
+    || fail "a card started and then abandoned back to not-started was never flagged again (still $after_restart)"
+  pass "a not-started card that was started and abandoned is flagged again, not answered for by the old entry"
+}
+
 test_sweep_flags_stale_unreplied_needs_attention_but_not_a_reply() {
   local id
   id=$("$DASH" add --title "Needs a call" --captain firstmate --prompt "needs-attention aging" | awk '{print $1}')
@@ -468,6 +537,8 @@ test_sweep_flags_a_not_started_card_that_live_work_is_waiting_on
 test_sweep_flags_a_blocked_not_started_card_once_not_once_per_sweep
 test_an_unrelated_finding_on_the_card_does_not_silence_the_not_started_check
 test_two_waiting_cards_on_one_not_started_card_produce_one_finding_per_sweep
+test_a_quiet_but_outstanding_block_still_counts_toward_the_run_total
+test_a_target_started_then_abandoned_is_flagged_again
 test_sweep_flags_stale_unreplied_needs_attention_but_not_a_reply
 test_force_button_endpoint_runs_a_real_sweep
 test_force_button_refuses_while_a_sweep_is_already_running

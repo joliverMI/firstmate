@@ -35,13 +35,17 @@
 #      it is a structural fact that live work is genuinely blocked on this
 #      one, not a guess. Age alone is never the signal here - most
 #      not-started cards are legitimately queued, and unlike needs_attention
-#      above this check applies no age threshold at all. Flagged once per
-#      pairing, not once per sweep: one of this check's own earlier entries
-#      for the card, dated at or after the waiting card's last transition
-#      into `waiting`, means it has already been reported and the sweep stays
-#      quiet until that pairing clears or changes. A finding some other check
-#      wrote about the same card never silences it, and two waiting cards
-#      naming one target are still a single finding about that target.
+#      above this check applies no age threshold at all. Every outstanding
+#      block counts toward the run's discrepancy total on every sweep, so the
+#      board can never read "clean" while one still stands; what is said once
+#      rather than every sweep is the log *text*. It stays quiet while one of
+#      this check's own earlier entries for the card is dated at or after the
+#      later of the waiting card's last move into `waiting` and the target's
+#      own last move out of `not_started` - so a block that clears, repoints,
+#      or is started and abandoned speaks again, while an unchanged one does
+#      not. A finding some other check wrote about the same card never
+#      silences it, and two waiting cards naming one target are one finding
+#      within a sweep.
 #   review is optional to him by design (the skill's own asymmetry), so it is
 #   never checked here at all - see "Why `needs-attention` is a separate
 #   status from `review`" in docs/dashboard.md.
@@ -94,8 +98,12 @@ fail_sweep() {  # <text>
   exit 1
 }
 
+write_discrepancy() {  # <task_id> <text> - record the text, count nothing
+  "$DASH" audit-log "$1" "$2" --kind discrepancy >/dev/null 2>&1
+}
+
 log_discrepancy() {  # <task_id> <text>
-  "$DASH" audit-log "$1" "$2" --kind discrepancy >/dev/null 2>&1 && DISCREPANCIES=$((DISCREPANCIES + 1))
+  write_discrepancy "$1" "$2" && DISCREPANCIES=$((DISCREPANCIES + 1))
 }
 
 # Shared by the working and testing checks: both statuses claim a real crew is
@@ -205,15 +213,15 @@ BLOCKED_PAIRS=$(jq -nr --argjson ns "$NOT_STARTED_JSON" --argjson w "$WAITING_JS
   | [.id, $wo] | @tsv') \
   || fail_sweep "sweep failed matching waiting cards against the not-started snapshot"
 if [ -n "$BLOCKED_PAIRS" ]; then
-  # Say it once per pairing, the same stop-once-reported shape the
-  # needs_attention check above uses. Unlike a stale blocker (a board bug that
-  # gets corrected), "nothing has begun on this yet" legitimately persists for
-  # days, and at the default cadence an unsuppressed re-log would fill the
-  # Admiral's whole 100-entry log inside a day and push every other finding
-  # out of it - the exact always-red-marker failure this sweep exists to
-  # avoid. The pairing's own start boundary is the waiting card's last
-  # transition into `waiting`, so clearing or repointing the block moves that
-  # boundary past the old entry and the sweep speaks again.
+  # Unlike a stale blocker (a board bug that gets corrected), "nothing has
+  # begun on this yet" legitimately persists for days, and at the default
+  # cadence re-writing that text every sweep would fill the Admiral's whole
+  # 100-entry log inside a day and push every other finding out of it - the
+  # exact always-red-marker failure this sweep exists to avoid. So the text is
+  # said once and then held; the *count* is not. An outstanding block is
+  # counted on every sweep, because the run total is what turns the board's
+  # result tile green, and a block that still stands has not resolved just
+  # because it has already been described.
   AUDIT_LOG_JSON=$("$DASH" audit-status --json) \
     || fail_sweep "sweep failed reading the audit log: dashboard unreachable mid-sweep"
   # Only this check's own past entries count as "already reported", matched by
@@ -223,30 +231,42 @@ if [ -n "$BLOCKED_PAIRS" ]; then
   # invisible by construction, which is the failure this whole check exists to
   # end rather than reproduce.
   NOT_STARTED_FINDING_OPENER="still not_started, but"
-  flagged_this_sweep=""
+  seen_this_sweep=""
   while IFS=$'\t' read -r waiter_id target_id; do
     [ -n "$waiter_id" ] && [ -n "$target_id" ] || continue
     # Two waiting cards can name the same target; the finding is about the
     # target's own claim, so it is one finding either way. The log snapshot
     # above predates this run's own writes, so the run tracks them itself.
-    case " $flagged_this_sweep " in *" $target_id "*) continue ;; esac
+    case " $seen_this_sweep " in *" $target_id "*) continue ;; esac
+    seen_this_sweep="$seen_this_sweep $target_id"
+    DISCREPANCIES=$((DISCREPANCIES + 1))
     waiter_json=$("$DASH" show "$waiter_id" --json 2>/dev/null) || continue
-    waiting_since=$(printf '%s' "$waiter_json" \
+    quiet_since=$(printf '%s' "$waiter_json" \
       | jq -r '[.status_history[] | select(.to_status=="waiting")] | last | .changed_at // empty')
-    # No readable boundary means no way to tell an already-reported pairing
-    # from a fresh one, which is skill point 8's unverifiable case: stay quiet.
-    [ -n "$waiting_since" ] || continue
+    # No readable boundary means no way to tell an already-reported block from
+    # a fresh one, which is skill point 8's unverifiable case: stay quiet.
+    [ -n "$quiet_since" ] || continue
+    # The target's own last move out of not_started counts too, and the later
+    # of the two wins. A card that was started and then abandoned back to
+    # not_started is a genuinely new occurrence of the same condition, and the
+    # entry written before it was ever started must not answer for it.
+    target_json=$("$DASH" show "$target_id" --json 2>/dev/null) || target_json=""
+    if [ -n "$target_json" ]; then
+      restarted_since=$(printf '%s' "$target_json" \
+        | jq -r '[.status_history[] | select(.from_status=="not_started")] | last | .changed_at // empty')
+      if [ -n "$restarted_since" ] && [ "$restarted_since" \> "$quiet_since" ]; then
+        quiet_since=$restarted_since
+      fi
+    fi
     # Inclusive on the boundary itself: both timestamps are whole seconds, and
-    # the first flag for a pairing is normally written in the same second the
+    # the first entry for a block is normally written in the same second the
     # block was recorded, so a strict > would let that first entry re-log.
     already=$(printf '%s' "$AUDIT_LOG_JSON" \
-      | jq -r --arg t "$target_id" --arg since "$waiting_since" --arg opener "$NOT_STARTED_FINDING_OPENER" \
+      | jq -r --arg t "$target_id" --arg since "$quiet_since" --arg opener "$NOT_STARTED_FINDING_OPENER" \
         '([.log[] | select(.task_id==$t and .kind=="discrepancy" and .created_at >= $since
                             and ((.text // "") | startswith($opener)))] | length) > 0')
     [ "$already" = "true" ] && continue
-    if log_discrepancy "$target_id" "$NOT_STARTED_FINDING_OPENER $waiter_id is waiting specifically on it"; then
-      flagged_this_sweep="$flagged_this_sweep $target_id"
-    fi
+    write_discrepancy "$target_id" "$NOT_STARTED_FINDING_OPENER $waiter_id is waiting specifically on it"
   done <<<"$BLOCKED_PAIRS"
 fi
 
