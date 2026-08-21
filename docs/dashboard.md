@@ -141,7 +141,7 @@ What the guard buys is catching the plainest, most common form of carelessness -
 
 **This guard does not replace the fleet auditor's judgment, and the auditor's judgment does not replace this guard.**
 The server checks words; the auditor checks whether the ask is real.
-The auditor's sweep separately reads every `needs-attention` card's reason and judges it against "what would he DO" - if the honest answer is "read it" or "know it," it is a discrepancy regardless of whether it happens to dodge the fixed phrase list (see the [`fleet-dashboard`](../.agents/skills/fleet-dashboard/SKILL.md) skill, fleet auditor's sweep, step 4).
+The auditor's sweep separately reads every `needs-attention` card's reason and judges it against "what would he DO" - if the honest answer is "read it" or "know it," it is a discrepancy regardless of whether it happens to dodge the fixed phrase list (see the [`fleet-dashboard`](../.agents/skills/fleet-dashboard/SKILL.md) skill, fleet auditor's sweep, step 5).
 Retiring either check on the assumption the other one covers it would reopen the exact gap this section exists to close.
 
 Existing `needs-attention` cards set before this guard existed are not migrated or rewritten - the guard governs what can be set from now on, not what already sits on the board.
