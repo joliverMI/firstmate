@@ -14,12 +14,35 @@ command -v curl >/dev/null 2>&1 || { pass "skipped - curl not available"; exit 0
 
 DASH="$ROOT/bin/fm-dashboard.sh"
 SERVER_PID=""
+MIGRATION_SERVER_PID=""
+PORT_HOLDER_PID=""
+RECYCLED_PID=""
+
+# bin/fm-dashboard.sh starts the server with `nohup ... &` and exits, so the
+# process is orphaned and never a child of this shell: `wait` on its pid returns
+# immediately without waiting for anything. Poll until it is really gone, so a
+# following `start` against the same FM_HOME cannot lose a race with
+# cmd_server_start's "already running" guard on the not-yet-dead pid.
+stop_dashboard_server() {  # <pid>
+  local pid=$1 waited=0
+  [ -n "$pid" ] || return 0
+  kill "$pid" 2>/dev/null
+  while kill -0 "$pid" 2>/dev/null; do
+    waited=$((waited + 1))
+    if [ "$waited" -gt 200 ]; then
+      kill -9 "$pid" 2>/dev/null
+      sleep 0.2
+      return 0
+    fi
+    sleep 0.05
+  done
+}
 
 fm_dashboard_test_cleanup() {
-  if [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
-    kill "$SERVER_PID" 2>/dev/null
-    wait "$SERVER_PID" 2>/dev/null
-  fi
+  stop_dashboard_server "$SERVER_PID"
+  stop_dashboard_server "$MIGRATION_SERVER_PID"
+  [ -n "$PORT_HOLDER_PID" ] && kill "$PORT_HOLDER_PID" 2>/dev/null
+  [ -n "$RECYCLED_PID" ] && kill "$RECYCLED_PID" 2>/dev/null
   fm_test_cleanup
 }
 trap fm_dashboard_test_cleanup EXIT
@@ -77,6 +100,23 @@ test_status_and_captain_and_title_updates() {
   assert_contains "$("$DASH" show "$id")" "captain:  captain_river" "captain did not persist"
 
   pass "status, title, and captain updates persist through the CLI"
+}
+
+test_testing_and_review_are_distinct_statuses() {
+  local id out
+  id=$("$DASH" add --title "Split status coverage" --captain firstmate --prompt "checking testing/review" | awk '{print $1}')
+
+  "$DASH" status "$id" testing >/dev/null || fail "status transition to testing failed"
+  assert_contains "$("$DASH" show "$id")" "status:   testing" "testing status did not persist"
+  assert_contains "$("$DASH" list --status testing)" "$id" "list --status testing did not include the card"
+  assert_not_contains "$("$DASH" list --status review)" "$id" "a testing card showed up under review"
+
+  "$DASH" status "$id" review >/dev/null || fail "status transition to review failed"
+  assert_contains "$("$DASH" show "$id")" "status:   review" "review status did not persist"
+  assert_contains "$("$DASH" list --status review)" "$id" "list --status review did not include the card"
+  assert_not_contains "$("$DASH" list --status testing)" "$id" "a review card is still listed under testing"
+
+  pass "testing and review are separate, independently settable statuses"
 }
 
 test_waiting_status_carries_target_and_reason() {
@@ -286,9 +326,372 @@ test_bad_input_fails_with_nonzero_exit() {
   pass "invalid input fails loudly with a non-zero exit, not a silent success"
 }
 
+# Regression: the testing/review split (docs/dashboard.md "Why `testing`
+# split into `testing` and `review`") migrates every pre-existing `testing`
+# card to `review` exactly once, the first time the server ever starts
+# against a database that predates the split - never again afterward, or a
+# genuinely new `testing` card would be wrongly rewritten on a later restart.
+# Seeds a database directly via store.py's own schema (never duplicating it
+# by hand) so a `testing` row can exist before any code has ever constructed
+# a Store against this file, which is the only way to simulate "this card
+# predates the split" in a single test run.
+test_testing_to_review_split_migration_runs_once() {
+  local mig_home mig_db mig_port mig_url out live_id
+  mig_home="$FM_HOME/migration-case"
+  mkdir -p "$mig_home/state" "$mig_home/data"
+  mig_db="$mig_home/data/dashboard.db"
+
+  PYTHONPATH="$ROOT/bin/fleet-dashboard/server" python3 - "$mig_db" <<'PY' || fail "could not seed a pre-split database"
+import sqlite3
+import sys
+
+import store
+
+conn = sqlite3.connect(sys.argv[1])
+conn.executescript(store.SCHEMA)
+conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES ('audit_interval_minutes', '15')")
+ts = "2020-01-02T03:04:05Z"
+conn.execute(
+    """INSERT INTO tasks (id, title, agent, captain, status, initial_prompt, created_at, updated_at)
+       VALUES ('premigration-testing-1', 'Pre-split testing card', '', 'firstmate', 'testing', 'seed prompt', ?, ?)""",
+    (ts, ts),
+)
+conn.commit()
+conn.close()
+PY
+
+  mig_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()') \
+    || fail "could not allocate a port for the migration case"
+  mig_url="http://127.0.0.1:$mig_port"
+
+  FM_HOME="$mig_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$mig_port" FM_DASHBOARD_DB="$mig_db" \
+    "$DASH" start >"$mig_home/start.out" 2>&1 || { cat "$mig_home/start.out" >&2; fail "migration-case server did not start"; }
+  MIGRATION_SERVER_PID=$(cat "$mig_home/state/dashboard.pid" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after migration-case server start"
+
+  out=$(FM_DASHBOARD_URL="$mig_url" "$DASH" show premigration-testing-1)
+  assert_contains "$out" "status:   review" "a pre-existing testing card was not migrated to review on first start"
+  assert_not_contains "$(FM_DASHBOARD_URL="$mig_url" "$DASH" list --status testing)" "premigration-testing-1" \
+    "the migrated card is still listed under testing"
+
+  # The migration must also prove what it changed, not just change it. Its two
+  # artifacts are the card's own persisted status_history (served through the
+  # HTTP API) and the startup report the server writes to its log.
+  FM_DASHBOARD_URL="$mig_url" "$DASH" show premigration-testing-1 --json \
+    | jq -e '[.status_history[] | select(.from_status == "testing" and .to_status == "review")] | length == 1' >/dev/null \
+    || fail "the migration left no single testing->review status_history entry proving what it rewrote"
+  FM_DASHBOARD_URL="$mig_url" "$DASH" show premigration-testing-1 --json \
+    | jq -e '[.status_history[] | select(.to_status == "review" and (.note // "") != "")] | length == 1' >/dev/null \
+    || fail "the migration's status_history entry carries no note explaining the rewrite"
+  assert_contains "$(cat "$mig_home/state/dashboard.log")" "migrated 1 card(s) from testing to review" \
+    "the server did not report the migration it performed at startup"
+  assert_contains "$(cat "$mig_home/state/dashboard.log")" "premigration-testing-1" \
+    "the startup migration report does not name the card it rewrote"
+  # A mechanical relabel is not the Admiral's work changing, so it must not
+  # float the card to the top of the board's default updated-desc sort.
+  assert_contains "$(FM_DASHBOARD_URL="$mig_url" "$DASH" show premigration-testing-1 --json | jq -r '.updated_at')" \
+    "2020-01-02T03:04:05Z" "the migration bumped updated_at and would reorder the Admiral's default board view"
+
+  stop_dashboard_server "$MIGRATION_SERVER_PID"
+  MIGRATION_SERVER_PID=""
+
+  # Restart against the SAME, already-migrated database and add a genuinely
+  # new testing card (the new meaning). If the migration ran a second time it
+  # would wrongly rewrite this card to review too.
+  FM_HOME="$mig_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$mig_port" FM_DASHBOARD_DB="$mig_db" \
+    "$DASH" start >"$mig_home/restart.out" 2>&1 || { cat "$mig_home/restart.out" >&2; fail "migration-case server did not restart"; }
+  MIGRATION_SERVER_PID=$(cat "$mig_home/state/dashboard.pid" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after migration-case server restart"
+
+  live_id=$(FM_DASHBOARD_URL="$mig_url" "$DASH" add --title "Genuinely in-flight testing" \
+    --captain firstmate --prompt "the fleet is testing this right now" --status testing | awk '{print $1}')
+  [ -n "$live_id" ] || fail "could not add a genuine post-split testing card"
+  assert_contains "$(FM_DASHBOARD_URL="$mig_url" "$DASH" show "$live_id")" "status:   testing" \
+    "the post-split testing card did not come back as testing before any further restart"
+
+  stop_dashboard_server "$MIGRATION_SERVER_PID"
+  MIGRATION_SERVER_PID=""
+
+  # The card above only crosses a migration boundary NOW: it was created after
+  # the last start, so this third one is the first time an existing, genuinely
+  # in-flight testing card is present while the migration decides whether to
+  # run. An ungated migration rewrites it to review here.
+  FM_HOME="$mig_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$mig_port" FM_DASHBOARD_DB="$mig_db" \
+    "$DASH" start >"$mig_home/restart2.out" 2>&1 \
+    || { cat "$mig_home/restart2.out" >&2; fail "migration-case server did not start a third time"; }
+  MIGRATION_SERVER_PID=$(cat "$mig_home/state/dashboard.pid" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after the third migration-case server start"
+
+  assert_contains "$(FM_DASHBOARD_URL="$mig_url" "$DASH" show "$live_id")" "status:   testing" \
+    "a later server start re-ran the migration and rewrote a genuine post-split testing card to review"
+  assert_contains "$(FM_DASHBOARD_URL="$mig_url" "$DASH" list --status testing)" "$live_id" \
+    "the genuine post-split testing card fell out of the testing list across a restart"
+  assert_not_contains "$(cat "$mig_home/state/dashboard.log")" "from testing to review" \
+    "a later start reported running the migration again over an already-migrated database"
+
+  stop_dashboard_server "$MIGRATION_SERVER_PID"
+  MIGRATION_SERVER_PID=""
+  pass "the testing-to-review split migration converts only pre-existing testing cards, and runs at most once"
+}
+
+# Guards the ordering contract between the one-time migration and the
+# listening socket, and the synchrony contract of `stop`. Both exist because
+# the live board is upgraded with `fm-dashboard.sh restart`: if `stop` returned
+# while the old server still held the port, the new server would commit the
+# irreversible migration and then die on EADDRINUSE, leaving the database
+# migrated while a pre-split server kept serving statuses it cannot render.
+test_a_start_that_cannot_bind_leaves_the_migration_pending() {
+  local blk_home blk_db blk_port blk_url holder_pid first_pid waited
+
+  blk_home="$FM_HOME/blocked-bind-case"
+  mkdir -p "$blk_home/state" "$blk_home/data"
+  blk_db="$blk_home/data/dashboard.db"
+
+  PYTHONPATH="$ROOT/bin/fleet-dashboard/server" python3 - "$blk_db" <<'PY' || fail "could not seed a pre-split database for the blocked-bind case"
+import sqlite3
+import sys
+
+import store
+
+conn = sqlite3.connect(sys.argv[1])
+conn.executescript(store.SCHEMA)
+conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES ('audit_interval_minutes', '15')")
+ts = "2020-02-03T04:05:06Z"
+conn.execute(
+    """INSERT INTO tasks (id, title, agent, captain, status, initial_prompt, created_at, updated_at)
+       VALUES ('blocked-bind-testing-1', 'Pre-split testing card', '', 'firstmate', 'testing', 'seed prompt', ?, ?)""",
+    (ts, ts),
+)
+conn.commit()
+conn.close()
+PY
+
+  blk_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()') \
+    || fail "could not allocate a port for the blocked-bind case"
+  blk_url="http://127.0.0.1:$blk_port"
+
+  # Stand in for the old server that has been signalled but has not let go of
+  # the port yet - the exact window a non-waiting `stop` leaves open.
+  python3 -c 'import socket, sys, time
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", int(sys.argv[1])))
+s.listen(8)
+time.sleep(600)' "$blk_port" &
+  holder_pid=$!
+  PORT_HOLDER_PID="$holder_pid"
+  waited=0
+  until python3 -c 'import socket, sys
+s = socket.socket()
+s.settimeout(1)
+try:
+    s.connect(("127.0.0.1", int(sys.argv[1])))
+except OSError:
+    raise SystemExit(1)
+s.close()' "$blk_port" 2>/dev/null; do
+    waited=$((waited + 1))
+    [ "$waited" -gt 100 ] && fail "the port holder never came up for the blocked-bind case"
+    sleep 0.05
+  done
+
+  if FM_HOME="$blk_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$blk_port" FM_DASHBOARD_DB="$blk_db" \
+      "$DASH" start >"$blk_home/blocked-start.out" 2>&1; then
+    fail "start reported success while another process already held the port"
+  fi
+
+  kill "$holder_pid" 2>/dev/null
+  wait "$holder_pid" 2>/dev/null || true
+  PORT_HOLDER_PID=""
+
+  # The blocked start must not have consumed the one-time migration: the card
+  # is still pre-split, so the first start that actually serves migrates it.
+  FM_HOME="$blk_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$blk_port" FM_DASHBOARD_DB="$blk_db" \
+    "$DASH" start >"$blk_home/start.out" 2>&1 \
+    || { cat "$blk_home/start.out" >&2; fail "blocked-bind-case server did not start once the port was free"; }
+  MIGRATION_SERVER_PID=$(cat "$blk_home/state/dashboard.pid" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after the blocked-bind-case server start"
+  first_pid="$MIGRATION_SERVER_PID"
+
+  assert_contains "$(FM_DASHBOARD_URL="$blk_url" "$DASH" show blocked-bind-testing-1)" "status:   review" \
+    "a start that could not bind consumed the one-time migration, so the card never reached review"
+  assert_contains "$(cat "$blk_home/state/dashboard.log")" "migrated 1 card(s) from testing to review" \
+    "the start that actually served did not report the migration the blocked start must have left pending"
+
+  # `stop` must not return until the process is really gone, or `restart`
+  # would hand the port to a new server the old one still owns.
+  FM_HOME="$blk_home" "$DASH" stop >"$blk_home/stop.out" 2>&1 \
+    || { cat "$blk_home/stop.out" >&2; fail "stop failed for the blocked-bind-case server"; }
+  MIGRATION_SERVER_PID=""
+  if kill -0 "$first_pid" 2>/dev/null; then
+    fail "stop returned while pid $first_pid was still running, so restart can overlap two servers"
+  fi
+
+  # ...which is exactly what makes an immediate re-start on the same port work.
+  FM_HOME="$blk_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$blk_port" FM_DASHBOARD_DB="$blk_db" \
+    "$DASH" start >"$blk_home/restart.out" 2>&1 \
+    || { cat "$blk_home/restart.out" >&2; fail "an immediate start after stop could not take the port back"; }
+  MIGRATION_SERVER_PID=$(cat "$blk_home/state/dashboard.pid" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after the immediate re-start"
+  assert_contains "$(FM_DASHBOARD_URL="$blk_url" "$DASH" show blocked-bind-testing-1)" "status:   review" \
+    "the card did not survive an immediate stop/start cycle as review"
+
+  stop_dashboard_server "$MIGRATION_SERVER_PID"
+  MIGRATION_SERVER_PID=""
+  pass "a start that cannot bind leaves the migration pending, and stop waits for the port"
+}
+
+# `restart` is the operator's one command for bringing the live board back, so
+# it must survive every state `stop` can refuse: a stale pidfile left by a
+# crashed server, and no pidfile at all after a clean stop. Both are `die`
+# paths inside cmd_server_stop, and `die` is `exit 1`.
+test_restart_recovers_from_a_crashed_or_stopped_board() {
+  local rst_home rst_db rst_port rst_url crashed_pid revived_pid card_id
+
+  rst_home="$FM_HOME/restart-case"
+  mkdir -p "$rst_home/state" "$rst_home/data"
+  rst_db="$rst_home/data/dashboard.db"
+  rst_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()') \
+    || fail "could not allocate a port for the restart case"
+  rst_url="http://127.0.0.1:$rst_port"
+
+  FM_HOME="$rst_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$rst_port" FM_DASHBOARD_DB="$rst_db" \
+    "$DASH" start >"$rst_home/start.out" 2>&1 \
+    || { cat "$rst_home/start.out" >&2; fail "restart-case server did not start"; }
+  MIGRATION_SERVER_PID=$(cat "$rst_home/state/dashboard.pid" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after the restart-case server start"
+  crashed_pid="$MIGRATION_SERVER_PID"
+
+  card_id=$(FM_DASHBOARD_URL="$rst_url" "$DASH" add --title "Survives a restart" \
+    --captain firstmate --prompt "seeded before the crash" --status review | awk '{print $1}')
+  [ -n "$card_id" ] || fail "could not seed a card before the crash"
+
+  # Crash the server the way an OOM kill or a lost tmux session would: the
+  # process dies without ever removing its own pidfile.
+  kill -9 "$crashed_pid" 2>/dev/null
+  while kill -0 "$crashed_pid" 2>/dev/null; do sleep 0.05; done
+  [ -f "$rst_home/state/dashboard.pid" ] || fail "the crash removed the pidfile, so this is not the stale-pidfile case"
+
+  FM_HOME="$rst_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$rst_port" FM_DASHBOARD_DB="$rst_db" \
+    "$DASH" restart >"$rst_home/restart-after-crash.out" 2>&1 \
+    || { cat "$rst_home/restart-after-crash.out" >&2; fail "restart did not bring the board back after a crash left a stale pidfile"; }
+  MIGRATION_SERVER_PID=$(cat "$rst_home/state/dashboard.pid" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after restarting over a stale pidfile"
+  revived_pid="$MIGRATION_SERVER_PID"
+  [ "$revived_pid" != "$crashed_pid" ] || fail "restart recorded the dead pid instead of a new server"
+  assert_contains "$(FM_DASHBOARD_URL="$rst_url" "$DASH" show "$card_id")" "status:   review" \
+    "the board did not serve its cards again after a restart over a stale pidfile"
+
+  # A clean stop removes the pidfile, so restarting from stopped is the
+  # "no pidfile" die path - it must start the board, not refuse.
+  FM_HOME="$rst_home" "$DASH" stop >"$rst_home/stop.out" 2>&1 \
+    || { cat "$rst_home/stop.out" >&2; fail "stop failed for the restart-case server"; }
+  MIGRATION_SERVER_PID=""
+  if [ -f "$rst_home/state/dashboard.pid" ]; then
+    fail "a clean stop left a pidfile behind, so this is not the no-pidfile case"
+  fi
+
+  FM_HOME="$rst_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$rst_port" FM_DASHBOARD_DB="$rst_db" \
+    "$DASH" restart >"$rst_home/restart-from-stopped.out" 2>&1 \
+    || { cat "$rst_home/restart-from-stopped.out" >&2; fail "restart refused to start an already-stopped board"; }
+  MIGRATION_SERVER_PID=$(cat "$rst_home/state/dashboard.pid" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after restarting an already-stopped board"
+
+  # And the ordinary case: restarting a healthy board hands the same port to a
+  # genuinely new process without losing the board.
+  crashed_pid="$MIGRATION_SERVER_PID"
+  FM_HOME="$rst_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$rst_port" FM_DASHBOARD_DB="$rst_db" \
+    "$DASH" restart >"$rst_home/restart-live.out" 2>&1 \
+    || { cat "$rst_home/restart-live.out" >&2; fail "restart failed against a healthy running board"; }
+  MIGRATION_SERVER_PID=$(cat "$rst_home/state/dashboard.pid" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after restarting a healthy board"
+  [ "$MIGRATION_SERVER_PID" != "$crashed_pid" ] || fail "restart against a healthy board did not replace the process"
+  assert_contains "$(FM_DASHBOARD_URL="$rst_url" "$DASH" show "$card_id")" "status:   review" \
+    "the board did not serve its cards again after restarting a healthy server"
+
+  stop_dashboard_server "$MIGRATION_SERVER_PID"
+  MIGRATION_SERVER_PID=""
+  pass "restart brings the board back from a crash, from stopped, and from healthy"
+}
+
+# A crash leaves the pidfile behind, and the host's pid counter can hand that
+# number to an unrelated process before anyone types stop or restart. The
+# lifecycle commands must recognise that the recorded pid is no longer a
+# dashboard and drop the stale file, not signal whatever inherited the number.
+test_lifecycle_commands_refuse_a_recycled_pid() {
+  local rec_home rec_db rec_port rec_url pf innocent_pid out card_id
+
+  rec_home="$FM_HOME/recycled-pid-case"
+  mkdir -p "$rec_home/state" "$rec_home/data"
+  rec_db="$rec_home/data/dashboard.db"
+  rec_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()') \
+    || fail "could not allocate a port for the recycled-pid case"
+  rec_url="http://127.0.0.1:$rec_port"
+  pf="$rec_home/state/dashboard.pid"
+
+  # Stand in for the unrelated process that inherited the crashed board's pid.
+  sleep 600 &
+  innocent_pid=$!
+  RECYCLED_PID="$innocent_pid"
+  printf '%s\n' "$innocent_pid" >"$pf"
+
+  # server-status must not claim the board is running just because the number
+  # in the pidfile happens to be alive.
+  out=$(FM_HOME="$rec_home" FM_DASHBOARD_URL="$rec_url" "$DASH" server-status 2>&1)
+  assert_contains "$out" "process: not running" \
+    "server-status reported a recycled pid as the running board"
+
+  if FM_HOME="$rec_home" "$DASH" stop >"$rec_home/stop.out" 2>&1; then
+    fail "stop reported success against a pid that is not a dashboard server"
+  fi
+  assert_contains "$(cat "$rec_home/stop.out")" "not a fleet dashboard server" \
+    "stop did not say why it refused the recycled pid"
+  kill -0 "$innocent_pid" 2>/dev/null \
+    || fail "stop signalled an unrelated process that had inherited the recorded pid"
+  if [ -f "$pf" ]; then
+    fail "stop left the stale pidfile in place, so start would keep refusing"
+  fi
+
+  # ...and having dropped the stale file, the board comes back up normally
+  # without the innocent process being touched.
+  FM_HOME="$rec_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$rec_port" FM_DASHBOARD_DB="$rec_db" \
+    "$DASH" start >"$rec_home/start.out" 2>&1 \
+    || { cat "$rec_home/start.out" >&2; fail "start did not bring the board up after the stale pidfile was dropped"; }
+  MIGRATION_SERVER_PID=$(cat "$pf" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after the recycled-pid-case start"
+  card_id=$(FM_DASHBOARD_URL="$rec_url" "$DASH" add --title "After a recycled pid" \
+    --captain firstmate --prompt "the board still works" --status review | awk '{print $1}')
+  [ -n "$card_id" ] || fail "the board that started after the recycled pid does not serve"
+  kill -0 "$innocent_pid" 2>/dev/null \
+    || fail "the unrelated process was killed somewhere in the recycled-pid lifecycle"
+
+  # restart over the same recycled state must also spare the innocent process
+  # while still ending with a board running.
+  stop_dashboard_server "$MIGRATION_SERVER_PID"
+  MIGRATION_SERVER_PID=""
+  printf '%s\n' "$innocent_pid" >"$pf"
+  FM_HOME="$rec_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$rec_port" FM_DASHBOARD_DB="$rec_db" \
+    "$DASH" restart >"$rec_home/restart.out" 2>&1 \
+    || { cat "$rec_home/restart.out" >&2; fail "restart did not bring the board back over a recycled pidfile"; }
+  MIGRATION_SERVER_PID=$(cat "$pf" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after restarting over a recycled pidfile"
+  [ "$MIGRATION_SERVER_PID" != "$innocent_pid" ] || fail "restart recorded the unrelated pid as the board"
+  kill -0 "$innocent_pid" 2>/dev/null \
+    || fail "restart killed the unrelated process that had inherited the recorded pid"
+  assert_contains "$(FM_DASHBOARD_URL="$rec_url" "$DASH" show "$card_id")" "status:   review" \
+    "the board did not serve its cards after restarting over a recycled pidfile"
+
+  stop_dashboard_server "$MIGRATION_SERVER_PID"
+  MIGRATION_SERVER_PID=""
+  kill "$innocent_pid" 2>/dev/null
+  wait "$innocent_pid" 2>/dev/null || true
+  RECYCLED_PID=""
+  pass "the lifecycle commands refuse a recycled pid instead of signalling it"
+}
+
 test_health_and_server_status
 test_add_and_list_round_trip
 test_status_and_captain_and_title_updates
+test_testing_and_review_are_distinct_statuses
 test_waiting_status_carries_target_and_reason
 test_notes_tabs_and_empty_tab_semantics
 test_link_policy_rejects_github_and_localhost
@@ -298,4 +701,8 @@ test_bad_input_fails_with_nonzero_exit
 test_calls_are_bounded_against_a_board_that_never_answers
 test_zero_timeout_override_is_refused_like_any_other_unusable_one
 test_missing_id_and_unreachable_board_have_distinct_exit_codes
+test_testing_to_review_split_migration_runs_once
+test_a_start_that_cannot_bind_leaves_the_migration_pending
+test_restart_recovers_from_a_crashed_or_stopped_board
+test_lifecycle_commands_refuse_a_recycled_pid
 test_star_and_delete

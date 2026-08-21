@@ -943,7 +943,7 @@ families_for_changed_path() {
       printf '%s\n' pr-forge
       ;;
     bin/fm-teardown.sh)
-      # Teardown owns the card's advance to testing (docs/dashboard.md "The
+      # Teardown owns the card's advance to review (docs/dashboard.md "The
       # mechanical card link"), so it selects the board suites too.
       printf '%s\n' pr-forge
       printf '%s\n' dashboard

@@ -414,7 +414,19 @@ def serve(host: str, port: int, db_path: str) -> ThreadingHTTPServer:
     # server - use 127.0.0.1 in that case instead of the bind address.
     call_host = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
     SELF_URL = f"http://{call_host}:{port}"
-    store = Store(db_path)
-    handler = make_handler(store)
-    httpd = ThreadingHTTPServer((host, port), handler)
+    # Ordering is load-bearing, not stylistic: the port is claimed before the
+    # Store is opened, so a start that loses the race for the port fails on
+    # EADDRINUSE *before* Store's one-time testing/review migration commits.
+    # Constructing the Store first would migrate the database and then die,
+    # leaving a still-running pre-split server serving statuses its frontend
+    # cannot render. Guarded by tests/fm-dashboard.test.sh "a start that
+    # cannot bind leaves the migration pending, and stop waits for the port".
+    httpd = ThreadingHTTPServer((host, port), BaseHTTPRequestHandler, bind_and_activate=False)
+    try:
+        httpd.server_bind()
+        httpd.server_activate()
+        httpd.RequestHandlerClass = make_handler(Store(db_path))
+    except BaseException:
+        httpd.server_close()
+        raise
     return httpd

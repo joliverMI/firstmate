@@ -11,7 +11,7 @@ import htm from "./vendor/htm.module.js";
 const { useState, useEffect, useCallback, useMemo, useRef } = React;
 const html = htm.bind(React.createElement);
 
-const STATUSES = ["needs_attention", "not_started", "working", "paused", "waiting", "testing", "complete"];
+const STATUSES = ["needs_attention", "not_started", "working", "paused", "waiting", "testing", "review", "complete"];
 const STATUS_META = {
   needs_attention: { label: "Needs Attention" },
   not_started: { label: "Not Started" },
@@ -19,6 +19,7 @@ const STATUS_META = {
   paused: { label: "Paused" },
   waiting: { label: "Waiting" },
   testing: { label: "Testing" },
+  review: { label: "Review" },
   complete: { label: "Complete" },
 };
 const CAPTAINS = ["firstmate", "captain_dj", "captain_river"];
@@ -156,7 +157,7 @@ function Card({ task, allTasks, onOpen, onToggleStar, onQuickStatus, highlighted
               : null}
         </div>
       ` : null}
-      ${task.status === "testing" ? html`
+      ${task.status === "review" ? html`
         <button class="quick-action complete-btn" onClick=${stop(() => onQuickStatus(task, "complete"))}>
           Mark Complete
         </button>
@@ -413,7 +414,7 @@ function Overlay({ task, allTasks, onClose, onPatch, onStatus, onAddNote, onTogg
           </div>
         ` : null}
 
-        ${task.status === "testing" ? html`
+        ${task.status === "review" ? html`
           <div class="field-row">
             <button class="quick-action complete-btn" onClick=${() => onStatus(task.id, "complete")}>
               Mark Complete

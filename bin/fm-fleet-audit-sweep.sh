@@ -9,22 +9,28 @@
 # paths that could quietly drift apart - see docs/dashboard.md "Auditor
 # integration".
 #
-# Scope: this implements the deterministic subset of the seven-status
+# Scope: this implements the deterministic subset of the eight-status
 # procedure in .agents/skills/fleet-dashboard/SKILL.md "The fleet auditor's
 # sweep" - the checks that are genuinely a mechanical comparison, not a
 # judgment call:
 #   1. working  - corroborated against bin/fm-crew-state.sh, but ONLY for a
 #      card whose backlog_ref names a task in THIS FM_HOME; a ref naming
 #      another home, or no ref at all, is not verifiable from here and is
-#      skipped, never logged as a discrepancy (skill point 6).
-#   2. waiting  - flags a card whose waiting_on_id card is already complete.
-#   4. needs_attention - flags a card that has sat past
-#      FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES (default 60) with no
-#      admiral-authored communication note since it was flagged.
-#   3. paused is left to a live agent's judgment (the skill itself notes it is
+#      skipped, never logged as a discrepancy (skill point 7).
+#   2. testing  - the fleet must genuinely be exercising it right now, so it
+#      gets the exact same live-crew corroboration as working (a testing card
+#      is not inert the way a review card is).
+#   3. waiting  - flags a card whose waiting_on_id card is already complete.
+#   4. paused is left to a live agent's judgment (the skill itself notes it is
 #      usually unverifiable from state alone: "confirm each is still
 #      genuinely paused by the Admiral's own word") - this script counts a
 #      paused card as checked but never flags one.
+#   5. needs_attention - flags a card that has sat past
+#      FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES (default 60) with no
+#      admiral-authored communication note since it was flagged.
+#   review is optional to him by design (the skill's own asymmetry), so it is
+#   never checked here at all - see "Why `needs-attention` is a separate
+#   status from `review`" in docs/dashboard.md.
 #
 # Usage: fm-fleet-audit-sweep.sh [--forced] [--already-claimed]
 #   --forced           mark the recorded run as forced (the Force Audit
@@ -78,6 +84,34 @@ log_discrepancy() {  # <task_id> <text>
   "$DASH" audit-log "$1" "$2" --kind discrepancy >/dev/null 2>&1 && DISCREPANCIES=$((DISCREPANCIES + 1))
 }
 
+# Shared by the working and testing checks: both statuses claim a real crew is
+# actively on the card right now, so both are corroborated the same way -
+# against bin/fm-crew-state.sh, and ONLY for a card whose backlog_ref names a
+# task in THIS FM_HOME (skill point 7: a ref naming another home, or no ref at
+# all, is not verifiable from here and is skipped, never logged).
+check_live_crew_status() {  # <status-flag>
+  local status_flag=$1 json id ref ref_home ref_task state_line state
+  json=$("$DASH" list --status "$status_flag" --json) \
+    || fail_sweep "sweep failed listing $status_flag cards: dashboard unreachable mid-sweep"
+  while IFS=$'\t' read -r id ref; do
+    [ -n "$id" ] || continue
+    CHECKED=$((CHECKED + 1))
+    [ -n "$ref" ] && [ "$ref" != "null" ] || continue
+    ref_home="local"
+    ref_task="$ref"
+    case "$ref" in
+      *:*) ref_home="${ref%%:*}"; ref_task="${ref#*:}" ;;
+    esac
+    [ "$ref_home" = "local" ] || [ "$ref_home" = "$HOME_NAME" ] || continue
+    state_line=$("$CREW_STATE" "$ref_task" 2>/dev/null) || continue
+    state=$(printf '%s\n' "$state_line" | sed -n 's/^state: \([a-z]*\).*/\1/p')
+    case "$state" in
+      working|unknown|"") ;;  # corroborated, or crew-state itself has nothing to say - not a discrepancy
+      *) log_discrepancy "$id" "card claims $status_flag, but the linked crew reads: $state_line" ;;
+    esac
+  done < <(printf '%s' "$json" | jq -r '.tasks[] | [.id, (.backlog_ref // "")] | @tsv')
+}
+
 if [ "$ALREADY_CLAIMED" -eq 0 ]; then
   claim_args=()
   [ "$FORCED" -eq 1 ] && claim_args=(--forced)
@@ -90,30 +124,16 @@ START_EPOCH=$(iso_to_epoch "$STARTED_AT")
 
 CHECKED=0
 DISCREPANCIES=0
+HOME_NAME=$(basename "$FM_HOME")
 
 # ---- 1. working: corroborate against a local backlog_ref only ----
-WORKING_JSON=$("$DASH" list --status working --json) \
-  || fail_sweep "sweep failed listing working cards: dashboard unreachable mid-sweep"
-HOME_NAME=$(basename "$FM_HOME")
-while IFS=$'\t' read -r id ref; do
-  [ -n "$id" ] || continue
-  CHECKED=$((CHECKED + 1))
-  [ -n "$ref" ] && [ "$ref" != "null" ] || continue
-  ref_home="local"
-  ref_task="$ref"
-  case "$ref" in
-    *:*) ref_home="${ref%%:*}"; ref_task="${ref#*:}" ;;
-  esac
-  [ "$ref_home" = "local" ] || [ "$ref_home" = "$HOME_NAME" ] || continue
-  state_line=$("$CREW_STATE" "$ref_task" 2>/dev/null) || continue
-  state=$(printf '%s\n' "$state_line" | sed -n 's/^state: \([a-z]*\).*/\1/p')
-  case "$state" in
-    working|unknown|"") ;;  # corroborated, or crew-state itself has nothing to say - not a discrepancy
-    *) log_discrepancy "$id" "card claims working, but the linked crew reads: $state_line" ;;
-  esac
-done < <(printf '%s' "$WORKING_JSON" | jq -r '.tasks[] | [.id, (.backlog_ref // "")] | @tsv')
+check_live_crew_status working
 
-# ---- 2. waiting: is the named blocker card actually still open? ----
+# ---- 2. testing: the fleet must genuinely be exercising it right now, same
+# corroboration as working - a testing card is not inert the way review is ----
+check_live_crew_status testing
+
+# ---- 3. waiting: is the named blocker card actually still open? ----
 WAITING_JSON=$("$DASH" list --status waiting --json) \
   || fail_sweep "sweep failed listing waiting cards: dashboard unreachable mid-sweep"
 while IFS=$'\t' read -r id waiting_on; do
@@ -127,12 +147,12 @@ while IFS=$'\t' read -r id waiting_on; do
   fi
 done < <(printf '%s' "$WAITING_JSON" | jq -r '.tasks[] | [.id, (.waiting_on_id // "")] | @tsv')
 
-# ---- 3. paused: counted as checked, never flagged (see header) ----
+# ---- 4. paused: counted as checked, never flagged (see header) ----
 PAUSED_JSON=$("$DASH" list --status paused --json) \
   || fail_sweep "sweep failed listing paused cards: dashboard unreachable mid-sweep"
 CHECKED=$((CHECKED + $(printf '%s' "$PAUSED_JSON" | jq '.tasks | length')))
 
-# ---- 4. needs_attention: age since flagged, with no reply since ----
+# ---- 5. needs_attention: age since flagged, with no reply since ----
 STALE_MINUTES=${FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES:-60}
 case "$STALE_MINUTES" in ''|*[!0-9]*) STALE_MINUTES=60 ;; esac
 NA_JSON=$("$DASH" list --status needs-attention --json) \

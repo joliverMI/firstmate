@@ -95,6 +95,87 @@ test_audit_tick_heartbeat_and_due_interval() {
   pass "the tick script heartbeats every invocation and only sweeps once the interval has elapsed"
 }
 
+# Regression: before the testing/review split, `testing` was optional and
+# inert, and the sweep never looked at it at all. It now gets the exact same
+# live-crew corroboration as `working` (docs/dashboard.md "Why `testing`
+# split into `testing` and `review`") - a `testing` card is counted, and a
+# card with no backlog_ref is unverifiable from here and must not be flagged
+# (skill point 7, same rule `working` already gets).
+test_sweep_counts_testing_cards_and_never_flags_an_unverifiable_one() {
+  # Two forced sweeps back to back, with only the new card added in between,
+  # so the checked-count delta is attributable to that one card alone rather
+  # than whatever the rest of the suite has put on the board by this point.
+  "$SWEEP" --forced || fail "baseline sweep exited non-zero"
+  local before_checked before_log id after_checked after_log
+  before_checked=$(audit_status_json | jq -r '.last_run.tasks_checked')
+
+  id=$("$DASH" add --title "Live testing, no ref" --captain firstmate --prompt "testing coverage" \
+    --status testing | awk '{print $1}')
+  [ -n "$id" ] || fail "could not add the testing card"
+  before_log=$(audit_status_json | jq '[.log[] | select(.task_id=="'"$id"'")] | length')
+
+  "$SWEEP" --forced || fail "sweep script exited non-zero"
+
+  after_checked=$(audit_status_json | jq -r '.last_run.tasks_checked')
+  after_log=$(audit_status_json | jq '[.log[] | select(.task_id=="'"$id"'")] | length')
+  [ "$after_checked" -eq $((before_checked + 1)) ] \
+    || fail "expected exactly one more checked card (the new testing one), before=$before_checked after=$after_checked"
+  [ "$after_log" = "$before_log" ] || fail "a testing card with no backlog_ref was flagged, but it is not verifiable from here"
+  pass "the sweep checks testing cards and never flags one it cannot verify"
+}
+
+# The flagging half of the shared live-crew check: a card whose backlog_ref
+# names a local task whose crew-state reads a definite non-working state must
+# produce a discrepancy. Run for both statuses that use the helper - `testing`
+# is the new caller, `working` the pre-existing one - so the branch this split
+# exists for is proven, not just its skip paths.
+make_crew_state_case() {  # <crew-id> <status-log-line> - a meta/status pair
+  # that makes bin/fm-crew-state.sh report a definite, non-working state with
+  # no tmux, git or no-mistakes dependency: kind=secondmate skips the run
+  # lookup and the busy probe, remote_host skips the local endpoint probe, so
+  # the status log's own verb is the answer.
+  local crew_id=$1 log_line=$2
+  mkdir -p "$FM_HOME/wt-$crew_id"
+  fm_write_meta "$FM_HOME/state/$crew_id.meta" \
+    "window=remote:$crew_id" \
+    "endpoint_task_id=$crew_id" \
+    "worktree=$FM_HOME/wt-$crew_id" \
+    "kind=secondmate" \
+    "remote_host=elsewhere"
+  printf '%s\n' "$log_line" > "$FM_HOME/state/$crew_id.status"
+}
+
+test_sweep_flags_a_live_crew_status_whose_linked_crew_is_not_working() {
+  local status crew_id card_id state_line flagged
+  for status in testing working; do
+    crew_id="audit-crew-$status"
+    make_crew_state_case "$crew_id" "blocked: upstream API is down"
+    state_line=$("$ROOT/bin/fm-crew-state.sh" "$crew_id")
+    case "$state_line" in
+      "state: blocked"*) ;;
+      *) fail "fixture did not produce a blocked crew state for $crew_id: $state_line" ;;
+    esac
+
+    card_id=$("$DASH" add --title "Linked $status card" --captain firstmate \
+      --prompt "$status corroboration" --status "$status" --ref "$crew_id" | awk '{print $1}')
+    [ -n "$card_id" ] || fail "could not add the $status card"
+
+    "$SWEEP" --forced || fail "sweep script exited non-zero for $status"
+
+    flagged=$(audit_status_json \
+      | jq -r '[.log[] | select(.task_id=="'"$card_id"'" and .kind=="discrepancy") | .text] | join(" | ")')
+    case "$flagged" in
+      *"card claims $status"*"blocked"*) ;;
+      *) fail "a $status card whose linked crew reads blocked was not flagged; log entries: ${flagged:-<none>}" ;;
+    esac
+
+    # Leave the board clean for the next status so the following iteration and
+    # the later checked-count assertions are not perturbed by this card.
+    "$DASH" status "$card_id" complete >/dev/null || fail "could not clear the $status card"
+  done
+  pass "the sweep flags a working or testing card whose linked crew is demonstrably not working"
+}
+
 test_sweep_flags_waiting_on_completed_card() {
   "$DASH" audit-interval 1 >/dev/null || fail "could not reset the interval"
   local done_id waiter_id
@@ -208,6 +289,8 @@ test_claim_is_exclusive_and_release_frees_it
 test_tick_heals_a_stuck_lock_left_by_a_crashed_sweep
 test_audit_run_forced_flag_and_auto_release
 test_audit_tick_heartbeat_and_due_interval
+test_sweep_counts_testing_cards_and_never_flags_an_unverifiable_one
+test_sweep_flags_a_live_crew_status_whose_linked_crew_is_not_working
 test_sweep_flags_waiting_on_completed_card
 test_sweep_flags_stale_unreplied_needs_attention_but_not_a_reply
 test_force_button_endpoint_runs_a_real_sweep

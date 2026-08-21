@@ -18,7 +18,7 @@ import threading
 import time
 from contextlib import contextmanager
 
-STATUSES = ("needs_attention", "not_started", "working", "paused", "waiting", "testing", "complete")
+STATUSES = ("needs_attention", "not_started", "working", "paused", "waiting", "testing", "review", "complete")
 CAPTAINS = ("firstmate", "captain_dj", "captain_river")
 NOTE_TABS = ("interpretation", "communication", "needs")
 NOTE_AUTHORS = ("agent", "firstmate", "admiral")
@@ -112,6 +112,17 @@ SETTING_SWEEP_RUNNING = "audit_sweep_running"
 SETTING_SWEEP_STARTED_AT = "audit_sweep_started_at"
 SETTING_SWEEP_FORCED = "audit_sweep_forced"
 
+# Marks the one-time split of the old `testing` status - which meant "done,
+# ready for his review" - into `testing` (the fleet is actively exercising it
+# right now) and `review` (done, awaiting him - what `testing` used to mean).
+# Every card in `testing` the first time this code runs against a database
+# means the old thing: no earlier code could have set the new meaning, since
+# it did not exist yet. This must therefore fire at most once, before the
+# server accepts its first request, or a genuinely in-flight `testing` card
+# created after the split would be wrongly rewritten to `review` on the next
+# restart.
+SETTING_TESTING_REVIEW_SPLIT_MIGRATED = "migrated_testing_review_split_v1"
+
 # A claimed sweep that has not released itself within this long is treated as
 # abandoned (crashed subprocess, killed server) rather than left stuck forever
 # refusing every future tick and button press. Overridable so a test can prove
@@ -149,6 +160,58 @@ class Store:
                 "INSERT OR IGNORE INTO settings(key, value) VALUES ('audit_interval_minutes', ?)",
                 (str(DEFAULT_AUDIT_INTERVAL_MINUTES),),
             )
+            migrated = self._migrate_testing_to_review(conn)
+        if migrated:
+            print(
+                f"dashboard: migrated {len(migrated)} card(s) from testing to review "
+                f"(testing/review split): {', '.join(migrated)}"
+            )
+
+    # Accepted tradeoff, not an oversight: a phone tab already open across a
+    # server restart keeps the pre-migration app.js in memory, so a migrated
+    # card can transiently render without its Mark Complete action and with the
+    # status dropdown falling back to that old bundle's first option until the
+    # page is reloaded. Non-destructive and self-clearing on reload, so it is
+    # handled operationally (tell the Admiral to refresh after a deploy) rather
+    # than by adding a cache-busting/versioning surface to the board.
+    # Deliberately leaves updated_at alone: it means when the Admiral's work
+    # last actually changed, not when a script touched the row, so a mechanical
+    # relabel must not float a dozen finished cards to the top of his default
+    # updated-desc sort. The status_history row and the startup report below are
+    # the migration's record that it ran.
+    def _migrate_testing_to_review(self, conn: sqlite3.Connection) -> list[str]:
+        """One-time split of the old `testing` meaning into `testing` (live
+        fleet activity) and `review` (done, awaiting him - the old meaning).
+        Gated by SETTING_TESTING_REVIEW_SPLIT_MIGRATED so it can only ever
+        rewrite the cards that meant the old thing, never a later, genuinely
+        in-flight `testing` card. Returns the migrated task ids so the caller
+        can report exactly what changed.
+        """
+        already = conn.execute(
+            "SELECT 1 FROM settings WHERE key = ?", (SETTING_TESTING_REVIEW_SPLIT_MIGRATED,)
+        ).fetchone()
+        if already is not None:
+            return []
+        ids = [row[0] for row in conn.execute("SELECT id FROM tasks WHERE status = 'testing'")]
+        if ids:
+            ts = now_iso()
+            conn.executemany(
+                "UPDATE tasks SET status = 'review' WHERE id = ?",
+                [(task_id,) for task_id in ids],
+            )
+            conn.executemany(
+                """INSERT INTO status_history (task_id, from_status, to_status, changed_at, note)
+                   VALUES (?, 'testing', 'review', ?, ?)""",
+                [
+                    (task_id, ts, "migrated: testing/review split - this card meant ready for his review")
+                    for task_id in ids
+                ],
+            )
+        conn.execute(
+            "INSERT OR IGNORE INTO settings(key, value) VALUES (?, '1')",
+            (SETTING_TESTING_REVIEW_SPLIT_MIGRATED,),
+        )
+        return ids
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30)
