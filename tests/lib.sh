@@ -298,6 +298,16 @@ assert_grep() {
   grep -F -- "$1" "$2" >/dev/null || fail "$3"
 }
 
+# assert_grep_line <line> <file> <msg>: <file> must contain <line> as a WHOLE
+# line, not merely as a substring of one. Use this whenever the line under test
+# is a record of a complete command invocation and the assertion is partly about
+# what the command did NOT also carry: a substring match against
+# `status card-9 review` still matches a line that goes on to say
+# `--reason ...`, so it would pass either way and prove nothing.
+assert_grep_line() {
+  grep -Fx -- "$1" "$2" >/dev/null || fail "$3"
+}
+
 # assert_no_grep <pattern> <file> <msg>: fixed-string grep must NOT match.
 assert_no_grep() {
   ! grep -F -- "$1" "$2" >/dev/null || fail "$3"

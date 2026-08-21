@@ -108,15 +108,22 @@ fm_dashboard_link_and_advance() { # <dash> <card> <ref> <owner> <subject> <known
 # Admiral's own action made terminal, rather than only from one specific
 # starting status. An already-complete card is left alone rather than
 # downgraded back - his approval is terminal until he reopens it from the
-# card - and the same is now true of a card the Admiral's own action left
-# needs_attention: the underlying work landing does not answer whatever he was
-# actually asked, so the card still advances (freezing it forever would be its
-# own new stale-card failure), but its needs_attention_reason is about to be
-# discarded by the status change itself (store.py's set_status keeps that
-# column only while status stays needs_attention) - carrying it forward as
-# this call's own --reason keeps it in the card's status history instead of
-# silently nulling it with no trace, which is the specific defect this
-# function exists to close.
+# card - while a card his own action left needs_attention, or that is
+# waiting on something named, still advances: the underlying work landing
+# does not answer whatever it was actually held for, but freezing the card
+# there forever would be its own new stale-card failure. What that advance
+# must not do is throw away what it was held for.
+#
+# Both of those statuses park that text in a status-scoped column
+# (needs_attention_reason, waiting_reason) which store.py's set_status keeps
+# only while the status itself stays put and nulls unconditionally
+# otherwise, writing the call's own --reason - and nothing else - into the
+# card's status history. An advance with no --reason of its own is therefore
+# exactly what destroys the record, which is the specific defect this
+# function exists to close. Which column is live follows from the current
+# status alone, so it is resolved below as one lookup keyed by that status
+# rather than as a branch per status: a second branch is precisely where the
+# two would drift apart again.
 #
 # Every dashboard call is guarded exactly like fm_dashboard_link_and_advance:
 # a missing card, an unreachable dashboard, or any other failure only warns on
@@ -137,10 +144,9 @@ fm_dashboard_advance_after_landing() { # <dash> <card> <subject> <target-status>
 
   [ "$current_status" != complete ] || return 0
 
-  held_reason=
-  if [ "$current_status" = needs_attention ]; then
-    held_reason=$(printf '%s' "$shown" | jq -r '.needs_attention_reason // empty' 2>/dev/null) || held_reason=
-  fi
+  held_reason=$(printf '%s' "$shown" \
+    | jq -r '{needs_attention: .needs_attention_reason, waiting: .waiting_reason}[.status] // empty' 2>/dev/null) \
+    || held_reason=
   reason_args=()
   [ -z "$held_reason" ] || reason_args=(--reason "$held_reason")
 

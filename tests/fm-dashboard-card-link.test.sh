@@ -327,7 +327,7 @@ test_lib_link_self_reads_status_and_advances_not_started() {
   assert_grep 'show card-1 --json' "$FAKE_DASH_LOG" "the self-read sentinel did not trigger its own show call"
   assert_contains "$LIB_OUT" "dashboard: linked card card-1 to t1 (ref=home:t1, agent=t1, status not_started -> working)" \
     "the self-read path did not report the not_started -> working advance"
-  assert_grep 'status card-1 working' "$FAKE_DASH_LOG" "the advance did not call status working"
+  assert_grep_line 'status card-1 working' "$FAKE_DASH_LOG" "the advance did not call status working, or called it with arguments it was never given"
   pass "fm_dashboard_link_and_advance self-reads status and advances a not_started card"
 }
 
@@ -412,7 +412,7 @@ test_lib_advance_after_landing_advances_an_ordinary_status_with_no_reason() {
   run_lib fm_dashboard_advance_after_landing "$FAKE_DASH" card-9 t9 review "audit msg t9"
   assert_contains "$LIB_OUT" "dashboard: advanced card card-9 to review for t9" \
     "an ordinary landed status did not advance to the target"
-  assert_grep 'status card-9 review' "$FAKE_DASH_LOG" \
+  assert_grep_line 'status card-9 review' "$FAKE_DASH_LOG" \
     "an ordinary status advance carried a --reason it was never given"
   pass "fm_dashboard_advance_after_landing advances an ordinary status with no --reason"
 }
@@ -428,9 +428,25 @@ test_lib_advance_after_landing_carries_needs_attention_reason_forward() {
   run_lib fm_dashboard_advance_after_landing "$FAKE_DASH" card-10 t10 review "audit msg t10"
   assert_contains "$LIB_OUT" "dashboard: advanced card card-10 to review for t10" \
     "a needs_attention card whose work landed was not advanced to review"
-  assert_grep "--reason approve the new vendor" "$FAKE_DASH_LOG" \
+  assert_grep_line "status card-10 review --reason approve the new vendor" "$FAKE_DASH_LOG" \
     "the needs_attention reason was not carried forward as the advance call's own --reason"
   pass "fm_dashboard_advance_after_landing carries a needs_attention card's reason forward instead of discarding it"
+}
+
+# The exact same defect on the sibling status: store.py's set_status nulls
+# waiting_reason on any write whose target status is not waiting, by the same
+# unconditional rule that clears needs_attention_reason, and teardown's guard
+# (advance from anything but complete) reaches a waiting card just as readily.
+# Which of the two columns is live is the only thing that differs.
+test_lib_advance_after_landing_carries_waiting_reason_forward() {
+  reset_fake_dash
+  FAKE_DASH_SHOW_JSON='{"status":"waiting","waiting_reason":"the vendor to countersign"}'
+  run_lib fm_dashboard_advance_after_landing "$FAKE_DASH" card-13 t13 review "audit msg t13"
+  assert_contains "$LIB_OUT" "dashboard: advanced card card-13 to review for t13" \
+    "a waiting card whose work landed was not advanced to review"
+  assert_grep_line "status card-13 review --reason the vendor to countersign" "$FAKE_DASH_LOG" \
+    "the waiting reason was not carried forward as the advance call's own --reason"
+  pass "fm_dashboard_advance_after_landing carries a waiting card's reason forward instead of discarding it"
 }
 
 test_lib_advance_after_landing_show_failure_warns_and_audit_logs() {
@@ -795,6 +811,42 @@ test_teardown_preserves_needs_attention_reason_in_history_on_landing() {
   [ "$last_note" = "approve the \$400 renewal" ] \
     || fail "the needs_attention -> review transition's own history note did not carry the reason forward (got note=[$last_note]) - the reason was silently discarded instead of carried into the card's status history"
   pass "teardown preserves a needs_attention card's reason in its status history instead of silently nulling it"
+}
+
+# The same regression on the sibling status, end to end against a real server:
+# `waiting` is the other status with a reason column, store.py's set_status
+# nulls it by the identical unconditional rule, and teardown's advance guard
+# (anything but complete) reaches a waiting card exactly as it reaches a
+# needs_attention one. Asserted the same discriminating way: on the note of the
+# most recent status_history row, which is the waiting -> review transition
+# teardown itself just made, not on the reason text appearing somewhere in the
+# card's JSON (the earlier waiting-setting row carries that either way).
+test_teardown_preserves_waiting_reason_in_history_on_landing() {
+  local id case_dir card out shown
+  id=teardown-keepwait-b7
+  card=$(add_card "Waiting reason coverage" --status working)
+  "$DASH" status "$card" waiting --reason "the vendor to countersign the \$400 renewal" >/dev/null \
+    || fail "setup: could not move card to waiting"
+  case_dir=$(make_teardown_case teardown-keepwait "$id")
+  printf 'dashboard_card=%s\n' "$card" >> "$case_dir/state/$id.meta"
+  land_teardown_case "$case_dir" "$id"
+
+  out=$(run_teardown_case "$case_dir" "$id")
+  expect_code 0 "$?" "landed teardown should succeed" "$out"
+  assert_contains "$out" "dashboard: advanced card $card to review" "teardown did not advance a waiting card whose work had actually landed"
+  [ "$(card_status "$card")" = review ] \
+    || fail "a waiting card must still advance once its work has landed - freezing it is its own stale-card bug"
+  [ -z "$(card_field "$card" waiting_reason)" ] \
+    || fail "waiting_reason must clear once the card leaves waiting (store.py's own contract)"
+
+  shown=$("$DASH" show "$card" --json)
+  local last_to last_note
+  last_to=$(printf '%s' "$shown" | jq -r '.status_history[-1].to_status // empty')
+  last_note=$(printf '%s' "$shown" | jq -r '.status_history[-1].note // empty')
+  [ "$last_to" = review ] || fail "the most recent status history entry was not the waiting -> review transition (got to_status=$last_to)"
+  [ "$last_note" = "the vendor to countersign the \$400 renewal" ] \
+    || fail "the waiting -> review transition's own history note did not carry the reason forward (got note=[$last_note]) - the reason was silently discarded instead of carried into the card's status history"
+  pass "teardown preserves a waiting card's reason in its status history instead of silently nulling it"
 }
 
 test_teardown_with_unreachable_dashboard_still_succeeds_and_warns() {
@@ -2107,6 +2159,7 @@ test_lib_link_status_advance_failure_is_reported
 test_lib_advance_after_landing_skips_a_complete_card
 test_lib_advance_after_landing_advances_an_ordinary_status_with_no_reason
 test_lib_advance_after_landing_carries_needs_attention_reason_forward
+test_lib_advance_after_landing_carries_waiting_reason_forward
 test_lib_advance_after_landing_show_failure_warns_and_audit_logs
 test_lib_advance_after_landing_status_failure_warns_and_audit_logs
 test_spawn_links_card_and_advances_not_started_to_working
@@ -2120,6 +2173,7 @@ test_teardown_without_dashboard_card_meta_is_a_noop
 test_teardown_force_discard_never_advances_the_card
 test_teardown_never_downgrades_an_already_complete_card
 test_teardown_preserves_needs_attention_reason_in_history_on_landing
+test_teardown_preserves_waiting_reason_in_history_on_landing
 # Only the handoff cases move backlog items, which bin/fm-backlog-handoff.sh
 # delegates to tasks-axi; the spawn/teardown cases above need none of it, so
 # they keep running on a machine without it.
