@@ -645,7 +645,11 @@ main() {
     stop) cmd_server_stop ;;
     restart) cmd_server_stop --if-running || true; cmd_server_start ;;
     server-status) cmd_server_status ;;
-    ""|--help|-h|help) sed -n '2,64p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+    # Help is the header comment block itself: everything from line 2 (past the
+    # shebang) up to the first non-comment line. Derived, not a fixed range, so
+    # editing the header can never silently truncate --help.
+    ""|--help|-h|help)
+      awk 'NR == 1 { next } !/^#/ { exit } { print }' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
     *) die "unknown command '$cmd' - run: fm-dashboard.sh --help" ;;
   esac
 }
