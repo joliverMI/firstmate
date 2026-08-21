@@ -1,0 +1,32 @@
+### Fixture (real firstmate history)
+public template  kunchenguid/firstmate  main = 4f0a4f5 fix(bin): give every status board pointer a real link or an honest gap (#5)
+development fork joliverMI/firstmate    main = a28663a no-mistakes(review): repair gotmp fixture and teardown test selection
+fork-only commits ahead of the template: 12
+
+### BEFORE the fix (bin/ at b98e098)
+  fm-remote-secondmate-control.sh update ios   (as /updatefirstmate dispatches it to the host)
+  current: 4f0a4f544dc0051dfaa06436a7d5e8e6ea0b4689
+  home HEAD                 : 4f0a4f5 fix(bin): give every status board pointer a real link or an honest gap (#5)
+  bin/fm-dashboard.sh       : ABSENT
+  fm-spawn.sh --card        : ABSENT -> error: unknown harness '--card='; pass a raw launch command to use an unverified adapter
+
+### AFTER the fix  (bin/ at a28663a)
+  fm-remote-secondmate-control.sh update ios   (as /updatefirstmate dispatches it to the host)
+  synced: a28663aa13d756fb7433f4cb130dc5c4b321ef04
+  home HEAD                 : a28663a no-mistakes(review): repair gotmp fixture and teardown test selection
+  bin/fm-dashboard.sh       : PRESENT -> fm-dashboard.sh - the ONLY way an agent touches the Admiral's Fleet Dashboard.
+  fm-spawn.sh --card        : PRESENT -> error: --card requires a non-empty value
+
+### The update line the captain actually sees (bin/fm-update.sh against the same code root)
+  before fix: firstmate: already current
+  after  fix: firstmate: updated 4f0a4f5..a28663a (instructions changed: AGENTS.md, bin, .agents/skills)
+
+### No upstream configured: keeps origin/main and says so
+  firstmate: no upstream configured for main; using origin/main
+  firstmate: already current
+
+### Fast-forward-only safety is unchanged
+  diverged code root -> firstmate: skipped: diverged from fork/main
+  diverged code root -> unlanded commit still at HEAD, nothing forced or discarded
+  dirty code root    -> firstmate: skipped: dirty working tree
+  dirty code root    -> uncommitted edit still in the worktree, nothing stashed
