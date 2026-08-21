@@ -23,6 +23,14 @@ set -u
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-pool-collision)
 
+# The holder record's own endpoint liveness now decides whether a collision
+# refuses, so the fake tmux also answers the two reads fm_backend_tmux_agent_state
+# makes about that holder: FM_FAKE_WINDOWS is the session inventory (a holder
+# window that is absent from a successful inventory reads `missing`, i.e. a
+# confirmed-dead endpoint) and FM_FAKE_PANE_COMMAND is the pane's foreground
+# command (a harness name reads `alive`, anything unattributable reads
+# `ambiguous`, which the shared primitive folds into `unknown`).
+#
 # make_collision_fakebin <dir> <path>: a fake tmux whose `#{pane_current_path}`
 # always answers <path> - standing in for a pool provider that has already
 # settled into some worktree by the time fm-spawn.sh starts polling, regardless
@@ -38,10 +46,11 @@ make_collision_fakebin() {
 set -u
 case "\$*" in
   *"#{pane_current_path}"*) printf '%s\n' "\${FM_FAKE_PANE_PATH:-$path}"; exit 0 ;;
+  *"#{pane_current_command}"*) printf '%s\n' "\${FM_FAKE_PANE_COMMAND:-firstmate}"; exit 0 ;;
 esac
 case "\${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
-  list-windows) exit 0 ;;
+  list-windows) [ -z "\${FM_FAKE_WINDOWS:-}" ] || printf '%s\n' "\${FM_FAKE_WINDOWS}"; exit 0 ;;
   has-session|new-session|new-window|kill-window) exit 0 ;;
   send-keys) exit 0 ;;
 esac
@@ -59,6 +68,8 @@ run_collision_spawn() {
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" \
     FM_FAKE_PANE_PATH="$wt_target" \
+    FM_FAKE_WINDOWS="${FM_FAKE_WINDOWS:-}" \
+    FM_FAKE_PANE_COMMAND="${FM_FAKE_PANE_COMMAND:-}" \
     PATH="$fakebin:$PATH" \
     "$SPAWN" "$id" "$proj" --mode no-mistakes --yolo off 2>&1
 }
@@ -91,12 +102,133 @@ test_worktree_already_owned_by_another_task_is_refused() {
   mkdir -p "$home/data/$id"
   printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
 
-  out=$(run_collision_spawn "$home" "$proj" "$fakebin" "$wt" "$id")
+  out=$(FM_FAKE_WINDOWS="fm-holder-task" FM_FAKE_PANE_COMMAND="claude" \
+    run_collision_spawn "$home" "$proj" "$fakebin" "$wt" "$id")
   status=$?
   expect_code 1 "$status" "spawn must refuse a worktree already owned by another tracked task" "$out"
   assert_contains "$out" "holder-task" "refusal did not name the task that already owns the worktree"
+  assert_contains "$out" "alive" "refusal did not report the holder's endpoint state"
   assert_absent "$home/state/$id.meta" "spawn must not record the colliding worktree for the new task"
-  pass "a worktree already recorded for another tracked task is refused, not silently reused"
+  pass "a worktree already recorded for another live task is refused, not silently reused"
+}
+
+# The liveness gate must only ever open on a CONFIRMED-dead holder. Every
+# ambiguous answer - a pane whose foreground process cannot be attributed here,
+# and a backend with no recovery classifier below - stays a refusal, so a
+# probe that cannot make up its mind never licenses two tasks onto one copy.
+test_collision_with_ambiguous_holder_liveness_still_refuses() {
+  local case_dir home proj wt fakebin out status
+  case_dir="$TMP_ROOT/ambiguous-holder"
+  home="$case_dir/home"
+  proj="$case_dir/project"
+  wt="$case_dir/wt"
+  fm_git_worktree "$proj" "$wt" "wt-ambiguous"
+  fakebin=$(make_collision_fakebin "$case_dir/fake" "$wt")
+  mkdir -p "$home/data" "$home/projects" "$home/state" "$home/config"
+  printf 'codex\n' > "$home/config/crew-harness"
+  touch "$home/state/.last-watcher-beat"
+
+  fm_write_meta "$home/state/ambiguous-holder-task.meta" \
+    "window=firstmate:fm-ambiguous-holder-task" \
+    "worktree=$wt" \
+    "project=$proj" \
+    "harness=codex" \
+    "kind=ship" \
+    "mode=no-mistakes" \
+    "yolo=off"
+
+  local id=ambiguous-new-z5
+  mkdir -p "$home/data/$id"
+  printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+
+  # The holder's window is present, but its foreground command is neither a
+  # harness nor an idle shell: `ambiguous`, which folds into `unknown`.
+  out=$(FM_FAKE_WINDOWS="fm-ambiguous-holder-task" FM_FAKE_PANE_COMMAND="pager" \
+    run_collision_spawn "$home" "$proj" "$fakebin" "$wt" "$id")
+  status=$?
+  expect_code 1 "$status" "an ambiguous holder-liveness answer must still refuse" "$out"
+  assert_contains "$out" "ambiguous-holder-task" "refusal did not name the ambiguous holder"
+  assert_contains "$out" "unknown" "an ambiguous holder answer must be reported as unknown, not dead"
+  assert_absent "$home/state/$id.meta" "an ambiguous holder must not let the spawn record the colliding worktree"
+  pass "an ambiguous holder-liveness answer refuses the collision instead of licensing reuse"
+}
+
+# A holder recorded against a backend with no recovery classifier (and the same
+# for an unreadable record or a remote endpoint never probed locally) reads
+# `unknown` from the shared primitive, which must refuse exactly like `alive`.
+test_collision_with_unprobeable_holder_backend_still_refuses() {
+  local case_dir home proj wt fakebin out status
+  case_dir="$TMP_ROOT/unprobeable-holder"
+  home="$case_dir/home"
+  proj="$case_dir/project"
+  wt="$case_dir/wt"
+  fm_git_worktree "$proj" "$wt" "wt-unprobeable"
+  fakebin=$(make_collision_fakebin "$case_dir/fake" "$wt")
+  mkdir -p "$home/data" "$home/projects" "$home/state" "$home/config"
+  printf 'codex\n' > "$home/config/crew-harness"
+  touch "$home/state/.last-watcher-beat"
+
+  fm_write_meta "$home/state/zellij-holder-task.meta" \
+    "window=firstmate:1" \
+    "worktree=$wt" \
+    "project=$proj" \
+    "harness=codex" \
+    "kind=ship" \
+    "mode=no-mistakes" \
+    "yolo=off" \
+    "backend=zellij"
+
+  local id=unprobeable-new-z6
+  mkdir -p "$home/data/$id"
+  printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+
+  # Even an inventory that omits the holder cannot make a zellij record dead:
+  # its backend has no recovery classifier, so the answer stays unknown.
+  out=$(FM_FAKE_WINDOWS="fm-unrelated-window" FM_FAKE_PANE_COMMAND="bash" \
+    run_collision_spawn "$home" "$proj" "$fakebin" "$wt" "$id")
+  status=$?
+  expect_code 1 "$status" "an unprobeable holder backend must still refuse" "$out"
+  assert_contains "$out" "zellij-holder-task" "refusal did not name the unprobeable holder"
+  assert_absent "$home/state/$id.meta" "an unprobeable holder must not let the spawn record the colliding worktree"
+  pass "a holder whose backend cannot be probed refuses the collision instead of licensing reuse"
+}
+
+# The behavior change: a holder record whose endpoint is CONFIRMED gone (a
+# successful session inventory that omits its window) no longer blocks the
+# slot, so a worktree whose owner has crashed or whose teardown stalled after
+# the endpoint went away is handed out again instead of being poisoned forever.
+test_collision_with_confirmed_dead_holder_is_reused() {
+  local case_dir home proj wt fakebin out status
+  case_dir="$TMP_ROOT/dead-holder"
+  home="$case_dir/home"
+  proj="$case_dir/project"
+  wt="$case_dir/wt"
+  fm_git_worktree "$proj" "$wt" "wt-dead-holder"
+  fakebin=$(make_collision_fakebin "$case_dir/fake" "$wt")
+  mkdir -p "$home/data" "$home/projects" "$home/state" "$home/config"
+  printf 'codex\n' > "$home/config/crew-harness"
+  touch "$home/state/.last-watcher-beat"
+
+  fm_write_meta "$home/state/dead-holder-task.meta" \
+    "window=firstmate:fm-dead-holder-task" \
+    "worktree=$wt" \
+    "project=$proj" \
+    "harness=codex" \
+    "kind=ship" \
+    "mode=no-mistakes" \
+    "yolo=off"
+
+  local id=dead-holder-new-z7
+  mkdir -p "$home/data/$id"
+  printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+
+  out=$(FM_FAKE_WINDOWS="fm-some-other-task" FM_FAKE_PANE_COMMAND="bash" \
+    run_collision_spawn "$home" "$proj" "$fakebin" "$wt" "$id")
+  status=$?
+  expect_code 0 "$status" "a confirmed-dead holder must not block the worktree" "$out"
+  assert_grep "worktree=$wt" "$home/state/$id.meta" \
+    "meta did not record the worktree reclaimed from a confirmed-dead holder"
+  pass "a worktree whose holder's endpoint is confirmed gone is reused rather than refused"
 }
 
 # An unrelated task tracked in the same home, recorded against its OWN
@@ -178,6 +310,9 @@ test_worktree_freed_by_teardown_can_be_reused() {
 }
 
 test_worktree_already_owned_by_another_task_is_refused
+test_collision_with_ambiguous_holder_liveness_still_refuses
+test_collision_with_unprobeable_holder_backend_still_refuses
+test_collision_with_confirmed_dead_holder_is_reused
 test_unrelated_task_does_not_block_a_distinct_worktree
 test_worktree_freed_by_teardown_can_be_reused
 
