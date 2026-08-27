@@ -137,6 +137,14 @@ resolve_project_arg() {
 # task. Compared on fully-resolved physical paths so a symlinked or relative
 # argument still matches. Only this case resolves its remote through
 # resolve_update_base; see the header.
+# Deliberately narrower than bin/fm-spawn.sh and bin/fm-review-diff.sh, which
+# resolve through resolve_update_base for EVERY checkout including a projects/*
+# clone. That is not an inconsistency: those two provision and diff a single task
+# worktree, where the only defensible base is whatever that specific checkout's
+# branch is configured to track, whereas this script is periodic housekeeping
+# across the whole fleet, where a project's remotes are the captain's to configure
+# and not fleet-sync's to reinterpret. bin/fm-dev-remote-lib.sh's header owns the
+# full statement of the asymmetry.
 targets_firstmate_checkout() {
   local proj_real root_real
   proj_real=$(cd "$PROJ" 2>/dev/null && pwd -P) || return 1
@@ -382,8 +390,11 @@ sync_project() {
   # no-op there today; it protects the mixed-tracking shape a fork transition or a
   # remote rename produces. Only the extra prune reach is at stake here - BASE below
   # still compares against the resolved development remote alone - so a failure is
-  # reported and pruning simply stays as conservative as before.
-  if [ "$SYNC_REMOTE" != origin ] && git -C "$PROJ" remote get-url origin >/dev/null 2>&1; then
+  # reported and pruning simply stays as conservative as before. Gated on
+  # FM_FLEET_PRUNE for that same reason: with pruning off nothing reads these refs,
+  # so the fetch would be a pure round trip.
+  if [ "${FM_FLEET_PRUNE:-1}" != "0" ] && [ "$SYNC_REMOTE" != origin ] \
+      && git -C "$PROJ" remote get-url origin >/dev/null 2>&1; then
     if ! fetch_with_packed_refs_lock_guard origin; then
       reason="origin prune fetch failed"
       if [ -n "$FETCH_OUTPUT" ]; then

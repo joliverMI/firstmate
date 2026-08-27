@@ -15,6 +15,19 @@
 # origin: refs/pull/* and the branch PRs merge into exist only there, because
 # bin/fm-pr-destination-guard.sh pins every PR this fleet opens to origin.
 # bin/fm-teardown.sh's header owns that pin's safety rationale.
+#
+# One asymmetry among the callers above is intentional and worth naming, because
+# it reads like an inconsistency otherwise. bin/fm-spawn.sh (pooled-worktree
+# provisioning) and bin/fm-review-diff.sh resolve through here for EVERY checkout,
+# including an ordinary projects/* clone: each provisions or diffs a single task
+# worktree, and the only base that can be right for one specific checkout is the
+# lineage that checkout's own branch is configured to track. bin/fm-fleet-sync.sh
+# resolves through here ONLY when its target is the firstmate checkout itself and
+# stays on origin for project clones: it is periodic housekeeping across the whole
+# fleet, where a project's remotes are the captain's to configure rather than
+# fleet-sync's to reinterpret, and the firstmate-checkout case is a narrow
+# exception carved out for a proven self-update bug. Different mechanisms, different
+# reasons - not two rules disagreeing about the same clone.
 # Usage: . bin/fm-dev-remote-lib.sh   (pure git-config reads; no other setup, no network)
 
 # Resolve which remote and ref a checkout's <default> branch should be updated
