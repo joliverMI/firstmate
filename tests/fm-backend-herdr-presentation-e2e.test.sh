@@ -268,7 +268,13 @@ LAB_READY=0
 RECORDED_WORKTREES=""
 LOCK_CONTENTION_OWNER_PID=
 cleanup_all() {
-  local wt
+  local wt hold_pid
+  while IFS=' ' read -r hold_pid _; do
+    [ -n "$hold_pid" ] || continue
+    kill "$hold_pid" 2>/dev/null || true
+  done <<EOF
+${POOL_HOLDS:-}
+EOF
   if [ -n "$LOCK_CONTENTION_OWNER_PID" ]; then
     kill "$LOCK_CONTENTION_OWNER_PID" 2>/dev/null || true
     wait "$LOCK_CONTENTION_OWNER_PID" 2>/dev/null || true
@@ -371,12 +377,55 @@ remember_meta_worktree() {  # <meta>
   printf '%s' "$wt"
 }
 
+# Treehouse hands a pooled copy back out as soon as no process is left inside
+# it. Stopping the lab session kills every task pane's shell at once, so each
+# restart below drops the pool-side hold on the copy of every task this suite
+# still tracks, while their records keep naming those copies - and fm-spawn.sh
+# refuses a copy another tracked task's record still claims
+# (bin/fm-spawn.sh, validate_spawn_worktree), so the first spawn after a restart
+# would be handed the anchor's own copy and refuse. These holders re-assert the
+# premise this suite's own fixtures depend on - a task it still tracks still
+# owns its copy - so the pool hands the restarted spawns a genuinely free slot
+# instead. `treehouse return --force` terminates lingering processes, so every
+# return this suite already makes also retires the matching holder.
+POOL_HOLDS=
+hold_pooled_worktree() {  # <worktree>
+  local wt=$1 pid path
+  while IFS=' ' read -r pid path; do
+    [ -n "$pid" ] || continue
+    [ "$path" = "$wt" ] || continue
+    kill -0 "$pid" 2>/dev/null && return 0
+  done <<EOF
+$POOL_HOLDS
+EOF
+  # Outlives the 20 minute cap on the whole real-Herdr family step, so a holder
+  # can never expire mid-run and let a copy silently become allocatable again.
+  ( cd "$wt" && exec sleep 1800 ) >/dev/null 2>&1 &
+  POOL_HOLDS="${POOL_HOLDS}$! $wt"$'\n'
+}
+
+hold_tracked_worktrees() {
+  local meta wt
+  for meta in "$HOME_DIR"/state/*.meta "$SECOND_HOME_A"/state/*.meta "$SECOND_HOME_B"/state/*.meta; do
+    [ -e "$meta" ] || continue
+    wt=$(grep '^worktree=' "$meta" | cut -d= -f2-)
+    [ -n "$wt" ] || continue
+    [ -d "$wt" ] || continue
+    hold_pooled_worktree "$wt"
+  done
+}
+
 make_project() {  # <dir>
   local dir=$1
   mkdir -p "$dir"
   git -C "$dir" init -q
   printf '# Herdr projection E2E fixture\n' > "$dir/README.md"
-  git -C "$dir" add README.md
+  # This suite keeps a dozen-plus tasks tracked at once and holds every one of
+  # their pooled copies across the session restarts below, which runs past
+  # treehouse's default ceiling of 16 copies per project. The value is a
+  # ceiling, not a preallocation: the pool still only grows on demand.
+  printf 'max_trees = 40\n' > "$dir/treehouse.toml"
+  git -C "$dir" add README.md treehouse.toml
   git -C "$dir" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm initial
   git clone --quiet --bare "$dir" "$dir.origin.git"
   git -C "$dir" remote add origin "file://$dir.origin.git"
@@ -1171,6 +1220,7 @@ for RESTART_ID in fm-hibit-resume-r1 wheelhouse-healing-r1; do
   PATH="$HERDR_ORIGINAL_PATH" \
     "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
     || fail "could not reprovision the isolated session for $RESTART_ID validation"
+  hold_tracked_worktrees
   lab pane get "$OLD_RESTART_PANE" >/dev/null 2>&1 \
     || fail "$RESTART_ID restart did not preserve the projected pane structurally"
   if lab agent get "$OLD_RESTART_PANE" >/dev/null 2>&1; then
@@ -1200,6 +1250,7 @@ for RESTART_ID in fm-hibit-resume-r1 wheelhouse-healing-r1; do
       || fail "could not stop the isolated session for idempotent reclaim"
     PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
       || fail "could not reprovision the isolated session for idempotent reclaim"
+    hold_tracked_worktrees
     PRIOR_RESTART_WT=$NEW_RESTART_WT
     PRIOR_RESTART_PANE=$NEW_RESTART_PANE
     spawn_task "$RESTART_ID" "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/$RESTART_ID-idempotent.out" 2> "$TMP_ROOT/$RESTART_ID-idempotent.err" \
@@ -1243,6 +1294,7 @@ PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" stop "$HERDR_LAB_SESSION" >/dev/
   || fail "could not stop the isolated session for cross-home restart"
 PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
   || fail "could not reprovision the isolated session for cross-home restart"
+hold_tracked_worktrees
 spawn_task "$CROSS_RESTART_ID" "$SECOND_HOME_A" "$PROJECT_DIR" > "$TMP_ROOT/cross-restart-resume.out" 2> "$TMP_ROOT/cross-restart-resume.err" \
   || fail "cross-home same-identity reclaim failed: $(cat "$TMP_ROOT/cross-restart-resume.err")"
 CROSS_NEW_WT=$(remember_meta_worktree "$CROSS_RESTART_META")
@@ -1281,6 +1333,7 @@ PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" stop "$HERDR_LAB_SESSION" >/dev/
   || fail "could not stop the isolated session for concurrent recovery"
 PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
   || fail "could not reprovision the isolated session for concurrent recovery"
+hold_tracked_worktrees
 CONCURRENT_RECOVERY_FOCUS=$(focus_snapshot)
 spawn_task "$PRIMARY_WAVE_ID" "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/primary-wave-resume.out" 2> "$TMP_ROOT/primary-wave-resume.err" &
 PRIMARY_WAVE_PID=$!

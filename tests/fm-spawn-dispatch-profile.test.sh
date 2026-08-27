@@ -30,14 +30,33 @@ SH
   chmod +x "$fakebin/$tool"
 }
 
-make_spawn_fakebin() {
-  local dir=$1 fakebin
-  fakebin=$(fm_fakebin "$dir")
-  cat > "$fakebin/tmux" <<'SH'
+# write_spawn_fake_tmux <fakebin> <behavior-file>: the one fake tmux every case
+# in this suite runs. Everything that is the same for a single spawn and for a
+# batch lives here; the two behaviors that genuinely differ - what `new-window`
+# echoes and what `#{pane_current_path}` answers - come from <behavior-file>,
+# which each builder writes with its own fm_fake_new_window/fm_fake_pane_path.
+write_spawn_fake_tmux() {  # <fakebin> <behavior-file>
+  local fakebin=$1 behavior=$2
+  cat > "$fakebin/tmux" <<SH
 #!/usr/bin/env bash
 set -u
+. '$behavior'
+SH
+  cat >> "$fakebin/tmux" <<'SH'
+case "${1:-}" in
+  new-window)
+    # Real tmux answers `new-window -dP -F '#{window_id}'` with the new
+    # window's id, which fm_backend_tmux_create_task captures as the
+    # rename-safe handle spawn-time typing then addresses. A stub that
+    # printed nothing left that handle empty, so spawn silently fell back
+    # to the name form for reads the id exists to make rename-proof.
+    for fm_fake_arg in "$@"; do
+      case "$fm_fake_arg" in -*P*) fm_fake_new_window; break ;; esac
+    done
+    exit 0 ;;
+esac
 case "$*" in
-  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
+  *"#{pane_current_path}"*) fm_fake_pane_path; exit 0 ;;
 esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
@@ -71,16 +90,6 @@ case "${1:-}" in
       printf '@%s %s\n' "$fm_fake_n" "$fm_fake_win"
     done
     exit 0 ;;
-  new-window)
-    # Real tmux answers `new-window -dP -F '#{window_id}'` with the new
-    # window's id, which fm_backend_tmux_create_task captures as the
-    # rename-safe handle spawn-time typing then addresses. A stub that
-    # printed nothing left that handle empty, so spawn silently fell back
-    # to the name form for reads the id exists to make rename-proof.
-    for fm_fake_arg in "$@"; do
-      case "$fm_fake_arg" in -*P*) printf '@1\n'; break ;; esac
-    done
-    exit 0 ;;
   has-session|new-session|kill-window) exit 0 ;;
   send-keys)
     if [ -n "${FM_FAKE_LAUNCH_LOG:-}" ]; then
@@ -98,6 +107,10 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+}
+
+write_spawn_fake_stubs() {  # <fakebin>
+  local fakebin=$1
   fm_fake_exit0 "$fakebin" treehouse
   cat > "$fakebin/timeout" <<'SH'
 #!/usr/bin/env bash
@@ -115,6 +128,52 @@ SH
   chmod +x "$fakebin/timeout" "$fakebin/cursor-agent"
   make_spawn_pi_probe "$fakebin" pi
   make_spawn_pi_probe "$fakebin" pi-signed
+}
+
+make_spawn_fakebin() {
+  local dir=$1 fakebin behavior
+  fakebin=$(fm_fakebin "$dir")
+  behavior="$dir/fake-tmux-behavior.sh"
+  cat > "$behavior" <<'SH'
+fm_fake_new_window() { printf '@1\n'; }
+fm_fake_pane_path() { printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; }
+SH
+  write_spawn_fake_tmux "$fakebin" "$behavior"
+  write_spawn_fake_stubs "$fakebin"
+  printf '%s\n' "$fakebin"
+}
+
+# make_batch_fakebin <dir> <wt1> <wt2>: make_spawn_fakebin with the pool
+# behavior a real pool actually has - it never hands the same worktree to two
+# tasks in one batch (verified empirically against a live treehouse pool:
+# concurrent gets always resolve to distinct worktrees or a clean refusal, never
+# a shared one - tests/fm-spawn-pool-worktree-collision.test.sh guards
+# fm-spawn.sh's own side of that contract). Each created window gets its own
+# counted id and `#{pane_current_path}` answers <wt1> for the first window and
+# <wt2> for every window after, so a batch of two tasks settles into two
+# distinct worktrees exactly as the real pool would.
+make_batch_fakebin() {
+  local dir=$1 wt1=$2 wt2=$3 fakebin idxfile
+  fakebin=$(make_spawn_fakebin "$dir")
+  idxfile="$dir/window-index"
+  printf '0\n' > "$idxfile"
+  cat > "$dir/fake-tmux-behavior.sh" <<SH
+IDXFILE='$idxfile'
+WT1='$wt1'
+WT2='$wt2'
+fm_fake_new_window() {
+  local n
+  n=\$(cat "\$IDXFILE")
+  n=\$((n + 1))
+  printf '%s\n' "\$n" > "\$IDXFILE"
+  printf '@%s\n' "\$n"
+}
+fm_fake_pane_path() {
+  local n
+  n=\$(cat "\$IDXFILE")
+  if [ "\$n" -le 1 ]; then printf '%s\n' "\$WT1"; else printf '%s\n' "\$WT2"; fi
+}
+SH
   printf '%s\n' "$fakebin"
 }
 
@@ -280,6 +339,13 @@ test_home_defaults_preserve_absolute_or_resolve_relative_paths() {
     "relative FM_HOME leaked into Pi's default cross-process extension path"
   assert_contains "$launch" "< '$home_real/data/$relative_id/brief.md'" \
     "relative FM_HOME leaked into the default cross-process brief path"
+
+  # $relative_id's own record still claims $WT_DIR; fm-spawn.sh now refuses to
+  # hand that same worktree to a second task while another task's meta still
+  # owns it (tests/fm-spawn-pool-worktree-collision.test.sh). A real
+  # sequential reuse only happens after fm-teardown.sh retires that record, so
+  # mirror that here before reusing the fixture's worktree for a second spawn.
+  rm -f "$home_real/state/$relative_id.meta" "$home_real/state/$relative_id.turn-ended"
 
   linked_home="$CASE_DIR/home-link"
   ln -s "$HOME_DIR" "$linked_home"
@@ -780,12 +846,19 @@ test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity() {
 }
 
 test_batch_forwards_shared_profile_flags() {
-  local rec id1 id2 out status
+  local rec id1 id2 out status wt2
   id1=profile-batch-a-z9
   id2=profile-batch-b-z10
   rec=$(make_spawn_case profile-batch claude "$id1" "$id2")
   read_case_record "$rec"
   enable_dispatch_profile "$HOME_DIR"
+
+  # Two tasks in one batch need two distinct worktrees, exactly as a real pool
+  # would hand out - swap in a fake that gives each window its own (see
+  # make_batch_fakebin).
+  wt2="$CASE_DIR/wt2"
+  git -C "$PROJ_DIR" worktree add --quiet -b wt-profile-batch-2 "$wt2"
+  FAKEBIN_DIR=$(make_batch_fakebin "$CASE_DIR/fake-batch" "$WT_DIR" "$wt2")
 
   out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
     "$id1=$PROJ_DIR" "$id2=$PROJ_DIR" --harness codex --model gpt-5 --effort high)
