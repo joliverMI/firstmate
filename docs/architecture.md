@@ -370,8 +370,8 @@ Invoked in a primary home, `/stow` then cascades the same sweep to every registe
 
 The locked session-start deferred network stage, PR-based teardown, and merged-PR wake handling refresh remote-backed project clones when the clone is safe to move.
 Wake-time refreshes can target a single clone by project name, so the primary home also catches up when a secondmate reports a merge from its own home.
-Clean default-branch clones fast-forward to `origin/<default>`, and a clean detached HEAD that holds no unique commits is re-attached to the default branch before the same fast-forward path runs.
-Project clones are fetched from and compared against `origin` by design, since firstmate clones each project from its origin and a project's own remotes are the captain's to configure.
+Clean default-branch clones fast-forward to their resolved base, and a clean detached HEAD that holds no unique commits is re-attached to the default branch before the same fast-forward path runs.
+For a project clone that base is always `origin/<default>` by design, since firstmate clones each project from its origin and a project's own remotes are the captain's to configure.
 The one exception is a refresh whose target is the firstmate checkout itself, which the no-argument sweep never produces and teardown does when it passes a firstmate-repo task's recorded project: that run resolves its remote and base through the same configured-upstream logic as the self-update path below, so a checkout that develops on a fork is not compared against the template its `origin` still names.
 Dirty clones, non-default branches, detached HEADs with unique commits, diverged defaults, and default branches checked out in another worktree are reported as `STUCK:` with their behind count and left untouched.
 Fetches blocked by an orphaned `.git/packed-refs.lock` use bounded retries and remove the lock only when the shared staleness proof can prove it abandoned; [configuration.md](configuration.md#toolchain) owns the recovery details and tuning knobs.
