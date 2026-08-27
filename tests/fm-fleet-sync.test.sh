@@ -217,23 +217,43 @@ add_fork_remote() {
   printf '%s\n' "$sha"
 }
 
-# build_firstmate_checkout <home>: a checkout of "firstmate itself" - origin is
-# the public template it was forked from, and its own main tracks a separate
-# fork. Echoes the checkout path; the caller passes it as BOTH FM_ROOT_OVERRIDE
-# and the single-project argument, which is the shape fm-teardown.sh produces for
-# a firstmate-repo task.
+# build_firstmate_checkout <home> <name>: a checkout of "firstmate itself" - origin
+# is the public template it was forked from, and its own main tracks a separate
+# fork. <name> keeps each test's checkout distinct within the shared home. Echoes
+# the checkout path; the caller passes it as BOTH FM_ROOT_OVERRIDE and the
+# single-project argument, which is the shape fm-teardown.sh produces for a
+# firstmate-repo task.
 build_firstmate_checkout() {
-  local home=$1 root template_abs
-  root="$home/firstmate"
+  local home=$1 name=$2 root template_abs
+  root="$home/$name"
   mkdir -p "$home/remotes"
   git init -q "$root"
   git -C "$root" symbolic-ref HEAD refs/heads/main
   commit_file "$root" file.txt v0 C0
-  git clone --quiet --bare "$root" "$home/remotes/template.git"
-  template_abs=$(cd "$home/remotes/template.git" && pwd)
+  git clone --quiet --bare "$root" "$home/remotes/$name-template.git"
+  template_abs=$(cd "$home/remotes/$name-template.git" && pwd)
   git -C "$root" remote add origin "file://$template_abs"
   git -C "$root" fetch -q origin
   printf '%s\n' "$root"
+}
+
+# add_gone_origin_branch <home> <name> <branch>: give <name>'s checkout a local
+# <branch> tracking an origin branch that then disappears from origin - a merged
+# PR's leftover, since this fleet pins every PR to origin. The branch is removed
+# inside the origin bare repo rather than by `push --delete` from the checkout,
+# because pushing a deletion also drops the local remote-tracking ref; deleting it
+# server-side leaves refs/remotes/origin/<branch> stale exactly as a merge landed
+# elsewhere does, so only a fetch of ORIGIN with --prune can make the local branch
+# read "[gone]" and become prunable.
+add_gone_origin_branch() {
+  local home=$1 name=$2 branch=$3 root
+  root="$home/$name"
+  git -C "$root" push -q origin "main:refs/heads/$branch"
+  git -C "$root" fetch -q origin
+  git -C "$root" branch -q --track "$branch" "origin/$branch"
+  git -C "$home/remotes/$name-template.git" update-ref -d "refs/heads/$branch"
+  git -C "$root" rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
+    || fail "fixture: expected a stale refs/remotes/origin/$branch to survive"
 }
 
 # run_sync_self <root> <home>: run fleet-sync with <root> as this home's firstmate
@@ -253,7 +273,7 @@ run_sync_self() {
 test_firstmate_checkout_follows_configured_fork() {
   local home root fork_sha out
   home=$(new_home)
-  root=$(build_firstmate_checkout "$home")
+  root=$(build_firstmate_checkout "$home" firstmate)
   fork_sha=$(add_fork_remote "$home" "$root" firstmate)
 
   out=$(run_sync_self "$root" "$home")
@@ -283,6 +303,25 @@ test_project_clone_still_follows_origin_not_upstream() {
   [ "$(head_sha "$clone")" != "$fork_sha" ] \
     || fail "project clone must not follow a configured fork upstream"
   pass "an ordinary project clone still syncs from origin"
+}
+
+# Pruning is decided per local branch from its own upstream, so following the fork
+# for the fast-forward base must not narrow which remotes get pruned: a branch left
+# over from a merged PR tracks ORIGIN (every PR in this fleet is pinned there) even
+# when the checkout's default branch develops on a fork, and it must still be pruned.
+test_firstmate_checkout_prunes_origin_tracked_gone_branch() {
+  local home root out
+  home=$(new_home)
+  root=$(build_firstmate_checkout "$home" firstmate-prune)
+  add_fork_remote "$home" "$root" firstmate-prune >/dev/null
+  add_gone_origin_branch "$home" firstmate-prune fm/merged
+
+  out=$(run_sync_self "$root" "$home")
+
+  assert_contains "$out" "pruned fm/merged" "origin-tracked merged branch is pruned on a fork-following checkout"
+  [ -z "$(git -C "$root" branch --list fm/merged)" ] \
+    || fail "expected local fm/merged to be deleted, it still exists"
+  pass "a fork-following firstmate checkout still prunes origin-tracked merged branches"
 }
 
 test_detached_clean_ancestor_recovers() {
@@ -693,6 +732,7 @@ test_non_signature_fetch_failure_is_not_retried() {
 }
 
 test_firstmate_checkout_follows_configured_fork
+test_firstmate_checkout_prunes_origin_tracked_gone_branch
 test_project_clone_still_follows_origin_not_upstream
 test_detached_clean_ancestor_recovers
 test_detached_unique_commit_is_stuck_untouched

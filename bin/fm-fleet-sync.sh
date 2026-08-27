@@ -21,7 +21,13 @@
 # and such a checkout can develop on a fork while origin still points at the
 # template it was forked from. That case resolves the remote and ref to fetch and
 # compare through the same configured-upstream logic as this checkout's own
-# self-update path (resolve_update_base, bin/fm-dev-remote-lib.sh).
+# self-update path (resolve_update_base, bin/fm-dev-remote-lib.sh). When that
+# resolves to a remote other than origin, origin is ALSO fetched with --prune (and
+# only for that reason - the fast-forward base stays the resolved development ref):
+# pruning is decided per local branch from its own upstream, and this fleet pins
+# every PR to origin, so origin's tracking refs must stay fresh or merged
+# origin-tracked branches would never read "[gone]". Where origin already is the
+# development remote - as in this home today - that second fetch is skipped.
 # Pruning never deletes the checked-out branch or a branch that still has a
 # worktree, so it cannot discard unlanded work; set FM_FLEET_PRUNE=0 to disable it.
 # When the fetch fails on an orphaned .git/packed-refs.lock (left by a ref rewrite
@@ -179,9 +185,10 @@ packed_refs_lock_path() {
   esac
 }
 
-# Run `git -C "$PROJ" fetch "$SYNC_REMOTE" --prune --quiet`, tolerating an orphaned
-# packed-refs.lock left by a killed ref rewrite. Sets FETCH_OUTPUT to the git
-# command's combined output and returns its exit status. On the packed-refs.lock
+# Run `git -C "$PROJ" fetch <remote> --prune --quiet` (remote defaults to
+# $SYNC_REMOTE), tolerating an orphaned packed-refs.lock left by a killed ref
+# rewrite. Sets FETCH_OUTPUT to the git command's combined output and returns its
+# exit status. On the packed-refs.lock
 # signature ONLY: retry up to FLEET_SYNC_PACKED_REFS_LOCK_RETRIES times (a
 # transient lock self-clears as the owning process exits), then - only if the lock
 # is provably stale per fm-lock-lib.sh (still present, mtime age past the
@@ -191,8 +198,8 @@ packed_refs_lock_path() {
 # successful recovery also prints one "$label: recovered: ..." summary to stdout so
 # a session-start refresh (which discards fleet-sync stderr) still surfaces it.
 fetch_with_packed_refs_lock_guard() {
-  local rc attempt=0 lock lock_desc
-  FETCH_OUTPUT=$(git -C "$PROJ" fetch "$SYNC_REMOTE" --prune --quiet 2>&1); rc=$?
+  local remote=${1:-$SYNC_REMOTE} rc attempt=0 lock lock_desc
+  FETCH_OUTPUT=$(git -C "$PROJ" fetch "$remote" --prune --quiet 2>&1); rc=$?
   [ "$rc" -eq 0 ] && return 0
   is_packed_refs_lock_error "$FETCH_OUTPUT" || return "$rc"
 
@@ -202,7 +209,7 @@ fetch_with_packed_refs_lock_guard() {
     attempt=$(( attempt + 1 ))
     echo "$label: fetch blocked by packed-refs lock ($lock_desc); waiting ${FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS}s and retrying ($attempt/${FLEET_SYNC_PACKED_REFS_LOCK_RETRIES}) (owning process may be exiting)" >&2
     sleep "$FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS"
-    FETCH_OUTPUT=$(git -C "$PROJ" fetch "$SYNC_REMOTE" --prune --quiet 2>&1); rc=$?
+    FETCH_OUTPUT=$(git -C "$PROJ" fetch "$remote" --prune --quiet 2>&1); rc=$?
     if [ "$rc" -eq 0 ]; then
       echo "$label: fetch succeeded on retry; packed-refs lock cleared on its own" >&2
       # One stdout summary so a session-start refresh (which discards fleet-sync
@@ -226,7 +233,7 @@ fetch_with_packed_refs_lock_guard() {
         return "$rc"
       fi
       echo "$label: removed provably-stale packed-refs lock $lock (age >= ${FLEET_SYNC_PACKED_REFS_LOCK_AGE_SECS}s, no live holder) and retrying fetch" >&2
-      FETCH_OUTPUT=$(git -C "$PROJ" fetch "$SYNC_REMOTE" --prune --quiet 2>&1); rc=$?
+      FETCH_OUTPUT=$(git -C "$PROJ" fetch "$remote" --prune --quiet 2>&1); rc=$?
       if [ "$rc" -eq 0 ]; then
         echo "$label: fetch succeeded after stale packed-refs lock cleanup" >&2
         echo "$label: recovered: removed a stale packed-refs lock (no live holder)"
@@ -356,13 +363,34 @@ sync_project() {
     return 0
   fi
 
-  if ! fetch_with_packed_refs_lock_guard; then
+  if ! fetch_with_packed_refs_lock_guard "$SYNC_REMOTE"; then
     reason="fetch failed"
     if [ -n "$FETCH_OUTPUT" ]; then
       reason="$reason: $(first_line "$FETCH_OUTPUT")"
     fi
     echo "$label: skipped: $reason"
     return 0
+  fi
+
+  # prune_gone_branches reads each local branch's own %(upstream:track), so every
+  # remote some branch tracks must have been fetched with --prune for its deleted
+  # remote branches to read "[gone]". When the resolved development remote is not
+  # origin, the fetch above refreshes only that remote, so origin-tracked branches
+  # (this fleet pins every PR to origin) would keep stale remote-tracking refs and
+  # never be pruned. Fetch origin too in that case. In the current operational home
+  # origin already IS the development fork, so the same-remote skip makes this a
+  # no-op there today; it protects the mixed-tracking shape a fork transition or a
+  # remote rename produces. Only the extra prune reach is at stake here - BASE below
+  # still compares against the resolved development remote alone - so a failure is
+  # reported and pruning simply stays as conservative as before.
+  if [ "$SYNC_REMOTE" != origin ] && git -C "$PROJ" remote get-url origin >/dev/null 2>&1; then
+    if ! fetch_with_packed_refs_lock_guard origin; then
+      reason="origin prune fetch failed"
+      if [ -n "$FETCH_OUTPUT" ]; then
+        reason="$reason: $(first_line "$FETCH_OUTPUT")"
+      fi
+      echo "$label: warning: $reason; origin-tracked branches not pruned this run"
+    fi
   fi
 
   prune_gone_branches || true
