@@ -342,10 +342,41 @@ test_origin_fallback_refusal_explains_itself() {
   pass "a refusal on the origin fallback carries the resolver's reason for falling back"
 }
 
+test_origin_fallback_success_announces_itself() {
+  local rec id out status origin_trunk
+  id='pool-fallback-success-r8'
+  rec=$(make_case fallback-success "$id")
+  read_case_record "$rec"
+
+  # The same silent-fallback shape as the refusal case, but with a REACHABLE
+  # origin: the fork's default branch is "trunk", no local branch carries that
+  # name, so the re-resolve falls back to origin/trunk and provisions from it.
+  # A success that says nothing hides that a fork-tracking checkout was just
+  # provisioned from origin's lineage instead of the fork's.
+  git clone --quiet --bare "$PROJECT_DIR" "$CASE_DIR/fork.git"
+  git -C "$CASE_DIR/fork.git" branch trunk main
+  git -C "$CASE_DIR/fork.git" symbolic-ref HEAD refs/heads/trunk
+  git -C "$PROJECT_DIR" remote add fork "file://$CASE_DIR/fork.git"
+  git -C "$PROJECT_DIR" fetch --quiet fork
+  git -C "$PROJECT_DIR" branch --quiet --set-upstream-to=fork/main main
+  git --git-dir="$CASE_DIR/origin.git" branch trunk main
+  origin_trunk=$(git --git-dir="$CASE_DIR/origin.git" rev-parse trunk)
+
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+  status=$?
+  expect_code 0 "$status" "spawn should provision from the announced origin fallback: $out"
+  [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$origin_trunk" ] \
+    || fail "spawn did not provision the pooled worktree from origin/trunk"
+  assert_contains "$out" "no upstream configured for trunk; using origin/trunk" \
+    "spawn provisioned from origin without saying why it fell back off the fork"
+  pass "a successful origin fallback names the base it actually provisioned from"
+}
+
 test_stale_pool_base_refreshes_before_branching
 test_non_main_default_branch_refreshes_before_branching
 test_fork_tracking_pool_refreshes_from_fork_not_origin
 test_origin_fallback_refusal_explains_itself
+test_origin_fallback_success_announces_itself
 test_direct_pr_and_scout_refresh_before_launch
 test_dirty_pool_refuses_without_discarding_work
 test_unresolved_remote_default_refuses_pool

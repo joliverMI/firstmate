@@ -314,6 +314,25 @@ test_no_upstream_announces_origin_fallback() {
   pass "T12 an unconfigured upstream falls back to origin/<default> and says so"
 }
 
+# --- T13: the fallback reason is announced even when the fallback is unusable -
+# The origin fallback is exactly the case that most needs its reason stated: a
+# target with no upstream AND no origin remote is skipped, and the skip alone
+# would read as if origin had been a deliberate choice. Both lines must appear.
+test_origin_fallback_reason_survives_a_missing_origin() {
+  local w out
+  w=$(new_world t13)
+  git -C "$w/main" branch --unset-upstream main
+  git -C "$w/main" remote remove origin
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "firstmate: no upstream configured for main; using origin/main" \
+    "the origin fallback reason is stated before the unusable-remote skip"
+  assert_contains "$out" "firstmate: skipped: no origin remote" \
+    "a target with no usable remote is still skipped"
+  pass "T13 the origin-fallback reason is announced even when origin is missing"
+}
+
 test_updates_main_and_secondmate
 test_reread_gate_is_instruction_only
 test_dirty_secondmate_skipped
@@ -324,5 +343,6 @@ test_firstmate_wrong_branch_skipped
 test_firstmate_detached_head_skipped
 test_unsafe_secondmate_home_skipped_before_git_update
 test_no_upstream_announces_origin_fallback
+test_origin_fallback_reason_survives_a_missing_origin
 
 echo "# all fm-update tests passed"

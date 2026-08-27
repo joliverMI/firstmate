@@ -316,11 +316,11 @@ ff_target() {
     resolve_update_base "$dir" "$default"
     remote=$RESOLVE_BASE_REMOTE
     base=$RESOLVE_BASE_REF
+    [ -z "$RESOLVE_BASE_NOTE" ] || echo "$label: $RESOLVE_BASE_NOTE"
     if ! git -C "$dir" remote get-url "$remote" >/dev/null 2>&1; then
       echo "$label: skipped: no $remote remote"
       return 0
     fi
-    [ -z "$RESOLVE_BASE_NOTE" ] || echo "$label: $RESOLVE_BASE_NOTE"
     if ! fetch_once "$dir" "$remote"; then
       echo "$label: skipped: fetch failed"
       return 0

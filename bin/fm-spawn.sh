@@ -1913,9 +1913,11 @@ freshen_spawn_worktree_base() {  # <worktree>
   # This re-resolve reads the upstream of the REMOTE's current default branch
   # name, which need not name a local branch here at all - and then
   # resolve_update_base falls back to origin/<default>, silently undoing the
-  # fork we resolved above. Carry its one-line reason into every refusal below
-  # so a spawn that dies on an unreachable origin says why it was looking at
-  # origin in the first place, instead of contradicting itself.
+  # fork we resolved above. Carry its one-line reason into every refusal below,
+  # and onto the success path too, so a spawn that dies on an unreachable origin
+  # says why it was looking at origin in the first place instead of
+  # contradicting itself, and one that silently falls back to origin still
+  # names the base it actually provisioned from.
   why=""
   [ -z "$RESOLVE_BASE_NOTE" ] || why=" ($RESOLVE_BASE_NOTE)"
   if ! git -C "$worktree" remote get-url "$remote" >/dev/null 2>&1; then
@@ -1947,6 +1949,7 @@ freshen_spawn_worktree_base() {  # <worktree>
     echo "error: pooled worktree '$worktree' is at '${actual:-unknown}', not current '$target' ('$expected'); refusing to launch" >&2
     return 1
   fi
+  [ -z "$why" ] || echo "note: pooled worktree '$worktree' provisioned from '$target'$why" >&2
 }
 
 herdr_projection_meta_field_exact() {  # <meta> <key>

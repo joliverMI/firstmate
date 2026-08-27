@@ -194,7 +194,96 @@ run_sync_guarded() {
     "$ROOT/bin/fm-fleet-sync.sh" "$@" >"$outf" 2>"$errf"
 }
 
+# --- fork-tracking fixtures --------------------------------------------------
+
+# add_fork_remote <home> <repo> <name>: give <repo> a second remote "fork" whose
+# bare repo starts as a copy of <repo>'s main and then gains one fork-only commit
+# that origin never sees, and point <repo>'s local main at fork/main as its
+# configured upstream. Echoes the fork-only commit sha.
+add_fork_remote() {
+  local home=$1 repo=$2 name=$3 fork_bare fork_abs work sha
+  fork_bare="$home/remotes/$name-fork.git"
+  work="$home/work-$name-fork"
+  mkdir -p "$home/remotes"
+  git clone --quiet --bare "$repo" "$fork_bare"
+  fork_abs=$(cd "$fork_bare" && pwd)
+  git clone --quiet "file://$fork_abs" "$work"
+  commit_file "$work" fork.txt fork-only "fork-only commit"
+  git -C "$work" push -q origin main
+  sha=$(git -C "$work" rev-parse HEAD)
+  git -C "$repo" remote add fork "file://$fork_abs"
+  git -C "$repo" fetch -q fork
+  git -C "$repo" branch -q --set-upstream-to=fork/main main
+  printf '%s\n' "$sha"
+}
+
+# build_firstmate_checkout <home>: a checkout of "firstmate itself" - origin is
+# the public template it was forked from, and its own main tracks a separate
+# fork. Echoes the checkout path; the caller passes it as BOTH FM_ROOT_OVERRIDE
+# and the single-project argument, which is the shape fm-teardown.sh produces for
+# a firstmate-repo task.
+build_firstmate_checkout() {
+  local home=$1 root template_abs
+  root="$home/firstmate"
+  mkdir -p "$home/remotes"
+  git init -q "$root"
+  git -C "$root" symbolic-ref HEAD refs/heads/main
+  commit_file "$root" file.txt v0 C0
+  git clone --quiet --bare "$root" "$home/remotes/template.git"
+  template_abs=$(cd "$home/remotes/template.git" && pwd)
+  git -C "$root" remote add origin "file://$template_abs"
+  git -C "$root" fetch -q origin
+  printf '%s\n' "$root"
+}
+
+# run_sync_self <root> <home>: run fleet-sync with <root> as this home's firstmate
+# checkout AND as the single project argument.
+run_sync_self() {
+  local root=$1 home=$2
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$root" "$ROOT/bin/fm-fleet-sync.sh" "$root" 2>/dev/null
+}
+
 # --- tests ------------------------------------------------------------------
+
+# fm-teardown.sh runs this script with the firstmate checkout itself as the
+# project for a firstmate-repo task. Such a checkout can keep origin pointed at
+# the template it was forked from while its own main tracks the fork it actually
+# develops on, so that run must fetch and fast-forward from the fork - origin is
+# only correct for ordinary project clones.
+test_firstmate_checkout_follows_configured_fork() {
+  local home root fork_sha out
+  home=$(new_home)
+  root=$(build_firstmate_checkout "$home")
+  fork_sha=$(add_fork_remote "$home" "$root" firstmate)
+
+  out=$(run_sync_self "$root" "$home")
+
+  assert_contains "$out" "synced" "firstmate checkout fast-forwards from its configured fork"
+  assert_not_contains "$out" "STUCK" "following the fork is not a stuck report"
+  [ "$(head_sha "$root")" = "$fork_sha" ] \
+    || fail "expected firstmate checkout at fork-only commit $fork_sha, got $(head_sha "$root")"
+  pass "a firstmate checkout syncs from its configured fork, not origin"
+}
+
+# The mirror guarantee: an ordinary project clone keeps comparing against origin
+# by design, even when its default branch happens to track something else.
+test_project_clone_still_follows_origin_not_upstream() {
+  local home clone fork_sha origin_sha out
+  home=$(new_home)
+  clone=$(build_pair "$home" omicron)
+  fork_sha=$(add_fork_remote "$home" "$clone" omicron)
+  advance_origin "$home" omicron C1
+  origin_sha=$(git -C "$home/work-omicron" rev-parse HEAD)
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "omicron: synced" "project clone still fast-forwards from origin"
+  [ "$(head_sha "$clone")" = "$origin_sha" ] \
+    || fail "expected project clone at origin commit $origin_sha, got $(head_sha "$clone")"
+  [ "$(head_sha "$clone")" != "$fork_sha" ] \
+    || fail "project clone must not follow a configured fork upstream"
+  pass "an ordinary project clone still syncs from origin"
+}
 
 test_detached_clean_ancestor_recovers() {
   local home clone out before after
@@ -603,6 +692,8 @@ test_non_signature_fetch_failure_is_not_retried() {
   pass "a non-packed-refs.lock fetch failure keeps today's behavior (no retry)"
 }
 
+test_firstmate_checkout_follows_configured_fork
+test_project_clone_still_follows_origin_not_upstream
 test_detached_clean_ancestor_recovers
 test_detached_unique_commit_is_stuck_untouched
 test_detached_clean_ancestor_with_diverged_local_default_is_stuck_untouched
