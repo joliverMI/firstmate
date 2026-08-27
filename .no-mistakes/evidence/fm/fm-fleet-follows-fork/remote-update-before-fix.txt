@@ -1,0 +1,25 @@
+### PRE-FIX (base 524fa06): update followed origin (the public template)
+
+== fixture ==
+origin/main  (public template) : daaef06  docs: template-only change (never on the fork)
+fork/main    (we develop here) : 0a038c0  no-mistakes(review): resolve fleet-sync firstmate base, surface fallback notes
+remote code root main tracks   : fork/main
+remote code root HEAD          : 4f0a4f5
+remote secondmate home HEAD    : 4f0a4f5
+
+-- before the update, in the remote secondmate home --
+bin/fm-dashboard.sh : ABSENT
+fm-spawn.sh --card  : ABSENT
+
+== $ fm-remote-secondmate-control.sh update ios ==
+synced: daaef0679ba09fa0aa79adb034dec3752ac3f691
+(exit 0)
+
+-- after the update, in the remote secondmate home --
+remote code root HEAD          : daaef06
+remote secondmate home HEAD    : daaef06
+bin/fm-dashboard.sh : ABSENT
+fm-spawn.sh --card  : ABSENT
+
+-- the card-link tooling actually runs in the remote home --
+bash: /tmp/fm-e2e-before2/remote-home/bin/fm-dashboard.sh: No such file or directory

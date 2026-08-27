@@ -1,0 +1,13 @@
+### Regression proof for the new automated test
+tests/fm-remote-update-follows-fork.test.sh run against the PRE-FIX tree (base 524fa06):
+
+not ok - remote update did not report a host-local fast-forward: current: bf7dd4299d59dcc90984bca8957a8e8cfef4d508 (missing: 'synced:')
+--- output ---
+current: bf7dd4299d59dcc90984bca8957a8e8cfef4d508
+exit=1
+
+Same test on the fixed tree (target 0a038c0):
+
+ok - a remote code root tracking a fork updates from it, and the fork-only dashboard tooling reaches the secondmate home
+# all fm-remote-update-follows-fork tests passed
+exit=0

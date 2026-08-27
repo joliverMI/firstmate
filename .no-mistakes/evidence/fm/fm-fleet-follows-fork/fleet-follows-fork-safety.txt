@@ -1,0 +1,35 @@
+=== fm/fm-fleet-follows-fork: fast-forward-only safety, as the captain sees it ===
+
+--- no upstream configured -> prior origin/<default> behaviour, and it says so
+    $ bin/fm-update.sh
+    | firstmate: no upstream configured for main; using origin/main
+    | firstmate: already current
+    HEAD d2d6220 -> d2d6220   worktree: clean
+    stash entries left behind: 0   merge commits created: 0
+
+--- no upstream AND no origin remote -> reason stated, then skipped
+    $ bin/fm-update.sh
+    | firstmate: no upstream configured for main; using origin/main
+    | firstmate: skipped: no origin remote
+    HEAD d2d6220 -> d2d6220   worktree: clean
+    stash entries left behind: 0   merge commits created: 0
+
+--- dirty target -> skipped, uncommitted work untouched
+    $ bin/fm-update.sh
+    | firstmate: skipped: dirty working tree
+    HEAD d2d6220 -> d2d6220   worktree: dirty (local edit preserved:  M AGENTS.md)
+    stash entries left behind: 0   merge commits created: 0
+
+--- genuinely diverged from the fork -> skipped, no force, no merge
+    $ bin/fm-update.sh
+    | firstmate: skipped: diverged from fork/main
+    HEAD 379e5e7 -> 379e5e7   worktree: clean
+    stash entries left behind: 0   merge commits created: 0
+
+--- upstream tracks a LOCAL branch (names no remote) -> reason stated, origin fallback
+    $ bin/fm-update.sh
+    | firstmate: main tracks local branch local-base, not a remote; using origin/main
+    | firstmate: already current
+    HEAD 7a0a2be -> 7a0a2be   worktree: clean
+    stash entries left behind: 0   merge commits created: 0
+

@@ -1,0 +1,12 @@
+=== fleet sync on the firstmate checkout itself (audit item 2) ===
+
+--- BEFORE THE FIX (base 524fa06)
+    $ bin/fm-fleet-sync.sh <firstmate-checkout>   # the path bin/fm-teardown.sh takes for a firstmate-repo task
+    | /tmp/fm-fs.CgupJK/firstmate: already current
+    firstmate bin/fm-dashboard.sh: MISSING
+
+--- AFTER THE FIX  (fm/fm-fleet-follows-fork)
+    $ bin/fm-fleet-sync.sh <firstmate-checkout>   # the path bin/fm-teardown.sh takes for a firstmate-repo task
+    | /tmp/fm-fs.D85vHR/firstmate: synced 9da4f83..39f61af
+    firstmate bin/fm-dashboard.sh: PRESENT
+

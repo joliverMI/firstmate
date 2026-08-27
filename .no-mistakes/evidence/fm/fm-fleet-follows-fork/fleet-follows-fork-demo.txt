@@ -1,0 +1,50 @@
+===================================================================
+BEFORE THE FIX (base commit 524fa06 - fast-forward base hardcoded to origin/<default>)
+===================================================================
+  firstmate home  origin -> upstream-template.git   fork -> our-fork.git   main tracks: fork/main
+  before /updatefirstmate:
+    firstmate:   bin/fm-dashboard.sh MISSING
+    firstmate:   $ bin/fm-spawn.sh --card  ->  spawn: no --card support in the upstream template
+    remote home: bin/fm-dashboard.sh MISSING
+    remote home: $ bin/fm-spawn.sh --card  ->  spawn: no --card support in the upstream template
+
+  $ bin/fm-update.sh          # the /updatefirstmate mechanics, on the firstmate home
+  | firstmate: updated 69de2e0..3eb7f2b
+  | reread-firstmate: no
+  | nudge-secondmates: none
+
+  $ bin/fm-remote-secondmate-control.sh update ios     # what fm-update.sh dispatches to the remote host
+  | synced: 3eb7f2b6160152b418d56e4da3393e00bf0f6f88
+
+  firstmate home  origin -> upstream-template.git   fork -> our-fork.git   main tracks: fork/main
+  after /updatefirstmate:
+    firstmate:   bin/fm-dashboard.sh MISSING
+    firstmate:   $ bin/fm-spawn.sh --card  ->  spawn: no --card support in the upstream template
+    remote home: bin/fm-dashboard.sh MISSING
+    remote home: $ bin/fm-spawn.sh --card  ->  spawn: no --card support in the upstream template
+
+===================================================================
+AFTER THE FIX  (fm/fm-fleet-follows-fork - fast-forward base = the branch's configured upstream)
+===================================================================
+  firstmate home  origin -> upstream-template.git   fork -> our-fork.git   main tracks: fork/main
+  before /updatefirstmate:
+    firstmate:   bin/fm-dashboard.sh MISSING
+    firstmate:   $ bin/fm-spawn.sh --card  ->  spawn: no --card support in the upstream template
+    remote home: bin/fm-dashboard.sh MISSING
+    remote home: $ bin/fm-spawn.sh --card  ->  spawn: no --card support in the upstream template
+
+  $ bin/fm-update.sh          # the /updatefirstmate mechanics, on the firstmate home
+  | firstmate: updated 69de2e0..2262d39 (instructions changed: bin)
+  | reread-firstmate: yes
+  | nudge-secondmates: none
+
+  $ bin/fm-remote-secondmate-control.sh update ios     # what fm-update.sh dispatches to the remote host
+  | synced: 2262d39805cb674cf3fdd9c83c03d340a2f7e9fc
+
+  firstmate home  origin -> upstream-template.git   fork -> our-fork.git   main tracks: fork/main
+  after /updatefirstmate:
+    firstmate:   bin/fm-dashboard.sh PRESENT
+    firstmate:   $ bin/fm-spawn.sh --card  ->  spawn: card link ready
+    remote home: bin/fm-dashboard.sh PRESENT
+    remote home: $ bin/fm-spawn.sh --card  ->  spawn: card link ready
+

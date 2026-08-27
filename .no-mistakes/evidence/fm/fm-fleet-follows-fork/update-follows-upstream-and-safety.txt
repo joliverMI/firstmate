@@ -1,0 +1,31 @@
+=== A. a home whose main tracks fork/main while origin is the public template ===
+$ git -C <home> rev-parse --abbrev-ref main@{upstream}  ->  fork/main
+$ bin/fm-update.sh
+firstmate: updated d9218e9..6474bbc (instructions changed: bin)
+reread-firstmate: yes
+nudge-secondmates: none
+   bin/fm-dashboard.sh now in the home: PRESENT
+   HEAD == fork/main: yes
+   HEAD == origin/main (the template): no
+
+=== B. same home, but the working tree is dirty -> skipped, edit untouched ===
+$ bin/fm-update.sh
+firstmate: skipped: dirty working tree
+reread-firstmate: no
+nudge-secondmates: none
+   local edit still present: 1 line(s); HEAD moved: no
+
+=== C. same home, but it has its own unlanded commit -> diverged, skipped ===
+$ bin/fm-update.sh
+firstmate: skipped: diverged from fork/main
+reread-firstmate: no
+nudge-secondmates: none
+   unlanded commit preserved at HEAD: yes
+
+=== D. a home with NO configured upstream -> prior origin/<default> behaviour, announced ===
+$ bin/fm-update.sh
+firstmate: no upstream configured for main; using origin/main
+firstmate: updated 42d76f0..b47b4e1 (instructions changed: AGENTS.md)
+reread-firstmate: yes
+nudge-secondmates: none
+   HEAD == origin/main (the template): yes

@@ -1,0 +1,16 @@
+### tests/fm-remote-update-follows-fork.test.sh: fails before the fix, passes after
+Re-run at the current target commit 1e3713c (the pre-fix tree was materialised with
+`git archive 524fa06 | tar -x`, then the new test file was copied in unchanged).
+
+$ bash tests/fm-remote-update-follows-fork.test.sh     # PRE-FIX tree (524fa06)
+not ok - remote update did not report a host-local fast-forward: current: 88cdcf7f2859a9a4ce714c644ccee4021be0d909 (missing: 'synced:')
+--- output ---
+current: 88cdcf7f2859a9a4ce714c644ccee4021be0d909
+
+$ bash tests/fm-remote-update-follows-fork.test.sh     # fixed tree (1e3713c)
+ok - a remote code root tracking a fork updates from it, and the fork-only dashboard tooling reaches the secondmate home
+# all fm-remote-update-follows-fork tests passed
+
+### coverage guard: the new test file is registered in a CI lane
+$ bash bin/fm-test-run.sh --check-coverage
+FM_TEST_COVERAGE ok total=153 parallel=24 serial=117 serial_shards=4 herdr=12
