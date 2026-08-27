@@ -46,11 +46,14 @@ TMP_ROOT=$(fm_test_tmproot fm-spawn-pool-collision)
 # (a recorded window plus an idle shell reads `dead`, the positively agent-free
 # endpoint a relaunch requires).
 make_collision_fakebin() {
-  local dir=$1 path=$2 fakebin
+  local dir=$1 path=$2 fakebin winreg
   fakebin=$(fm_fakebin "$dir")
+  winreg="$dir/windows"
+  : > "$winreg"
   cat > "$fakebin/tmux" <<SH
 #!/usr/bin/env bash
 set -u
+WINREG='$winreg'
 [ -z "\${FM_FAKE_TMUX_LOG:-}" ] || printf '%s\n' "\$*" >> "\$FM_FAKE_TMUX_LOG"
 case "\$*" in
   *"#{pane_current_path}"*) printf '%s\n' "\${FM_FAKE_PANE_PATH:-$path}"; exit 0 ;;
@@ -58,8 +61,35 @@ case "\$*" in
 esac
 case "\${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
-  list-windows) [ -z "\${FM_FAKE_WINDOWS:-}" ] || printf '%s\n' "\${FM_FAKE_WINDOWS}"; exit 0 ;;
-  has-session|new-session|new-window|kill-window) exit 0 ;;
+  new-window)
+    # The shared tmux target resolver (bin/backends/tmux.sh) addresses a
+    # window this process just created by the stable id \`new-window -dP -F
+    # '#{window_id}'\` returns, then later resolves a NAMED kill/send target by
+    # matching that id/name pair back out of \`list-windows\`. A stub that
+    # answered new-window with nothing left the id empty and every later
+    # named-target resolution unable to find the window at all, so record the
+    # requested name against a counted id here and answer list-windows from
+    # that same registry below.
+    fm_fake_name=
+    fm_fake_prev=
+    for fm_fake_arg in "\$@"; do
+      [ "\$fm_fake_prev" = -n ] && fm_fake_name=\$fm_fake_arg
+      fm_fake_prev=\$fm_fake_arg
+    done
+    fm_fake_n=\$(( \$(wc -l < "\$WINREG") + 1 ))
+    printf '@%s %s\n' "\$fm_fake_n" "\$fm_fake_name" >> "\$WINREG"
+    for fm_fake_arg in "\$@"; do
+      case "\$fm_fake_arg" in -*P*) printf '@%s\n' "\$fm_fake_n" ;; esac
+    done
+    exit 0 ;;
+  list-windows)
+    if [ -n "\${FM_FAKE_WINDOWS:-}" ]; then
+      printf '%s\n' "\${FM_FAKE_WINDOWS}"
+    else
+      cat "\$WINREG"
+    fi
+    exit 0 ;;
+  has-session|new-session|kill-window) exit 0 ;;
   send-keys) exit 0 ;;
 esac
 exit 0
