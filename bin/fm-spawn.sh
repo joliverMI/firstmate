@@ -152,9 +152,10 @@
 #   recorded in this home's state as another tracked task's own isolated copy,
 #   whether it came from the pool or from a relaunch's recorded worktree.
 #   Before a fresh ship or scout worker starts, its clean task worktree fetches
-#   origin, resolves the current remote default branch, and resets to its tip.
-#   An unreachable origin, unresolved default branch, or non-clean worktree
-#   refuses the spawn rather than risking a PR based on stale history.
+#   the development remote (the default branch's own configured upstream, falling
+#   back to origin), resolves that remote's current default branch, and resets to
+#   its tip. An unreachable remote, unresolved default branch, or non-clean
+#   worktree refuses the spawn rather than risking a PR based on stale history.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
@@ -1870,26 +1871,65 @@ validate_spawn_worktree() {  # <source> <inspect-target>
 }
 
 freshen_spawn_worktree_base() {  # <worktree>
-  local worktree=$1 default target expected actual status
-  if ! git -C "$worktree" fetch --quiet origin; then
-    echo "error: could not fetch origin for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+  local worktree=$1 default remote branch target expected actual status why
+  # Which remote does this checkout develop on? resolve_update_base
+  # (fm-dev-remote-lib.sh) reads it off the default branch's own configured
+  # upstream - e.g. a fork tracking fork/main - so a pooled worktree is
+  # provisioned from the lineage this repo actually develops on rather than
+  # from a hardcoded origin that may be a diverged upstream template it cannot
+  # even reach. The locally recorded default branch is only good enough to read
+  # that config; the remote's CURRENT default is re-resolved from the remote
+  # itself below. Origin remains the answer when nothing local names a default
+  # branch to read an upstream from - it is the only remote nameable at that
+  # point, and is what a project clone records anyway.
+  remote=origin
+  if default=$(default_branch "$worktree"); then
+    resolve_update_base "$worktree" "$default"
+    remote=$RESOLVE_BASE_REMOTE
+  fi
+  if ! git -C "$worktree" remote get-url "$remote" >/dev/null 2>&1; then
+    echo "error: no $remote remote for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
     return 1
   fi
-  if ! git -C "$worktree" remote set-head origin --auto >/dev/null 2>&1; then
-    echo "error: could not resolve origin's current default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+  if ! git -C "$worktree" fetch --quiet "$remote"; then
+    echo "error: could not fetch $remote for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
     return 1
   fi
-  default=$(default_branch "$worktree") || {
-    echo "error: could not determine origin's default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+  if ! git -C "$worktree" remote set-head "$remote" --auto >/dev/null 2>&1; then
+    echo "error: could not resolve $remote's current default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+    return 1
+  fi
+  default=$(default_branch "$worktree" "$remote") || {
+    echo "error: could not determine $remote's default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
     return 1
   }
-  target="origin/$default"
-  if ! git -C "$worktree" fetch --quiet origin "+refs/heads/$default:refs/remotes/origin/$default"; then
-    echo "error: could not fetch '$target' for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+  # Now that the remote's own default branch is current, settle the exact base:
+  # the configured upstream again, so a default branch tracking something other
+  # than the remote's like-named branch still wins.
+  resolve_update_base "$worktree" "$default"
+  remote=$RESOLVE_BASE_REMOTE
+  branch=$RESOLVE_BASE_BRANCH
+  target=$RESOLVE_BASE_REF
+  # This re-resolve reads the upstream of the REMOTE's current default branch
+  # name, which need not name a local branch here at all - and then
+  # resolve_update_base falls back to origin/<default>, silently undoing the
+  # fork we resolved above. Carry its one-line reason into every refusal below,
+  # and onto the success path too, so a spawn that dies on an unreachable origin
+  # says why it was looking at origin in the first place instead of
+  # contradicting itself, and one that silently falls back to origin still
+  # names the base it actually provisioned from.
+  why=""
+  [ -z "$RESOLVE_BASE_NOTE" ] || why=" ($RESOLVE_BASE_NOTE)"
+  if ! git -C "$worktree" remote get-url "$remote" >/dev/null 2>&1; then
+    echo "error: no $remote remote for pooled worktree '$worktree'$why; refusing to launch from a potentially stale base" >&2
+    return 1
+  fi
+  if ! git -C "$worktree" fetch --quiet "$remote" "+refs/heads/$branch:refs/remotes/$target"; then
+    echo "error: could not fetch '$target' for pooled worktree '$worktree'$why; refusing to launch from a potentially stale base" >&2
     return 1
   fi
   expected=$(git -C "$worktree" rev-parse --verify --quiet "$target^{commit}" 2>/dev/null) || {
-    echo "error: '$target' is not a commit for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+    echo "error: '$target' is not a commit for pooled worktree '$worktree'$why; refusing to launch from a potentially stale base" >&2
     return 1
   }
   status=$(git -C "$worktree" status --porcelain) || {
@@ -1909,6 +1949,7 @@ freshen_spawn_worktree_base() {  # <worktree>
     echo "error: pooled worktree '$worktree' is at '${actual:-unknown}', not current '$target' ('$expected'); refusing to launch" >&2
     return 1
   fi
+  [ -z "$why" ] || echo "note: pooled worktree '$worktree' provisioned from '$target'$why" >&2
 }
 
 herdr_projection_meta_field_exact() {  # <meta> <key>

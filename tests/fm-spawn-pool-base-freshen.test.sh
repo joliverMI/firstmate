@@ -276,8 +276,107 @@ test_unresolved_remote_default_refuses_pool() {
   pass "an unresolved remote default branch refuses the pooled worktree"
 }
 
+test_fork_tracking_pool_refreshes_from_fork_not_origin() {
+  local rec id out status fork_tip
+  id='pool-fork-tracking-r6'
+  rec=$(make_case fork-tracking "$id")
+  read_case_record "$rec"
+
+  # The checkout develops on a fork while origin is an upstream template it
+  # cannot even reach - this repo's own shape (see
+  # docs/remote-secondmates.md). Only the fork carries the fork-only tooling.
+  git clone --quiet --bare "$PROJECT_DIR" "$CASE_DIR/fork.git"
+  git -C "$PROJECT_DIR" remote add fork "file://$CASE_DIR/fork.git"
+  git clone --quiet "file://$CASE_DIR/fork.git" "$CASE_DIR/fork-publisher"
+  printf 'fork-only tooling\n' > "$CASE_DIR/fork-publisher/fork-only.txt"
+  git -C "$CASE_DIR/fork-publisher" add fork-only.txt
+  git -C "$CASE_DIR/fork-publisher" \
+    -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm fork-only
+  git -C "$CASE_DIR/fork-publisher" push --quiet origin main
+  git -C "$PROJECT_DIR" fetch --quiet fork
+  git -C "$PROJECT_DIR" branch --quiet --set-upstream-to=fork/main main
+  git -C "$PROJECT_DIR" remote set-url origin "file://$CASE_DIR/missing-origin.git"
+  fork_tip=$(git --git-dir="$CASE_DIR/fork.git" rev-parse main)
+
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+  status=$?
+  expect_code 0 "$status" "spawn should provision a pooled worktree from the fork it tracks: $out"
+  [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$fork_tip" ] \
+    || fail "spawn did not start the pooled worktree at the fork's tip"
+  assert_grep 'fork-only tooling' "$POOL_DIR/fork-only.txt" \
+    "the pooled worktree is missing the fork-only file it should have been provisioned with"
+  [ ! -e "$POOL_DIR/advanced-main.txt" ] \
+    || fail "spawn provisioned the pooled worktree from origin's diverged lineage instead of the fork's"
+  pass "a pooled worktree tracking a fork is provisioned from that fork, even when origin is unreachable"
+}
+
+test_origin_fallback_refusal_explains_itself() {
+  local rec id out status before
+  id='pool-fallback-note-r7'
+  rec=$(make_case fallback-note "$id")
+  read_case_record "$rec"
+
+  # The checkout tracks fork/main, but the FORK's own default branch is named
+  # "trunk" - a name no local branch here carries. freshen_spawn_worktree_base
+  # re-resolves the base against that remote default name, finds no configured
+  # upstream for it, and falls back to origin/trunk. That fallback is allowed;
+  # a refusal that then blames an unreachable origin without saying how origin
+  # entered the picture is not, because the operator is left staring at an
+  # origin error for a checkout that develops on a fork.
+  git clone --quiet --bare "$PROJECT_DIR" "$CASE_DIR/fork.git"
+  git -C "$CASE_DIR/fork.git" branch trunk main
+  git -C "$CASE_DIR/fork.git" symbolic-ref HEAD refs/heads/trunk
+  git -C "$PROJECT_DIR" remote add fork "file://$CASE_DIR/fork.git"
+  git -C "$PROJECT_DIR" fetch --quiet fork
+  git -C "$PROJECT_DIR" branch --quiet --set-upstream-to=fork/main main
+  git -C "$PROJECT_DIR" remote set-url origin "file://$CASE_DIR/missing-origin.git"
+  before=$(git -C "$POOL_DIR" rev-parse HEAD)
+
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "spawn succeeded despite an unreachable fallback base"
+  assert_contains "$out" "no upstream configured for trunk; using origin/trunk" \
+    "spawn refused on origin without explaining why it fell back to origin at all"
+  [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$before" ] \
+    || fail "spawn moved HEAD after refusing on the fallback base"
+  pass "a refusal on the origin fallback carries the resolver's reason for falling back"
+}
+
+test_origin_fallback_success_announces_itself() {
+  local rec id out status origin_trunk
+  id='pool-fallback-success-r8'
+  rec=$(make_case fallback-success "$id")
+  read_case_record "$rec"
+
+  # The same silent-fallback shape as the refusal case, but with a REACHABLE
+  # origin: the fork's default branch is "trunk", no local branch carries that
+  # name, so the re-resolve falls back to origin/trunk and provisions from it.
+  # A success that says nothing hides that a fork-tracking checkout was just
+  # provisioned from origin's lineage instead of the fork's.
+  git clone --quiet --bare "$PROJECT_DIR" "$CASE_DIR/fork.git"
+  git -C "$CASE_DIR/fork.git" branch trunk main
+  git -C "$CASE_DIR/fork.git" symbolic-ref HEAD refs/heads/trunk
+  git -C "$PROJECT_DIR" remote add fork "file://$CASE_DIR/fork.git"
+  git -C "$PROJECT_DIR" fetch --quiet fork
+  git -C "$PROJECT_DIR" branch --quiet --set-upstream-to=fork/main main
+  git --git-dir="$CASE_DIR/origin.git" branch trunk main
+  origin_trunk=$(git --git-dir="$CASE_DIR/origin.git" rev-parse trunk)
+
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+  status=$?
+  expect_code 0 "$status" "spawn should provision from the announced origin fallback: $out"
+  [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$origin_trunk" ] \
+    || fail "spawn did not provision the pooled worktree from origin/trunk"
+  assert_contains "$out" "no upstream configured for trunk; using origin/trunk" \
+    "spawn provisioned from origin without saying why it fell back off the fork"
+  pass "a successful origin fallback names the base it actually provisioned from"
+}
+
 test_stale_pool_base_refreshes_before_branching
 test_non_main_default_branch_refreshes_before_branching
+test_fork_tracking_pool_refreshes_from_fork_not_origin
+test_origin_fallback_refusal_explains_itself
+test_origin_fallback_success_announces_itself
 test_direct_pr_and_scout_refresh_before_launch
 test_dirty_pool_refuses_without_discarding_work
 test_unresolved_remote_default_refuses_pool

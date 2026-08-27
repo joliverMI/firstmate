@@ -5,15 +5,17 @@
 # This is the one implementation of "advance a firstmate checkout to a base by a
 # clean fast-forward, never forcing, merging, or stashing" used by every sync
 # path:
-#   - /updatefirstmate (bin/fm-update.sh) pulls from origin: base_mode "origin".
+#   - /updatefirstmate (bin/fm-update.sh) pulls from the checkout's own upstream:
+#     base_mode "upstream" (see resolve_update_base below for what that resolves to).
 #   - the local-HEAD secondmate sync (bin/fm-spawn.sh on launch, bin/fm-bootstrap.sh
 #     on startup) follows the PRIMARY checkout's current default-branch commit:
-#     base_mode is that local commit, with NO fetch and no origin dependency.
+#     base_mode is that local commit, with NO fetch and no remote dependency.
 #
 # A linked-worktree secondmate home already holds the primary's commit in the
 # shared object store, so its local-HEAD sync is a purely local fast-forward that
 # never touches the network. A standalone clone moves through that path only when
-# it already has the target; otherwise it is skipped until the origin path updates it.
+# it already has the target; otherwise it is skipped until the fetch-based
+# /updatefirstmate path updates it.
 # A tracked-files fast-forward never touches the gitignored operational dirs
 # (data/, state/, config/, projects/, .no-mistakes/), so it cannot disturb a
 # secondmate's backlog, projects, or in-flight work.
@@ -25,8 +27,11 @@
 # shared default branch or any other worktree's checkout.
 
 SUB_HOME_MARKER="${SUB_HOME_MARKER:-.fm-secondmate-home}"
+FM_FF_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-secondmate-registry-lib.sh"
+. "$FM_FF_LIB_DIR/fm-secondmate-registry-lib.sh"
+# shellcheck source=bin/fm-dev-remote-lib.sh
+. "$FM_FF_LIB_DIR/fm-dev-remote-lib.sh"
 
 # --- helpers ---------------------------------------------------------------
 
@@ -34,11 +39,15 @@ first_line() {
   printf '%s\n' "$1" | sed -n '1s/[[:space:]]\{1,\}/ /g;1p'
 }
 
+# Which branch is <dir>'s default? Read from <remote>'s recorded HEAD, else
+# from a local main/master. <remote> defaults to origin because that is what a
+# project clone (which has no fork/upstream split) records; a checkout that
+# develops on a fork passes that fork instead, once it has been resolved.
 default_branch() {
-  local dir=$1 ref branch
-  ref=$(git -C "$dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  local dir=$1 remote=${2:-origin} ref branch
+  ref=$(git -C "$dir" symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null || true)
   if [ -n "$ref" ]; then
-    echo "${ref#origin/}"
+    echo "${ref#"$remote"/}"
     return 0
   fi
   for branch in main master; do
@@ -49,6 +58,12 @@ default_branch() {
   done
   return 1
 }
+
+# resolve_update_base (which remote/ref a checkout's <default> branch should
+# update from) lives in fm-dev-remote-lib.sh, sourced above - it is a
+# standalone, dependency-free concern shared with fm-lint.sh, fm-test-run.sh,
+# and fm-review-diff.sh, none of which need this file's heavier secondmate
+# machinery.
 
 # Resolve the PRIMARY checkout's current default-branch commit - the local-HEAD
 # sync target every secondmate follows. Reads the default branch *ref* rather than
@@ -191,19 +206,21 @@ validate_secondmate_home() {
 }
 
 # A single fetch refreshes every worktree that shares an object store, so fetch
-# each distinct git-common-dir at most once. Used ONLY by the origin base mode;
-# the local-HEAD sync never fetches.
+# each distinct (git-common-dir, remote) pair at most once. Used ONLY by the
+# upstream base mode; the local-HEAD sync never fetches. remote defaults to
+# "origin" for callers that have not resolved a configured upstream.
 FETCHED=""
 fetch_once() {
-  local dir=$1 common
+  local dir=$1 remote=${2:-origin} common key
   common=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+  key="$common|$remote"
   if [ -n "$common" ]; then
     case " $FETCHED " in
-      *" $common "*) return 0 ;;
+      *" $key "*) return 0 ;;
     esac
   fi
-  if git -C "$dir" fetch origin --prune --quiet 2>/dev/null; then
-    [ -n "$common" ] && FETCHED="$FETCHED $common"
+  if git -C "$dir" fetch "$remote" --prune --quiet 2>/dev/null; then
+    [ -n "$common" ] && FETCHED="$FETCHED $key"
     return 0
   fi
   return 1
@@ -259,9 +276,13 @@ live_secondmate_meta_records() {
 #   FF_INSTR  = comma list of changed instruction paths (only when updated)
 #
 # base_mode selects where the fast-forward base comes from:
-#   origin       - fetch origin and advance to origin/<default> (the /updatefirstmate
-#                  path); requires an origin remote and network reachability.
-#   <commit-ish> - advance to that LOCAL commit with NO fetch and no origin
+#   upstream     - fetch the checkout's own configured upstream for <default>
+#                  (fork/main, origin/main, whatever refs/heads/<default> is
+#                  set to track) and advance to it, via resolve_update_base;
+#                  falls back to origin/<default> and says so when no upstream
+#                  is configured (the /updatefirstmate path). Requires that
+#                  remote and network reachability.
+#   <commit-ish> - advance to that LOCAL commit with NO fetch and no remote
 #                  dependency (the local-HEAD secondmate sync). The commit must
 #                  already exist in the target's object store, which it always does
 #                  for a worktree of this same repo; a standalone clone that lacks
@@ -284,23 +305,26 @@ ff_target() {
     return 0
   fi
 
-  local default base cur instr local_rev base_rev before after out
+  local default base remote cur instr local_rev base_rev before after out
   default=$(default_branch "$dir") || {
     echo "$label: skipped: cannot determine default branch"
     return 0
   }
 
   # Resolve the fast-forward base from base_mode (see header).
-  if [ "$base_mode" = origin ]; then
-    if ! git -C "$dir" remote get-url origin >/dev/null 2>&1; then
-      echo "$label: skipped: no origin remote"
+  if [ "$base_mode" = upstream ]; then
+    resolve_update_base "$dir" "$default"
+    remote=$RESOLVE_BASE_REMOTE
+    base=$RESOLVE_BASE_REF
+    [ -z "$RESOLVE_BASE_NOTE" ] || echo "$label: $RESOLVE_BASE_NOTE"
+    if ! git -C "$dir" remote get-url "$remote" >/dev/null 2>&1; then
+      echo "$label: skipped: no $remote remote"
       return 0
     fi
-    if ! fetch_once "$dir"; then
+    if ! fetch_once "$dir" "$remote"; then
       echo "$label: skipped: fetch failed"
       return 0
     fi
-    base="origin/$default"
   else
     base="$base_mode"
   fi

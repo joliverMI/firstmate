@@ -639,6 +639,17 @@ default_branch() {
   return 1
 }
 
+# EVERY landed-work check below is PINNED TO ORIGIN, deliberately. These are
+# PR-lineage questions - "is this commit the head of PR <n>", "did this content
+# land on the branch PRs merge into" - and bin/fm-pr-destination-guard.sh pins
+# every PR this fleet opens to origin. A checkout whose default branch tracks a
+# separate fork (see bin/fm-dev-remote-lib.sh) still has its PR refs and its
+# merge lineage on origin only, so resolving these against that fork would
+# answer a different repository's question. A confidently wrong "already
+# landed" here discards unlanded work, so the pin is a safety property, not a
+# stylistic one. Self-update, lint, and the review base follow the configured
+# upstream instead; that split is intentional.
+
 meta_value() {
   local meta=$1 key=$2
   fm_meta_get "$meta" "$key"
@@ -818,6 +829,7 @@ ensure_commit_object() {
   local target=$1 commit=$2 n
   git -C "$WT" cat-file -e "$commit^{commit}" 2>/dev/null && return 0
   n=$(pr_number_from_target "$target") || return 1
+  # refs/pull/<n>/head exists on origin only - see the origin pin above.
   git -C "$WT" remote get-url origin >/dev/null 2>&1 || return 1
   git -C "$WT" fetch --quiet origin "refs/pull/$n/head" >/dev/null 2>&1 || return 1
   git -C "$WT" cat-file -e "$commit^{commit}" 2>/dev/null
@@ -911,6 +923,7 @@ pr_open_state() {
 content_in_default() {
   local name ref default_tree merged_tree
   name=$(default_branch) || return 1
+  # origin/<default> is the branch PRs merge into - see the origin pin above.
   if git -C "$WT" remote get-url origin >/dev/null 2>&1; then
     git -C "$WT" fetch --quiet origin "+refs/heads/$name:refs/remotes/origin/$name" >/dev/null 2>&1 || return 1
     ref="refs/remotes/origin/$name"

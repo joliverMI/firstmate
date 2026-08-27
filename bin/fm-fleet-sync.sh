@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Refresh project clones: fast-forward the checked-out local default branch to
-# origin/<default> when safe, and prune local branches whose upstream tracking
-# branch is gone (the remote branch was deleted, i.e. its PR merged) and that no
-# worktree still needs.
+# its resolved base (origin/<default>, except as noted below) when safe, and
+# prune local branches whose upstream tracking branch is gone (the remote branch
+# was deleted, i.e. its PR merged) and that no worktree still needs.
 # Self-heals the one unambiguously safe drift: a clean, detached HEAD that holds
-# no unique commits (it is an ancestor of origin/<default>) and whose <default>
-# branch is free to check out is re-attached and then fast-forwarded ("recovered:").
+# no unique commits (it is an ancestor of that base) and whose <default> branch
+# is free to check out is re-attached and then fast-forwarded ("recovered:").
 # Every other off-default state - a non-default named branch, a detached HEAD with
 # unique commits, a dirty tree, or a diverged default - may hold real work, so it
 # is left untouched and reported as a quantified, loud "STUCK: ... N commits behind
@@ -13,6 +13,21 @@
 # stashed, or discarded.
 # Still skips (benignly) local-only/no-origin projects, missing remotes/branches,
 # and fetch failures.
+# Ordinary project clones are always fetched from and compared against origin by
+# design: firstmate clones each project from its origin, and a project's own
+# remotes are the captain's to configure. A run whose target IS the firstmate
+# checkout itself is the one exception - the no-argument sweep never produces it,
+# but bin/fm-teardown.sh passes a firstmate-repo task's recorded project= here,
+# and such a checkout can develop on a fork while origin still points at the
+# template it was forked from. That case resolves the remote and ref to fetch and
+# compare through the same configured-upstream logic as this checkout's own
+# self-update path (resolve_update_base, bin/fm-dev-remote-lib.sh). When that
+# resolves to a remote other than origin, origin is ALSO fetched with --prune (and
+# only for that reason - the fast-forward base stays the resolved development ref):
+# pruning is decided per local branch from its own upstream, and this fleet pins
+# every PR to origin, so origin's tracking refs must stay fresh or merged
+# origin-tracked branches would never read "[gone]". Where origin already is the
+# development remote - as in this home today - that second fetch is skipped.
 # Pruning never deletes the checked-out branch or a branch that still has a
 # worktree, so it cannot discard unlanded work; set FM_FLEET_PRUNE=0 to disable it.
 # When the fetch fails on an orphaned .git/packed-refs.lock (left by a ref rewrite
@@ -33,8 +48,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
+# Remote to fetch and compare against for the clone being synced; sync_project
+# re-derives it per project (see the header).
+SYNC_REMOTE=origin
+SYNC_BASE=
+SYNC_DEFAULT=
 # shellcheck source=bin/fm-lock-lib.sh
 . "$SCRIPT_DIR/fm-lock-lib.sh"
+# shellcheck source=bin/fm-dev-remote-lib.sh
+. "$SCRIPT_DIR/fm-dev-remote-lib.sh"
 # Inert unless FM_TIMING_LOG names a file; only the deferred network stage sets it.
 # shellcheck source=bin/fm-timing-lib.sh
 . "$SCRIPT_DIR/fm-timing-lib.sh"
@@ -110,6 +132,26 @@ resolve_project_arg() {
   printf '%s\n' "$arg"
 }
 
+# True when this run's $PROJ is the firstmate checkout itself rather than a
+# project clone - the shape bin/fm-teardown.sh produces for a firstmate-repo
+# task. Compared on fully-resolved physical paths so a symlinked or relative
+# argument still matches. Only this case resolves its remote through
+# resolve_update_base; see the header.
+# Deliberately narrower than bin/fm-spawn.sh and bin/fm-review-diff.sh, which
+# resolve through resolve_update_base for EVERY checkout including a projects/*
+# clone. That is not an inconsistency: those two provision and diff a single task
+# worktree, where the only defensible base is whatever that specific checkout's
+# branch is configured to track, whereas this script is periodic housekeeping
+# across the whole fleet, where a project's remotes are the captain's to configure
+# and not fleet-sync's to reinterpret. bin/fm-dev-remote-lib.sh's header owns the
+# full statement of the asymmetry.
+targets_firstmate_checkout() {
+  local proj_real root_real
+  proj_real=$(cd "$PROJ" 2>/dev/null && pwd -P) || return 1
+  root_real=$(cd "$FM_ROOT" 2>/dev/null && pwd -P) || return 1
+  [ "$proj_real" = "$root_real" ]
+}
+
 default_branch() {
   local ref branch
   ref=$(git -C "$PROJ" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
@@ -151,9 +193,10 @@ packed_refs_lock_path() {
   esac
 }
 
-# Run `git -C "$PROJ" fetch origin --prune --quiet`, tolerating an orphaned
-# packed-refs.lock left by a killed ref rewrite. Sets FETCH_OUTPUT to the git
-# command's combined output and returns its exit status. On the packed-refs.lock
+# Run `git -C "$PROJ" fetch <remote> --prune --quiet` (remote defaults to
+# $SYNC_REMOTE), tolerating an orphaned packed-refs.lock left by a killed ref
+# rewrite. Sets FETCH_OUTPUT to the git command's combined output and returns its
+# exit status. On the packed-refs.lock
 # signature ONLY: retry up to FLEET_SYNC_PACKED_REFS_LOCK_RETRIES times (a
 # transient lock self-clears as the owning process exits), then - only if the lock
 # is provably stale per fm-lock-lib.sh (still present, mtime age past the
@@ -163,8 +206,8 @@ packed_refs_lock_path() {
 # successful recovery also prints one "$label: recovered: ..." summary to stdout so
 # a session-start refresh (which discards fleet-sync stderr) still surfaces it.
 fetch_with_packed_refs_lock_guard() {
-  local rc attempt=0 lock lock_desc
-  FETCH_OUTPUT=$(git -C "$PROJ" fetch origin --prune --quiet 2>&1); rc=$?
+  local remote=${1:-$SYNC_REMOTE} rc attempt=0 lock lock_desc
+  FETCH_OUTPUT=$(git -C "$PROJ" fetch "$remote" --prune --quiet 2>&1); rc=$?
   [ "$rc" -eq 0 ] && return 0
   is_packed_refs_lock_error "$FETCH_OUTPUT" || return "$rc"
 
@@ -174,7 +217,7 @@ fetch_with_packed_refs_lock_guard() {
     attempt=$(( attempt + 1 ))
     echo "$label: fetch blocked by packed-refs lock ($lock_desc); waiting ${FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS}s and retrying ($attempt/${FLEET_SYNC_PACKED_REFS_LOCK_RETRIES}) (owning process may be exiting)" >&2
     sleep "$FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS"
-    FETCH_OUTPUT=$(git -C "$PROJ" fetch origin --prune --quiet 2>&1); rc=$?
+    FETCH_OUTPUT=$(git -C "$PROJ" fetch "$remote" --prune --quiet 2>&1); rc=$?
     if [ "$rc" -eq 0 ]; then
       echo "$label: fetch succeeded on retry; packed-refs lock cleared on its own" >&2
       # One stdout summary so a session-start refresh (which discards fleet-sync
@@ -198,7 +241,7 @@ fetch_with_packed_refs_lock_guard() {
         return "$rc"
       fi
       echo "$label: removed provably-stale packed-refs lock $lock (age >= ${FLEET_SYNC_PACKED_REFS_LOCK_AGE_SECS}s, no live holder) and retrying fetch" >&2
-      FETCH_OUTPUT=$(git -C "$PROJ" fetch origin --prune --quiet 2>&1); rc=$?
+      FETCH_OUTPUT=$(git -C "$PROJ" fetch "$remote" --prune --quiet 2>&1); rc=$?
       if [ "$rc" -eq 0 ]; then
         echo "$label: fetch succeeded after stale packed-refs lock cleanup" >&2
         echo "$label: recovered: removed a stale packed-refs lock (no live holder)"
@@ -284,7 +327,7 @@ stuck_state() {
 }
 
 # Loud, quantified report for a clone we deliberately leave untouched. Includes
-# how far behind origin/<default> it is, so a chronically-stuck clone is visibly
+# how far behind its resolved base it is, so a chronically-stuck clone is visibly
 # distinct from a benign one-off skip.
 report_stuck() {
   local state=$1 behind
@@ -310,12 +353,25 @@ sync_project() {
     echo "$label: skipped: local-only project"
     return 0
   fi
-  if ! git -C "$PROJ" remote get-url origin >/dev/null 2>&1; then
-    echo "$label: skipped: no origin remote"
+  SYNC_REMOTE=origin
+  SYNC_BASE=
+  SYNC_DEFAULT=
+  if targets_firstmate_checkout; then
+    if SYNC_DEFAULT=$(default_branch); then
+      resolve_update_base "$PROJ" "$SYNC_DEFAULT"
+      SYNC_REMOTE=$RESOLVE_BASE_REMOTE
+      SYNC_BASE=$RESOLVE_BASE_REF
+      [ -z "$RESOLVE_BASE_NOTE" ] || echo "$label: $RESOLVE_BASE_NOTE"
+    else
+      SYNC_DEFAULT=
+    fi
+  fi
+  if ! git -C "$PROJ" remote get-url "$SYNC_REMOTE" >/dev/null 2>&1; then
+    echo "$label: skipped: no $SYNC_REMOTE remote"
     return 0
   fi
 
-  if ! fetch_with_packed_refs_lock_guard; then
+  if ! fetch_with_packed_refs_lock_guard "$SYNC_REMOTE"; then
     reason="fetch failed"
     if [ -n "$FETCH_OUTPUT" ]; then
       reason="$reason: $(first_line "$FETCH_OUTPUT")"
@@ -324,13 +380,41 @@ sync_project() {
     return 0
   fi
 
+  # prune_gone_branches reads each local branch's own %(upstream:track), so every
+  # remote some branch tracks must have been fetched with --prune for its deleted
+  # remote branches to read "[gone]". When the resolved development remote is not
+  # origin, the fetch above refreshes only that remote, so origin-tracked branches
+  # (this fleet pins every PR to origin) would keep stale remote-tracking refs and
+  # never be pruned. Fetch origin too in that case. In the current operational home
+  # origin already IS the development fork, so the same-remote skip makes this a
+  # no-op there today; it protects the mixed-tracking shape a fork transition or a
+  # remote rename produces. Only the extra prune reach is at stake here - BASE below
+  # still compares against the resolved development remote alone - so a failure is
+  # reported and pruning simply stays as conservative as before. Gated on
+  # FM_FLEET_PRUNE for that same reason: with pruning off nothing reads these refs,
+  # so the fetch would be a pure round trip.
+  if [ "${FM_FLEET_PRUNE:-1}" != "0" ] && [ "$SYNC_REMOTE" != origin ] \
+      && git -C "$PROJ" remote get-url origin >/dev/null 2>&1; then
+    if ! fetch_with_packed_refs_lock_guard origin; then
+      reason="origin prune fetch failed"
+      if [ -n "$FETCH_OUTPUT" ]; then
+        reason="$reason: $(first_line "$FETCH_OUTPUT")"
+      fi
+      echo "$label: warning: $reason; origin-tracked branches not pruned this run"
+    fi
+  fi
+
   prune_gone_branches || true
 
-  DEFAULT=$(default_branch) || {
-    echo "$label: skipped: cannot determine default branch"
-    return 0
-  }
-  BASE="origin/$DEFAULT"
+  if [ -n "$SYNC_DEFAULT" ]; then
+    DEFAULT=$SYNC_DEFAULT
+  else
+    DEFAULT=$(default_branch) || {
+      echo "$label: skipped: cannot determine default branch"
+      return 0
+    }
+  fi
+  BASE="${SYNC_BASE:-origin/$DEFAULT}"
   if ! git -C "$PROJ" rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
     echo "$label: skipped: $BASE does not exist"
     return 0

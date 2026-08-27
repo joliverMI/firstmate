@@ -2,14 +2,19 @@
 # Review a crewmate branch against the authoritative base.
 #
 # Pooled project clones do not keep their local default branch current, so this
-# helper compares remote-backed projects against origin/<default> after fetching
-# the default branch, and local-only projects against the local default branch.
+# helper compares remote-backed projects against the development remote's
+# <default> after fetching that branch (the checkout's own configured upstream,
+# e.g. a fork, falling back to origin/<default>; see the resolve_update_base
+# call below), and local-only projects against the local default branch.
 # When state/<id>.meta records pr= (URL or number) for an open PR, the compare
 # side is ALWAYS a freshly fetched refs/pull/<n>/head by default so review stays
-# current after no-mistakes fix rounds push to the PR. A recorded pr_head= is
-# only a fallback when fetch fails (stale recorded SHAs must never win over a
-# reachable remote PR head). If neither PR head can be resolved, fall back to
-# the local branch with a warning. Without pr=, compare the local branch.
+# current after no-mistakes fix rounds push to the PR. That pull ref is fetched
+# from ORIGIN, not the development remote: PRs are pinned to origin by
+# bin/fm-pr-destination-guard.sh, so refs/pull/* exists nowhere else.
+# A recorded pr_head= is only a fallback when fetch fails (stale recorded SHAs
+# must never win over a reachable remote PR head). If neither PR head can be
+# resolved, fall back to the local branch with a warning. Without pr=, compare
+# the local branch.
 # Usage: fm-review-diff.sh <task-id> [--stat]
 #   --stat prints only the stat summary; default prints stat summary plus full diff.
 set -eu
@@ -19,6 +24,8 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 "$FM_ROOT/bin/fm-guard.sh" || true
+# shellcheck source=bin/fm-dev-remote-lib.sh
+. "$SCRIPT_DIR/fm-dev-remote-lib.sh"
 
 usage() {
   echo "usage: fm-review-diff.sh <task-id> [--stat]" >&2
@@ -67,6 +74,16 @@ default_branch() {
 
 DEFAULT=$(default_branch) || { echo "error: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master" >&2; exit 1; }
 
+# resolve_update_base (fm-dev-remote-lib.sh) follows $PROJ's own configured
+# upstream for $DEFAULT - e.g. a fork tracking fork/main - rather than
+# hardcoding origin, so review diffs against the lineage this checkout
+# actually develops on. Falls back to origin/$DEFAULT when no upstream is
+# configured, unchanged from before. This covers the DIFF BASE only; the PR
+# pull-ref fetch below stays pinned to origin (see fetch_pull_head).
+resolve_update_base "$PROJ" "$DEFAULT"
+DEV_REMOTE=$RESOLVE_BASE_REMOTE
+DEV_BRANCH=$RESOLVE_BASE_BRANCH
+
 BRANCH="fm/$ID"
 if ! git -C "$WT" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null; then
   BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
@@ -93,6 +110,10 @@ pr_number_from_target() {
 
 fetch_pull_head() {
   local n=$1 resolved
+  # PINNED TO ORIGIN, unlike the review base above: refs/pull/<n>/head is a
+  # PR-lineage ref, and bin/fm-pr-destination-guard.sh pins every PR this fleet
+  # opens to origin, so the pull ref only ever exists there. DEV_REMOTE (the
+  # configured upstream, e.g. a fork) has no refs/pull/* namespace of its own.
   git -C "$WT" remote get-url origin >/dev/null 2>&1 || return 1
   # Fetch into a private ref so a later base-branch fetch cannot clobber the
   # compare tip via FETCH_HEAD, and so we never review a stale local object.
@@ -133,11 +154,11 @@ if [ -n "$PR_URL" ]; then
   fi
 fi
 
-if git -C "$PROJ" remote get-url origin >/dev/null 2>&1; then
+if git -C "$PROJ" remote get-url "$DEV_REMOTE" >/dev/null 2>&1; then
   # Update the remote-tracking ref itself; a bare single-branch fetch can leave
-  # origin/<default> stale on some Git versions and only refresh FETCH_HEAD.
-  git -C "$WT" fetch origin "+refs/heads/$DEFAULT:refs/remotes/origin/$DEFAULT" --quiet
-  BASE="origin/$DEFAULT"
+  # <remote>/<default> stale on some Git versions and only refresh FETCH_HEAD.
+  git -C "$WT" fetch "$DEV_REMOTE" "+refs/heads/$DEV_BRANCH:refs/remotes/$DEV_REMOTE/$DEV_BRANCH" --quiet
+  BASE="$RESOLVE_BASE_REF"
 else
   BASE="$DEFAULT"
 fi

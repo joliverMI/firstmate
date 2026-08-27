@@ -25,8 +25,8 @@ test_list_all_exact_suite_coverage() {
     done | LC_ALL=C sort
   )
   [ -n "$listed" ] || fail "--list --all printed nothing"
-  missing=$(comm -23 <(printf '%s\n' "$expected") <(printf '%s\n' "$listed") || true)
-  extra=$(comm -13 <(printf '%s\n' "$expected") <(printf '%s\n' "$listed") || true)
+  missing=$(LC_ALL=C comm -23 <(printf '%s\n' "$expected") <(printf '%s\n' "$listed") || true)
+  extra=$(LC_ALL=C comm -13 <(printf '%s\n' "$expected") <(printf '%s\n' "$listed") || true)
   [ -z "$missing" ] || fail "--list --all missing scripts: $missing"
   [ -z "$extra" ] || fail "--list --all unexpected scripts: $extra"
   # No duplicates.
@@ -92,6 +92,7 @@ init_changed_fixture_repo() {
   local repo=$1 script
   mkdir -p "$repo/bin" "$repo/tests"
   cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  cp "$ROOT/bin/fm-dev-remote-lib.sh" "$repo/bin/fm-dev-remote-lib.sh"
   chmod +x "$repo/bin/fm-test-run.sh"
   for script in \
     fm-brief.test.sh \
@@ -202,6 +203,44 @@ assert doc["families"] == []
 ' "$json" || { rm -rf "$tmp"; fail "empty selection JSON summary is wrong"; }
   rm -rf "$tmp"
   pass "empty changed selection emits deterministic text and JSON summaries"
+}
+
+# Regression for a checkout whose local main tracks a fork rather than origin
+# (this repo's own case: fork/main and origin/main have genuinely diverged).
+# With no --base given, --changed must diff against main's configured
+# upstream, not a hardcoded origin/main - otherwise the "changed" set is
+# inflated or shrunk by the two remotes' unrelated drift instead of the
+# branch's real edits.
+test_changed_default_base_prefers_mains_upstream() {
+  local tmp repo json base
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-upstream.XXXXXX")
+  repo="$tmp/repo"
+  mkdir -p "$repo/bin" "$repo/tests"
+  cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  cp "$ROOT/bin/fm-dev-remote-lib.sh" "$repo/bin/fm-dev-remote-lib.sh"
+  chmod +x "$repo/bin/fm-test-run.sh"
+  git -C "$repo" init -q -b main
+  git -C "$repo" add -A
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid \
+    commit -q -m c0
+  git clone -q --bare "$repo" "$tmp/origin.git"
+  git clone -q --bare "$repo" "$tmp/fork.git"
+  git -C "$repo" remote add origin "$tmp/origin.git"
+  git -C "$repo" remote add fork "$tmp/fork.git"
+  git -C "$repo" fetch -q origin
+  git -C "$repo" fetch -q fork
+  git -C "$repo" branch --quiet --set-upstream-to=fork/main main
+
+  (cd "$repo" && bin/fm-test-run.sh --changed --json "$tmp/timing.json" >/dev/null 2>"$tmp/err") \
+    || { rm -rf "$tmp"; fail "changed run with no --base failed: $(cat "$tmp/err")"; }
+  base=$(python3 -c '
+import json, sys
+print(json.load(open(sys.argv[1]))["selection"])
+' "$tmp/timing.json")
+  assert_contains "$base" "base=fork/main" "default --changed base did not follow main's configured upstream"
+  assert_not_contains "$base" "base=origin/main" "default --changed base fell back to origin/main despite a configured upstream"
+  rm -rf "$tmp"
+  pass "fm-test-run.sh --changed defaults to main's configured upstream, not a hardcoded origin/main"
 }
 
 test_timing_markers_and_json() {
@@ -359,7 +398,7 @@ test_portable_shard_union_and_coverage_guard() {
   herdr=$("$RUNNER" --list --family real-herdr-gated)
   [ -n "$s1" ] && [ -n "$s2" ] || fail "portable parallel shards must be non-empty"
   # Shards disjoint.
-  overlap=$(comm -12 <(printf '%s\n' "$s1" | LC_ALL=C sort) <(printf '%s\n' "$s2" | LC_ALL=C sort) || true)
+  overlap=$(LC_ALL=C comm -12 <(printf '%s\n' "$s1" | LC_ALL=C sort) <(printf '%s\n' "$s2" | LC_ALL=C sort) || true)
   [ -z "$overlap" ] || fail "portable parallel shards overlap: $overlap"
   # Union of shards equals proven-isolated.
   [ "$(printf '%s\n' "$s1" "$s2" | LC_ALL=C sort -u)" = \
@@ -507,6 +546,7 @@ test_jobs_parallel_scheduler_and_failure_propagation() {
   d=tests/fm-supervision-instructions.test.sh
   mkdir -p "$repo/bin" "$repo/tests" "$evidence" "$fake_bin"
   cp "$RUNNER" "$runner"
+  cp "$ROOT/bin/fm-dev-remote-lib.sh" "$repo/bin/fm-dev-remote-lib.sh"
   cat >"$fake_bin/stat" <<'SH'
 #!/usr/bin/env bash
 if [ "$1" = "-c" ] && [ "$2" = "%a" ]; then
@@ -631,10 +671,33 @@ test_herdr_ci_family_run_has_a_step_timeout() {
   # The required Herdr lane's hang tripwire is the family-run *step* bound, not
   # the 75-minute job cap. Parse the workflow as YAML so nested `with.name`
   # artifact keys cannot masquerade as the step contract.
-  command -v ruby >/dev/null 2>&1 \
-    || fail "ruby is required to parse .github/workflows/ci.yml as YAML"
   local json job_timeout step_timeout
-  json=$(ruby -ryaml -rjson -e '
+  # python3 (already required below) with PyYAML is the primary parser; ruby is
+  # kept as a fallback for hosts whose python lacks PyYAML.
+  if python3 -c 'import yaml' >/dev/null 2>&1; then
+    json=$(python3 -c '
+import json, sys, yaml
+doc = yaml.safe_load(open(sys.argv[1]))
+job = doc["jobs"]["tests-herdr"]
+step = next(
+    (
+        s for s in job["steps"]
+        if isinstance(s, dict) and s.get("name") == "Run real-Herdr family (serial, required)"
+    ),
+    None,
+)
+if step is None:
+    raise SystemExit("missing family-run step")
+if "timeout-minutes" not in step:
+    raise SystemExit("family-run step has no timeout-minutes")
+print(json.dumps({
+    "job_timeout": job["timeout-minutes"],
+    "step_timeout": step["timeout-minutes"],
+}))
+' "$ROOT/.github/workflows/ci.yml") \
+      || fail "could not parse tests-herdr timeouts from ci.yml"
+  elif command -v ruby >/dev/null 2>&1; then
+    json=$(ruby -ryaml -rjson -e '
 doc = YAML.load_file(ARGV[0])
 job = doc.fetch("jobs").fetch("tests-herdr")
 step = job.fetch("steps").find { |s|
@@ -647,7 +710,10 @@ puts JSON.generate(
   "step_timeout" => step.fetch("timeout-minutes")
 )
 ' "$ROOT/.github/workflows/ci.yml") \
-    || fail "could not parse tests-herdr timeouts from ci.yml"
+      || fail "could not parse tests-herdr timeouts from ci.yml"
+  else
+    fail "a YAML parser (python3 with PyYAML, or ruby) is required to parse .github/workflows/ci.yml"
+  fi
   job_timeout=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["job_timeout"])' <<<"$json") \
     || fail "could not read job timeout from parsed workflow"
   step_timeout=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["step_timeout"])' <<<"$json") \
@@ -709,6 +775,7 @@ test_single_script_selection
 test_changed_file_selection_is_conservative
 test_changed_dependency_selection_and_unmapped_failure
 test_empty_selection_emits_summary
+test_changed_default_base_prefers_mains_upstream
 test_timing_markers_and_json
 test_aggregate_exit_behavior
 test_gate_skip_accounting

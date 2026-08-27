@@ -49,13 +49,24 @@ test_list_files_reports_the_shell_inventory() {
 #   FM_TEST_GIT_BRANCH           branch name for `rev-parse --abbrev-ref HEAD`
 #   FM_TEST_GIT_HAS_ORIGIN_MAIN  1 (default) or 0
 #   FM_TEST_GIT_HAS_MAIN         1 (default) or 0
+#   FM_TEST_GIT_MAIN_UPSTREAM    local main's configured upstream short name
+#                                (e.g. "fork/main"), empty/unset = none
+#                                configured. A value with no "/" (e.g. "dev")
+#                                is a LOCAL-branch upstream, which names no
+#                                remote at all.
+#   FM_TEST_GIT_HAS_UPSTREAM_REF 1 or 0 (default) - whether
+#                                FM_TEST_GIT_MAIN_UPSTREAM itself resolves locally
 #   FM_TEST_GIT_MERGE_BASE_OK    1 (default) or 0
 #   FM_TEST_GIT_MERGE_BASE       merge-base value to print when OK
 #   FM_TEST_GIT_DIFF_FILE        path to a file of NUL-separated changed paths
+#   FM_TEST_GIT_LOG              path to append every invocation's "$*" to,
+#                                so a test can assert exactly which ref a later
+#                                command (e.g. merge-base) was given
 fm_lint_stub_git() {
   local fakebin=$1
   cat > "$fakebin/git" <<'SH'
 #!/usr/bin/env bash
+[ -z "${FM_TEST_GIT_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_TEST_GIT_LOG"
 case "$*" in
   "rev-parse --is-inside-work-tree")
     [ "${FM_TEST_GIT_INSIDE_WORKTREE:-1}" = 1 ] || exit 1
@@ -66,11 +77,30 @@ case "$*" in
     printf '%s\n' "${FM_TEST_GIT_BRANCH:-feature}"
     exit 0
     ;;
+  "-C "*" for-each-ref --format=%(upstream:remotename) refs/heads/main")
+    # Real git prints the remote's own name, or "." when the upstream is a
+    # local branch - never a component split out of the short name.
+    if [ -n "${FM_TEST_GIT_MAIN_UPSTREAM:-}" ]; then
+      case "$FM_TEST_GIT_MAIN_UPSTREAM" in
+        */*) printf '%s\n' "${FM_TEST_GIT_MAIN_UPSTREAM%%/*}" ;;
+        *) printf '.\n' ;;
+      esac
+    fi
+    exit 0
+    ;;
+  "-C "*" for-each-ref --format=%(upstream:remoteref) refs/heads/main")
+    [ -n "${FM_TEST_GIT_MAIN_UPSTREAM:-}" ] \
+      && printf 'refs/heads/%s\n' "${FM_TEST_GIT_MAIN_UPSTREAM#*/}"
+    exit 0
+    ;;
   "rev-parse --verify -q origin/main")
     [ "${FM_TEST_GIT_HAS_ORIGIN_MAIN:-1}" = 1 ] && exit 0 || exit 1
     ;;
   "rev-parse --verify -q main")
     [ "${FM_TEST_GIT_HAS_MAIN:-1}" = 1 ] && exit 0 || exit 1
+    ;;
+  "rev-parse --verify -q ${FM_TEST_GIT_MAIN_UPSTREAM:-__none__}")
+    [ "${FM_TEST_GIT_HAS_UPSTREAM_REF:-0}" = 1 ] && exit 0 || exit 1
     ;;
   "merge-base "*)
     if [ "${FM_TEST_GIT_MERGE_BASE_OK:-1}" = 1 ]; then
@@ -142,6 +172,67 @@ test_changed_mode_lints_only_the_changed_file() {
   [ "$(cat "$log")" = "$target" ] \
     || fail "changed-mode lint did not run ShellCheck on exactly the changed file"$'\n'"logged: $(cat "$log")"
   pass "fm-lint.sh changed mode lints only the changed canonical file"
+}
+
+# Regression for a checkout whose local main tracks a fork rather than origin
+# (this repo's own case: fork/main and origin/main have genuinely diverged).
+# Diffing against origin/main there would inflate the "changed" set with the
+# two remotes' unrelated drift instead of the branch's real edits. Proves the
+# merge-base is computed against main's configured upstream, not origin/main.
+test_changed_mode_prefers_mains_configured_upstream() {
+  local tmp fakebin log diff_file gitlog out target
+  tmp=$(fm_test_tmproot fm-lint-upstream-pref)
+  fakebin=$(fm_fakebin "$tmp")
+  fm_lint_stub_git "$fakebin"
+  log="$tmp/shellcheck.log"
+  fm_lint_stub_shellcheck "$fakebin" "$log"
+  diff_file="$tmp/diff.nul"
+  gitlog="$tmp/git-calls.log"
+  target="bin/fm-install-shellcheck.sh"
+  fm_lint_write_diff_file "$diff_file" "$target"
+
+  out=$(PATH="$fakebin:$PATH" GITHUB_ACTIONS='' CI='' FM_LINT_JOBS=1 \
+    FM_TEST_GIT_BRANCH=feature \
+    FM_TEST_GIT_MAIN_UPSTREAM=fork/main FM_TEST_GIT_HAS_UPSTREAM_REF=1 \
+    FM_TEST_GIT_DIFF_FILE="$diff_file" FM_TEST_GIT_LOG="$gitlog" "$LINT" 2>&1) \
+    || fail "upstream-preferring lint run failed"$'\n'"$out"
+  grep -qxF 'merge-base fork/main HEAD' "$gitlog" \
+    || fail "fm-lint.sh did not diff against main's configured upstream"$'\n'"$(cat "$gitlog")"
+  grep -qxF 'merge-base origin/main HEAD' "$gitlog" \
+    && fail "fm-lint.sh fell back to origin/main despite a configured upstream"
+  [ "$(cat "$log")" = "$target" ] \
+    || fail "upstream-preferring lint did not run ShellCheck on exactly the changed file"$'\n'"logged: $(cat "$log")"
+  pass "fm-lint.sh changed mode diffs against main's configured upstream, not a hardcoded origin/main"
+}
+
+# A configured upstream that is a LOCAL branch (branch.main.remote = ".") names
+# no remote at all. Treating its bare name as "<remote>/<branch>" produced a
+# base ref like "dev/dev" that resolves nowhere, so the diff base silently
+# became something other than the announced origin/main fallback.
+test_changed_mode_ignores_a_local_branch_upstream() {
+  local tmp fakebin log diff_file gitlog out target
+  tmp=$(fm_test_tmproot fm-lint-local-upstream)
+  fakebin=$(fm_fakebin "$tmp")
+  fm_lint_stub_git "$fakebin"
+  log="$tmp/shellcheck.log"
+  fm_lint_stub_shellcheck "$fakebin" "$log"
+  diff_file="$tmp/diff.nul"
+  gitlog="$tmp/git-calls.log"
+  target="bin/fm-install-shellcheck.sh"
+  fm_lint_write_diff_file "$diff_file" "$target"
+
+  out=$(PATH="$fakebin:$PATH" GITHUB_ACTIONS='' CI='' FM_LINT_JOBS=1 \
+    FM_TEST_GIT_BRANCH=feature \
+    FM_TEST_GIT_MAIN_UPSTREAM=dev FM_TEST_GIT_HAS_UPSTREAM_REF=1 \
+    FM_TEST_GIT_DIFF_FILE="$diff_file" FM_TEST_GIT_LOG="$gitlog" "$LINT" 2>&1) \
+    || fail "local-branch-upstream lint run failed"$'\n'"$out"
+  grep -qxF 'merge-base origin/main HEAD' "$gitlog" \
+    || fail "fm-lint.sh did not fall back to origin/main for a local-branch upstream"$'\n'"$(cat "$gitlog")"
+  grep -qE '^merge-base dev/' "$gitlog" \
+    && fail "fm-lint.sh treated a local branch's name as a remote"$'\n'"$(cat "$gitlog")"
+  [ "$(cat "$log")" = "$target" ] \
+    || fail "local-branch-upstream lint did not run ShellCheck on exactly the changed file"$'\n'"logged: $(cat "$log")"
+  pass "fm-lint.sh falls back to origin/main when main tracks a local branch, which names no remote"
 }
 
 test_ci_forces_full_lint_even_with_empty_diff() {
@@ -632,6 +723,8 @@ test_jobs_are_deterministic_and_complete
 test_worker_trees_stop_on_signal
 test_seeded_module_boundary_parity
 test_changed_mode_lints_only_the_changed_file
+test_changed_mode_prefers_mains_configured_upstream
+test_changed_mode_ignores_a_local_branch_upstream
 test_ci_forces_full_lint_even_with_empty_diff
 test_main_branch_forces_full_lint
 test_explicit_path_bypasses_changed_logic

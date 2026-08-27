@@ -42,6 +42,48 @@ make_case() {
   printf '%s\n' "$case_dir"
 }
 
+# make_fork_case builds a project whose local main tracks a "fork" remote
+# separate from "origin", the two genuinely diverged - this repo's own
+# situation (see docs/remote-secondmates.md). origin gets an extra
+# commit fork never receives, so a review that wrongly diffs against origin
+# would be diffing against the wrong lineage entirely.
+make_fork_case() {
+  local name=$1 case_dir
+  case_dir="$TMP_ROOT/$name"
+  mkdir -p "$case_dir/state"
+
+  git init -q --bare "$case_dir/origin.git"
+  git -C "$case_dir/origin.git" symbolic-ref HEAD refs/heads/main
+  git init -q --bare "$case_dir/fork.git"
+  git -C "$case_dir/fork.git" symbolic-ref HEAD refs/heads/main
+
+  git init -q "$case_dir/_seed"
+  git -C "$case_dir/_seed" checkout -q -b main
+  printf 'base\n' > "$case_dir/_seed/feature.txt"
+  git -C "$case_dir/_seed" add feature.txt
+  git -C "$case_dir/_seed" -c user.email=t@t -c user.name=t commit -qm "shared baseline"
+  git -C "$case_dir/_seed" remote add origin "$case_dir/origin.git"
+  git -C "$case_dir/_seed" remote add fork "$case_dir/fork.git"
+  git -C "$case_dir/_seed" push -q origin main
+  git -C "$case_dir/_seed" push -q fork main
+  # origin drifts on its own after the shared baseline; fork never gets this.
+  printf 'origin-only-drift\n' >> "$case_dir/_seed/unrelated.txt"
+  git -C "$case_dir/_seed" add unrelated.txt
+  git -C "$case_dir/_seed" -c user.email=t@t -c user.name=t commit -qm "origin-only drift"
+  git -C "$case_dir/_seed" push -q origin main
+  rm -rf "$case_dir/_seed"
+
+  git clone -q "$case_dir/fork.git" "$case_dir/project"
+  git -C "$case_dir/project" remote rename origin fork
+  git -C "$case_dir/project" remote add origin "$case_dir/origin.git"
+  git -C "$case_dir/project" fetch -q origin
+  git -C "$case_dir/project" branch --quiet --set-upstream-to=fork/main main
+  git -C "$case_dir/project" worktree add -q -b fm/task-x1 "$case_dir/wt" main
+
+  touch "$case_dir/state/.last-watcher-beat"
+  printf '%s\n' "$case_dir"
+}
+
 write_task_meta() {
   local case_dir=$1
   shift
@@ -169,8 +211,73 @@ test_unreachable_pr_head_falls_back_with_warning() {
   pass "fm-review-diff falls back to local branch with a warning when PR head is unreachable"
 }
 
+test_fork_tracking_diffs_against_fork_but_fetches_pr_from_origin() {
+  local case_dir out
+  case_dir=$(make_fork_case fork-tracking)
+  stale_and_pr_commits "$case_dir"
+  # The two remotes carry different things, and each side of the diff has to
+  # come from the right one. bin/fm-pr-destination-guard.sh pins every PR this
+  # fleet opens to ORIGIN, so refs/pull/9/head exists on origin alone - the
+  # fork has no refs/pull/* namespace at all here. The diff BASE, meanwhile,
+  # must still follow main's configured upstream (fork). Resolving the pull ref
+  # through the fork instead loses the PR head entirely and silently reviews
+  # the stale local branch.
+  git -C "$case_dir/wt" push -q origin "pr-head-tmp:refs/pull/9/head"
+  write_task_meta "$case_dir" "pr=https://example.invalid/pull/9"
+
+  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
+
+  assert_contains "$out" "diff base: fork/main" \
+    "fork-tracking: diff base must follow main's configured upstream (fork), not origin"
+  assert_contains "$out" '+pr-fixed' \
+    "fork-tracking: the PR head must be fetched from origin, where the pull ref lives"
+  assert_not_contains "$out" 'stale-local' \
+    "fork-tracking: diff must not fall back to the stale local branch"
+  assert_not_contains "$(cat "$case_dir/stderr")" 'warning: PR head unavailable' \
+    "fork-tracking: the origin-pinned PR head fetch should succeed without falling back"
+  pass "fm-review-diff diffs against the configured upstream (fork) while fetching the PR head from origin"
+}
+
+test_local_branch_upstream_falls_back_to_origin() {
+  local case_dir out origin_tip
+  case_dir=$(make_case local-upstream)
+  # main tracking a LOCAL branch is a configured upstream that names no remote
+  # at all (branch.main.remote = "."). Splitting the short upstream on "/"
+  # yielded the bare branch name as both remote and branch, so the review
+  # silently stopped fetching and diffed against the stale local default.
+  git -C "$case_dir/project" branch -q dev main
+  git -C "$case_dir/project" branch --quiet --set-upstream-to=dev main
+
+  # origin moves past the local checkout, so whether the run actually fetched
+  # through the resolved remote is observable in the tracking ref afterwards.
+  git clone -q "$case_dir/origin.git" "$case_dir/_push"
+  printf 'origin-moved\n' > "$case_dir/_push/moved.txt"
+  git -C "$case_dir/_push" add moved.txt
+  git -C "$case_dir/_push" commit -qm "origin advanced past the local checkout"
+  git -C "$case_dir/_push" push -q origin main
+  rm -rf "$case_dir/_push"
+  origin_tip=$(git -C "$case_dir/origin.git" rev-parse main)
+
+  printf 'task work\n' > "$case_dir/wt/feature.txt"
+  git -C "$case_dir/wt" add feature.txt
+  git -C "$case_dir/wt" commit -qm "task work"
+  write_task_meta "$case_dir"
+
+  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
+
+  assert_contains "$out" "diff base: origin/main" \
+    "local-upstream: a local-branch upstream names no remote, so the base must fall back to origin/main"
+  assert_not_contains "$out" "diff base: dev" \
+    "local-upstream: the tracked local branch's name must never be treated as a remote"
+  [ "$(git -C "$case_dir/project" rev-parse refs/remotes/origin/main)" = "$origin_tip" ] \
+    || fail "local-upstream: origin/main was not refreshed, so the base was never fetched through the resolved remote"
+  pass "fm-review-diff falls back to origin/<default> when the default branch tracks a local branch"
+}
+
 test_pr_meta_uses_pr_head_not_stale_local
 test_pr_meta_fetches_pull_head_without_recorded_sha
 test_stale_recorded_pr_head_loses_to_fetched_pull_head
 test_no_pr_meta_uses_local_branch
 test_unreachable_pr_head_falls_back_with_warning
+test_fork_tracking_diffs_against_fork_but_fetches_pr_from_origin
+test_local_branch_upstream_falls_back_to_origin

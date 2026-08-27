@@ -27,7 +27,8 @@
 # Options:
 #   --json <path>   write a deterministic timing artifact after the run
 #   --list          print selected script paths (one per line) and exit 0
-#   --base <ref>    with --changed, compare against this ref (default: origin/main)
+#   --base <ref>    with --changed, compare against this ref (default: local main's
+#                   configured upstream when set, else origin/main)
 #   --exclude-family <name>
 #                   drop scripts whose primary family matches <name> after selection
 #                   (repeatable; portable CI lanes exclude real-herdr-gated so the
@@ -70,8 +71,11 @@
 # under-selecting, and never expands to the complete suite unless --all.
 set -eu
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SELF_DIR/.." && pwd)"
 cd "$ROOT" || exit 1
+# shellcheck source=bin/fm-dev-remote-lib.sh
+. "$SELF_DIR/fm-dev-remote-lib.sh"
 
 MODE=
 LIST_ONLY=0
@@ -81,7 +85,7 @@ CHECK_COVERAGE=0
 AGGREGATE_OUT=
 FAMILY=
 LANE=
-BASE_REF=origin/main
+BASE_REF=
 JSON_PATH=
 SCRIPTS=()
 EXCLUDE_FAMILIES=()
@@ -169,7 +173,7 @@ family_for_basename() {
     fm-backlog-handoff.test.sh|fm-on.test.sh|fm-remote-backlog-handoff.test.sh|\
     fm-remote-doctor.test.sh|fm-remote-job.test.sh|fm-remote-job-orphan-reap.test.sh|\
     fm-remote-reply.test.sh|fm-remote-secondmate-lifecycle-e2e.test.sh|\
-    fm-remote-secondmate-trace-context.test.sh|\
+    fm-remote-secondmate-trace-context.test.sh|fm-remote-update-follows-fork.test.sh|\
     fm-secondmate-harness.test.sh|fm-secondmate-lifecycle-e2e.test.sh|\
     fm-secondmate-liveness.test.sh|fm-secondmate-safety.test.sh|fm-secondmate-sync.test.sh|\
     fm-startup-memory-budget.test.sh|fm-stow-cascade.test.sh|\
@@ -200,6 +204,7 @@ family_for_basename() {
     fm-herdr-session-cleanup.test.sh|fm-send-resolve-key.test.sh|fm-send-strict.test.sh|fm-spawn-batch.test.sh|\
     fm-spawn-dispatch-profile.test.sh|\
     fm-trace-context-spawn.test.sh|fm-spawn-worktree-settle.test.sh|\
+    fm-spawn-pool-base-freshen.test.sh|\
     fm-spawn-pool-worktree-collision.test.sh|\
     fm-teardown-endpoint-safety.test.sh)
       printf '%s\n' backend-dispatch
@@ -600,8 +605,8 @@ run_coverage_guard() {
     return 1
   fi
   cat "$tmp/s1" "$tmp/s2" | LC_ALL=C sort -u >"$tmp/shards_union"
-  missing=$(comm -23 "$tmp/proven" "$tmp/shards_union" || true)
-  extra=$(comm -13 "$tmp/proven" "$tmp/shards_union" || true)
+  missing=$(LC_ALL=C comm -23 "$tmp/proven" "$tmp/shards_union" || true)
+  extra=$(LC_ALL=C comm -13 "$tmp/proven" "$tmp/shards_union" || true)
   if [ -n "$missing" ] || [ -n "$extra" ]; then
     log "coverage guard: portable shards must equal the proven-isolated set"
     [ -z "$missing" ] || { log "missing from shards:"; printf '%s\n' "$missing" >&2; }
@@ -645,8 +650,8 @@ run_coverage_guard() {
     return 1
   fi
   LC_ALL=C sort -u "$tmp/serial_shards_raw" >"$tmp/serial_shards"
-  missing=$(comm -23 "$tmp/serial" "$tmp/serial_shards" || true)
-  extra=$(comm -13 "$tmp/serial" "$tmp/serial_shards" || true)
+  missing=$(LC_ALL=C comm -23 "$tmp/serial" "$tmp/serial_shards" || true)
+  extra=$(LC_ALL=C comm -13 "$tmp/serial" "$tmp/serial_shards" || true)
   if [ -n "$missing" ] || [ -n "$extra" ]; then
     log "coverage guard: portable serial shards must equal the portable serial lane"
     [ -z "$missing" ] || { log "missing from serial shards:"; printf '%s\n' "$missing" >&2; }
@@ -658,7 +663,7 @@ run_coverage_guard() {
   for pair in "shards_union:serial" "shards_union:herdr" "serial:herdr"; do
     a=${pair%%:*}
     b=${pair#*:}
-    comm -12 "$tmp/$a" "$tmp/$b" >"$tmp/overlap"
+    LC_ALL=C comm -12 "$tmp/$a" "$tmp/$b" >"$tmp/overlap"
     if [ -s "$tmp/overlap" ]; then
       log "coverage guard: overlap between $a and $b:"
       cat "$tmp/overlap" >&2
@@ -676,8 +681,8 @@ run_coverage_guard() {
     return 1
   fi
   LC_ALL=C sort -u "$tmp/union_raw" >"$tmp/union"
-  missing=$(comm -23 "$tmp/all" "$tmp/union" || true)
-  extra=$(comm -13 "$tmp/all" "$tmp/union" || true)
+  missing=$(LC_ALL=C comm -23 "$tmp/all" "$tmp/union" || true)
+  extra=$(LC_ALL=C comm -13 "$tmp/all" "$tmp/union" || true)
   if [ -n "$missing" ] || [ -n "$extra" ]; then
     log "coverage guard: union of portable shards + portable serial + Herdr must equal tests/*.test.sh"
     [ -z "$missing" ] || { log "missing from union:"; printf '%s\n' "$missing" >&2; }
@@ -690,7 +695,7 @@ run_coverage_guard() {
     "$ROOT/bin/fm-test-isolation-proof.sh" --list | LC_ALL=C sort -u >"$tmp/proof_list"
     if ! cmp -s "$tmp/proven" "$tmp/proof_list"; then
       log "coverage guard: embedded proven-isolated set diverges from bin/fm-test-isolation-proof.sh --list"
-      comm -3 "$tmp/proven" "$tmp/proof_list" >&2 || true
+      LC_ALL=C comm -3 "$tmp/proven" "$tmp/proof_list" >&2 || true
       rm -rf "$tmp"
       return 1
     fi
@@ -951,8 +956,12 @@ families_for_changed_path() {
     bin/fm-teardown.sh)
       # Teardown owns the card's advance to review (docs/dashboard.md "The
       # mechanical card link"), so it selects the board suites too.
+      # tests/fm-gotmp.test.sh (session-bootstrap) runs the real teardown
+      # against a hand-assembled bin/, so it is the suite most sensitive to
+      # teardown's sourced-sibling set and has to be selected with it.
       printf '%s\n' pr-forge
       printf '%s\n' dashboard
+      printf '%s\n' session-bootstrap
       ;;
     bin/fm-nm-run-lib.sh)
       # Shared no-mistakes run-attribution primitives, sourced by both
@@ -989,13 +998,41 @@ families_for_changed_path() {
       # lane's contract coverage re-runs.
       printf '%s\n' real-herdr-gated
       ;;
+    bin/fm-dev-remote-lib.sh)
+      # The single owner of development-remote resolution. Every tool that
+      # fetches, diffs, or reports divergence against "the development remote"
+      # goes through it - directly (review-diff, lint, this runner, fleet-sync's
+      # firstmate-checkout case)
+      # or through fm-ff-lib.sh (update/bootstrap, spawn's pooled worktree
+      # base, the stow cascade and config push, the fleet snapshot) - so a
+      # change here selects all of their families, not just whichever suites
+      # happen to name the file.
+      printf '%s\n' pr-forge
+      printf '%s\n' session-bootstrap
+      printf '%s\n' secondmate
+      printf '%s\n' backend-dispatch
+      printf '%s\n' snapshot-bearings
+      printf '%s\n' pure-contract-unit
+      ;;
     bin/fm-lint.sh|bin/fm-install-shellcheck.sh|\
     bin/fm-brief.sh|bin/fm-ensure-agents-md.sh|bin/fm-crew-state.sh|\
     bin/fm-decision-hold.sh|bin/fm-supervision*|bin/fm-transition-lib.sh|\
     bin/fm-tmux-lib.sh|bin/fm-marker-lib.sh|bin/fm-operational-input.sh|bin/fm-tasks-axi-lib.sh|\
     bin/fm-vendor-auth-probe.sh|\
     bin/fm-primary-scope-lib.sh|bin/fm-project-mode.sh|bin/fm-promote.sh|\
-    bin/fm-ff-lib.sh|bin/fm-gotmp*|bin/*pretool*)
+    bin/fm-gotmp*|bin/*pretool*)
+      printf '%s\n' pure-contract-unit
+      ;;
+    bin/fm-ff-lib.sh)
+      # The shared guarded fast-forward. Its owning suites are the ones that
+      # drive ff_target and default_branch for real - the self-update and
+      # bootstrap paths, the secondmate stow cascade and config push, spawn's
+      # pooled worktree base, and the fleet snapshot - not merely whichever
+      # suites happen to name the file.
+      printf '%s\n' session-bootstrap
+      printf '%s\n' secondmate
+      printf '%s\n' backend-dispatch
+      printf '%s\n' snapshot-bearings
       printf '%s\n' pure-contract-unit
       ;;
     .agents/skills/quota-array-dispatch/SKILL.md)
@@ -1058,6 +1095,23 @@ families_for_changed_path() {
         || printf '%s\n' "__unmapped__:$path"
       ;;
   esac
+}
+
+# default_changed_base_ref prints the --changed default when --base was not
+# passed explicitly: resolve_update_base's pick for local main
+# (fm-dev-remote-lib.sh) - its own configured upstream when one is set and
+# locally resolvable, so a checkout tracking a fork diffs against that fork
+# rather than a hardcoded origin/main that may have diverged from it and would
+# otherwise inflate or shrink the "changed" set with the two remotes'
+# unrelated drift; that resolver's own fallback is origin/main when no
+# upstream is configured.
+default_changed_base_ref() {
+  resolve_update_base "$ROOT" main
+  if git -C "$ROOT" rev-parse --verify -q "$RESOLVE_BASE_REF" >/dev/null 2>&1; then
+    printf '%s\n' "$RESOLVE_BASE_REF"
+    return 0
+  fi
+  printf 'origin/main\n'
 }
 
 select_changed() {
@@ -1417,6 +1471,7 @@ case "${MODE:-}" in
     SELECTION_DESC="proven-isolated"
     ;;
   changed)
+    [ -n "$BASE_REF" ] || BASE_REF=$(default_changed_base_ref)
     select_changed "$BASE_REF"
     SELECTION_DESC="changed:base=$BASE_REF"
     ;;
