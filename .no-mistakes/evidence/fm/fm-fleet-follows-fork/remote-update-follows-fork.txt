@@ -1,0 +1,78 @@
+Fixture (both runs identical): a remote host's firstmate code root whose
+'origin' is the public upstream template it was forked from and whose 'fork'
+remote is the repository the fleet actually develops on. main tracks fork/main.
+The fork carries the card-link tooling (bin/fm-dashboard.sh, fm-spawn.sh --card);
+the template never gets it and diverges on its own.
+
+################################################################
+# BEFORE THE FIX   (firstmate code at 9c58223)
+################################################################
+$ git -C <code-root> remote -v
+fork	<scratch>/fork.git (fetch)
+fork	<scratch>/fork.git (push)
+origin	<scratch>/origin.git (fetch)
+origin	<scratch>/origin.git (push)
+$ git -C <code-root> rev-parse --abbrev-ref main@{upstream}
+fork/main
+$ git -C <code-root> log --graph --oneline --decorate --all
+* 3a699ca (fork/main, fork/HEAD) feat(dashboard): fleet dashboard + fm-spawn --card link
+| * 7394639 (origin/main) docs: upstream template moves on independently
+|/  
+* 9ebe06d (HEAD -> main) shared baseline (no dashboard, no --card)
+
+--- remote secondmate home BEFORE the update ---
+$ ls <home>/bin/fm-dashboard.sh
+ls: cannot access '<scratch>/remote-home/bin/fm-dashboard.sh': No such file or directory
+$ <home>/bin/fm-spawn.sh --card ''
+error: ship spawns require --mode <no-mistakes|direct-PR|local-only>; resolve it at intake from the captain's instruction and the project's registered posture in data/projects.md
+
+--- run the real remote update path ---
+$ FM_ROOT_OVERRIDE=<code-root> FM_HOME=<home> bin/fm-remote-secondmate-control.sh update ios
+synced: 73946396b7c00d200169d83237ffa05fa00d61ff
+
+--- remote secondmate home AFTER the update ---
+code-root HEAD = 7394639   fork/main = 3a699ca   origin/main = 7394639
+home HEAD      = 7394639
+$ ls <home>/bin/fm-dashboard.sh
+ls: cannot access '<scratch>/remote-home/bin/fm-dashboard.sh': No such file or directory
+$ <home>/bin/fm-spawn.sh --card ''
+error: ship spawns require --mode <no-mistakes|direct-PR|local-only>; resolve it at intake from the captain's instruction and the project's registered posture in data/projects.md
+$ <home>/bin/fm-spawn.sh t1 /tmp --secondmate --card c-42
+error: unknown harness '--card'; pass a raw launch command to use an unverified adapter
+
+################################################################
+# AFTER THE FIX   (firstmate code at 17fa4a5)
+################################################################
+$ git -C <code-root> remote -v
+fork	<scratch>/fork.git (fetch)
+fork	<scratch>/fork.git (push)
+origin	<scratch>/origin.git (fetch)
+origin	<scratch>/origin.git (push)
+$ git -C <code-root> rev-parse --abbrev-ref main@{upstream}
+fork/main
+$ git -C <code-root> log --graph --oneline --decorate --all
+* a70ddcd (fork/main, fork/HEAD) feat(dashboard): fleet dashboard + fm-spawn --card link
+| * 60535e0 (origin/main) docs: upstream template moves on independently
+|/  
+* e0978a7 (HEAD -> main) shared baseline (no dashboard, no --card)
+
+--- remote secondmate home BEFORE the update ---
+$ ls <home>/bin/fm-dashboard.sh
+ls: cannot access '<scratch>/remote-home/bin/fm-dashboard.sh': No such file or directory
+$ <home>/bin/fm-spawn.sh --card ''
+error: ship spawns require --mode <no-mistakes|direct-PR|local-only>; resolve it at intake from the captain's instruction and the project's registered posture in data/projects.md
+
+--- run the real remote update path ---
+$ FM_ROOT_OVERRIDE=<code-root> FM_HOME=<home> bin/fm-remote-secondmate-control.sh update ios
+synced: a70ddcd8dfe8af6503fd9ea65efcb3889e9703ed
+
+--- remote secondmate home AFTER the update ---
+code-root HEAD = a70ddcd   fork/main = a70ddcd   origin/main = 60535e0
+home HEAD      = a70ddcd
+$ ls <home>/bin/fm-dashboard.sh
+<scratch>/remote-home/bin/fm-dashboard.sh
+$ <home>/bin/fm-spawn.sh --card ''
+error: --card requires a non-empty value
+$ <home>/bin/fm-spawn.sh t1 /tmp --secondmate --card c-42
+error: --card applies only to ship and scout spawns; a secondmate is recorded in the secondmate registry, never as a dashboard card
+
