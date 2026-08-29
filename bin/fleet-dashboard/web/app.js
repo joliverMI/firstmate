@@ -22,12 +22,26 @@ const STATUS_META = {
   review: { label: "Review" },
   complete: { label: "Complete" },
 };
-const CAPTAINS = ["firstmate", "captain_dj", "captain_river"];
-const CAPTAIN_META = {
-  firstmate: { label: "Firstmate" },
-  captain_dj: { label: "Captain DJ" },
-  captain_river: { label: "Captain River" },
-};
+// The captain set lives in captains.json and nowhere else - see that file's
+// own note. Fetched here rather than restated, so adding a captain there is
+// live on the board with no edit to this file, styles.css, or the server.
+// Top-level await in a module: the page has nothing to render without it, and
+// a failure must be visible rather than a blank board.
+const CAPTAIN_LIST = await (async () => {
+  try {
+    const res = await fetch("/captains.json", { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const list = (await res.json()).captains;
+    if (!Array.isArray(list) || list.length === 0) throw new Error("no captains defined");
+    return list;
+  } catch (err) {
+    document.getElementById("root").textContent =
+      `Fleet Dashboard could not load /captains.json (${err.message}) - the board cannot name its captains, so it will not render a wrong one.`;
+    throw err;
+  }
+})();
+const CAPTAINS = CAPTAIN_LIST.map((c) => c.id);
+const CAPTAIN_META = Object.fromEntries(CAPTAIN_LIST.map((c) => [c.id, { label: c.label, color: c.color }]));
 
 // Ticks every minute (bin/fm-fleet-audit-tick.sh's header documents the cron
 // cadence it assumes). Three missed ticks before the page calls the timer
@@ -84,7 +98,11 @@ function StatusPill({ status }) {
 }
 
 function CaptainPill({ captain }) {
-  return html`<span class="pill captain cap-${captain}">${CAPTAIN_META[captain]?.label || captain}</span>`;
+  const meta = CAPTAIN_META[captain];
+  return html`<span
+    class="pill captain"
+    style=${{ "--cap-color": meta?.color || "var(--text-muted)" }}
+  >${meta?.label || captain}</span>`;
 }
 
 // ---- connectivity banner: loud and unmissable, never a quiet omission ----
@@ -220,7 +238,7 @@ function Controls({ filters, setFilters, counts }) {
           <span
             class="chip ${filters.captain.has(c) ? "active" : ""}"
             data-kind="captain"
-            style=${{ "--chip-color": `var(--cap-${c})` }}
+            style=${{ "--chip-color": CAPTAIN_META[c].color }}
             onClick=${() => toggleCaptain(c)}
           >${CAPTAIN_META[c].label} (${counts.captain[c] || 0})</span>
         `)}

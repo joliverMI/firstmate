@@ -22,10 +22,9 @@
   --st-complete: #5b8cff;
   --st-needs_attention-bg: rgba(255, 59, 48, .12);
 
-  /* captain tag colors */
-  --cap-firstmate: #9a9aa2;
-  --cap-captain_dj: #e0559e;
-  --cap-captain_river: #38bdf8;
+  /* Captain colors are deliberately absent: they come from web/captains.json
+     and are applied inline as --cap-color / --chip-color, so adding a captain
+     never needs a rule here. This is the file's only data-driven color. */
 
   /* reserved exclusively for genuinely-wrong states */
   --danger: #e74c3c;
@@ -177,10 +176,10 @@ h2.section .count { color: var(--text); font-weight: 700; }
 .pill.status.st-review { background: var(--st-review); color: #221d02; }
 .pill.status.st-complete { background: var(--st-complete); color: #06122b; }
 
-.pill.captain { border: 1px solid; background: transparent; }
-.pill.captain.cap-firstmate { color: var(--cap-firstmate); border-color: var(--cap-firstmate); }
-.pill.captain.cap-captain_dj { color: var(--cap-captain_dj); border-color: var(--cap-captain_dj); }
-.pill.captain.cap-captain_river { color: var(--cap-captain_river); border-color: var(--cap-captain_river); }
+.pill.captain {
+  border: 1px solid; background: transparent;
+  color: var(--cap-color); border-color: var(--cap-color);
+}
 
 .card-meta { font-size: 12px; color: var(--text-muted); display: flex; justify-content: space-between; gap: 8px; }
 .card-captain { color: var(--text); font-weight: 500; }

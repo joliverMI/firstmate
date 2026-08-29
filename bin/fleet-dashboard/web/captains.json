@@ -1,0 +1,18 @@
+{
+  "_comment": [
+    "The one hand-maintained list of the board's captains. Adding a captain here",
+    "is the whole edit: bin/fm-dashboard.sh (jq), server/store.py (json) and",
+    "web/app.js (fetch) all read THIS file at runtime, and nothing else lists",
+    "them. It lives under web/ so the browser gets it over the static path the",
+    "server already serves - no new route, no build step, no dependency.",
+    "Order is display order. 'short' is the CLI shorthand; for firstmate it is",
+    "the id itself. 'color' is the pill/chip color, applied inline from here,",
+    "which is why styles.css has no per-captain rule to keep in step."
+  ],
+  "captains": [
+    { "id": "firstmate",     "short": "firstmate", "label": "Firstmate",     "color": "#9a9aa2" },
+    { "id": "captain_dj",    "short": "dj",        "label": "Captain DJ",    "color": "#e0559e" },
+    { "id": "captain_river", "short": "river",     "label": "Captain River", "color": "#38bdf8" },
+    { "id": "captain_vlad",  "short": "vlad",      "label": "Captain VLAD",  "color": "#f97316" }
+  ]
+}

@@ -935,6 +935,81 @@ test_lifecycle_commands_refuse_a_recycled_pid() {
   pass "the lifecycle commands refuse a recycled pid instead of signalling it"
 }
 
+# The captain set has ONE hand-maintained copy: bin/fleet-dashboard/web/captains.json.
+# The CLI reads it with jq, the server with json, and the page fetches it over
+# the static path this test uses. Nothing here reads that file from disk: the
+# set is taken from the running board exactly as the browser takes it, and then
+# every other surface is driven through its own public interface and required to
+# agree. Add a captain to only one of them and this fails.
+#
+# The honest limit: with no browser in CI, the page's agreement is proved only
+# as far as "the manifest it fetches is served, at that path, with the fields it
+# renders". A hand-written captain list re-introduced INSIDE app.js would not be
+# caught here - only re-introducing one in the CLI or the server is.
+test_the_captain_set_agrees_across_every_surface() {
+  local served ids id short label card row cli_ids raw_code n field
+  served=$(curl -fsS "http://127.0.0.1:$PORT/captains.json") \
+    || fail "the board does not serve /captains.json - the page cannot name any captain"
+  printf '%s' "$served" | jq -e '.captains | type == "array" and length > 0' >/dev/null \
+    || fail "/captains.json does not carry a non-empty captains array"
+
+  # Every field the page renders must be present for every captain, or a captain
+  # ships as a blank pill instead of a name.
+  printf '%s' "$served" \
+    | jq -e '.captains | all(has("id") and has("short") and has("label") and has("color"))' >/dev/null \
+    || fail "a captain in /captains.json is missing id/short/label/color"
+  n=$(printf '%s' "$served" | jq '.captains | length')
+  for field in id short label color; do
+    [ "$(printf '%s' "$served" | jq "[.captains[].$field] | unique | length")" = "$n" ] \
+      || fail "two captains share a $field - ids, shorthands, labels and colors must each be distinct"
+  done
+
+  ids=$(printf '%s' "$served" | jq -r '.captains[].id')
+
+  # The CLI's own list must be exactly the page's list, in the same order.
+  cli_ids=$("$DASH" captains | tail -n +2 | awk '{print $1}')
+  [ "$cli_ids" = "$ids" ] \
+    || fail "the CLI and the page disagree about the captains: CLI [$cli_ids] vs served [$ids]"
+
+  # ...and every one of them must actually work end to end, by shorthand on the
+  # way in and by id on the way back out, through the CLI, the API and the DB.
+  while IFS=$'\t' read -r id short label; do
+    card=$("$DASH" add --title "Card for $label" --captain "$short" \
+      --prompt "captain-set agreement check" | awk '{print $1}') \
+      || fail "the board refused a card for '$short', a captain it lists"
+    [ -n "$card" ] || fail "no card created for captain '$short'"
+    assert_contains "$("$DASH" show "$card")" "captain:  $id" \
+      "card for '$short' did not come back filed under $id"
+    row=$("$DASH" list --captain "$id" --json | jq -r --arg c "$card" '.tasks[] | select(.id==$c) | .captain')
+    [ "$row" = "$id" ] || fail "filtering by captain $id did not return its own card"
+    "$DASH" captain "$card" "$id" >/dev/null \
+      || fail "the CLI refused the full id '$id' for a captain it lists"
+    "$DASH" delete "$card" --confirm >/dev/null || fail "could not clean up the card for $short"
+  done < <(printf '%s' "$served" | jq -r '.captains[] | "\(.id)\t\(.short)\t\(.label)"')
+
+  # Fail-closed both ways: a captain nobody lists is refused by the CLI's local
+  # check AND by the server itself, so a stale local manifest cannot mislabel a
+  # card through the raw API.
+  local out rc
+  out=$("$DASH" add --title "Nobody's card" --captain captain_nobody --prompt "x" 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "the CLI accepted an unlisted captain"
+  assert_contains "$out" "unknown captain" "the CLI's refusal did not name the problem"
+  local body server_ids
+  body=$(curl -sS -o "$FM_HOME/unlisted.out" -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks" -H 'Content-Type: application/json' \
+    -d '{"title":"Direct unlisted captain","captain":"captain_nobody","initial_prompt":"x"}')
+  [ "$body" = "400" ] || fail "the API accepted an unlisted captain (got HTTP $body)"
+
+  # That refusal also names the set the SERVER is enforcing, which is how this
+  # test sees the server's own copy without reading its source. Anything the
+  # server would accept that the page never lists is drift.
+  server_ids=$(jq -r '.error' "$FM_HOME/unlisted.out" | sed -E 's/.*(Valid|one of): //' | tr ',' '\n' | tr -d ' ')
+  [ "$server_ids" = "$ids" ] \
+    || fail "the server and the page disagree about the captains: server [$server_ids] vs served [$ids]"
+
+  pass "the CLI, the server and the page the browser loads all name the same captains"
+}
+
 test_health_and_server_status
 test_add_and_list_round_trip
 test_status_and_captain_and_title_updates
@@ -958,3 +1033,4 @@ test_a_start_that_cannot_bind_leaves_the_migration_pending
 test_restart_recovers_from_a_crashed_or_stopped_board
 test_lifecycle_commands_refuse_a_recycled_pid
 test_star_and_delete
+test_the_captain_set_agrees_across_every_surface
