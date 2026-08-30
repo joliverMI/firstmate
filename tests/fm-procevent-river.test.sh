@@ -152,6 +152,41 @@ CLASSIFIED=$(river "$HOME_A" classify "$OUT")
 [ "$CLASSIFIED" = takeovers ] || fail "a non-empty item array classified as '$CLASSIFIED'"
 pass "a non-empty item array classifies as takeovers"
 
+# --- an over-budget burst splits across captures with zero loss --------------
+# The batch byte budget is shrunk through its env override and the item sizes
+# are pinned, so the drain must stop mid-burst. Every queued item must come
+# back exactly once across the two captures, and each captured array must fit
+# the budget.
+pad_item() {  # <phrase> -> one 99-character JSON object
+  python3 - "$1" <<'PY'
+import json, sys
+obj = {"phrase": sys.argv[1], "pad": ""}
+obj["pad"] = "x" * (99 - len(json.dumps(obj, separators=(",", ":"))))
+print(json.dumps(obj, separators=(",", ":")))
+PY
+}
+for p in split-a split-b split-c split-d; do queue_item "$(pad_item "$p")"; done
+SPLIT1="$TMP_ROOT/split-1.json"
+SPLIT2="$TMP_ROOT/split-2.json"
+FM_HOME="$HOME_A" FM_RIVER_WAIT=5 FM_RIVER_MAX_BYTES=128 FM_RIVER_MAX_BATCH_BYTES=300 \
+  "$ADAPTER" poll > "$SPLIT1"
+expect_code 0 "$?" "the first poll of an over-budget burst"
+FM_HOME="$HOME_A" FM_RIVER_WAIT=5 FM_RIVER_MAX_BYTES=128 FM_RIVER_MAX_BATCH_BYTES=300 \
+  "$ADAPTER" poll > "$SPLIT2"
+expect_code 0 "$?" "the second poll, which must return the still-queued remainder"
+[ "$(wc -c < "$SPLIT1")" -le 300 ] || fail "the first capture exceeded the batch byte budget"
+[ "$(wc -c < "$SPLIT2")" -le 300 ] || fail "the second capture exceeded the batch byte budget"
+python3 - "$SPLIT1" "$SPLIT2" <<'PY' || fail "the split burst lost or duplicated an item"
+import json, sys
+first = json.load(open(sys.argv[1]))
+second = json.load(open(sys.argv[2]))
+assert isinstance(first, list) and isinstance(second, list)
+assert first and second, (first, second)
+phrases = [d["phrase"] for d in first + second]
+assert sorted(phrases) == ["split-a", "split-b", "split-c", "split-d"], phrases
+PY
+pass "an over-budget burst splits into two captures, every item delivered exactly once"
+
 # --- 204 re-poll ------------------------------------------------------------
 # Nothing is queued, so the first request times out with 204; the adapter must
 # poll again rather than exit, and return the item that arrives afterwards.
@@ -170,9 +205,12 @@ pass "an empty long-poll window re-polls instead of ending the source"
 HOME_B="$TMP_ROOT/home-b"
 new_home "$HOME_B"
 ARMED_HOME=$HOME_B
-ARM_OUT=$(river "$HOME_B" arm 2>&1) || fail "arm failed on a configured home: $ARM_OUT"
+ARM_TMP="$TMP_ROOT/arm-tmp"
+mkdir -p "$ARM_TMP"
+ARM_OUT=$(TMPDIR="$ARM_TMP" river "$HOME_B" arm 2>&1) || fail "arm failed on a configured home: $ARM_OUT"
 assert_contains "$ARM_OUT" "armed: river-takeover-stream" "arm did not report the canonical source"
 assert_not_contains "$ARM_OUT" "$TOKEN" "arm printed the bearer token"
+[ -z "$(ls -A "$ARM_TMP")" ] || fail "arm left its staged credential file on disk"
 [ "$(river "$HOME_B" source-id)" = river-takeover-stream ] || fail "the canonical source id changed"
 
 SOURCE_FILE=$(find "$HOME_B/state" -name 'river-takeover-stream.source' | head -1)
@@ -228,7 +266,10 @@ assert_contains "$ARM_ERR" "config/river-service" "arm did not name the missing 
 printf '%s\n' "$BASE" > "$HOME_C/config/river-service"
 ARM_ERR=$(river "$HOME_C" arm 2>&1) && fail "arm succeeded with no bearer token"
 assert_contains "$ARM_ERR" "config/river-token" "arm did not name the missing credential"
-pass "arming refuses a home whose River configuration is incomplete"
+printf 'line-one\nline-two\n' > "$HOME_C/config/river-token"
+ARM_ERR=$(river "$HOME_C" arm 2>&1) && fail "arm accepted a multi-line credential file"
+assert_contains "$ARM_ERR" "config/river-token" "arm did not name the multi-line credential file"
+pass "arming refuses a home whose River configuration is incomplete or multi-line"
 
 # --- a bounded unreachable window reports the outage as a result ------------
 DEAD="$TMP_ROOT/home-dead"

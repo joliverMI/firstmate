@@ -47,8 +47,13 @@
 # produce ONE captured result and therefore ONE wake, not one wake per phrase.
 # So once an item arrives, the poll immediately drains every further pending item
 # with zero-wait calls until the service reports none, and emits a single array.
-# A burst longer than FM_RIVER_MAX_BURST items is split across results rather than
-# growing without bound; the remainder is still queued and returns at once.
+# A burst longer than FM_RIVER_MAX_BURST items or bigger than
+# FM_RIVER_MAX_BATCH_BYTES bytes is split across results rather than growing
+# without bound; the remainder is still queued and returns at once. Only the
+# zero-wait drain calls are gated by the byte budget: the first item of a burst
+# is already dequeued by the time its size is known, so it is always emitted even
+# if it alone exceeds the budget, which keeps an oversized item from wedging the
+# source.
 #
 # OUTAGES ARE LOUD. A connection failure, an unreadable configuration, or a
 # rejected credential is retried with backoff, and every retry is shell work with
@@ -65,6 +70,16 @@
 #   FM_RIVER_RETRY_BACKOFF (5)          first retry sleep, doubling to 60
 #   FM_RIVER_MAX_BURST (64)             items drained into one result
 #   FM_RIVER_MAX_BYTES (262144)         bytes accepted for one item
+#   FM_RIVER_MAX_BATCH_BYTES (1048576)  byte budget for one emitted batch,
+#                                       counted over the whole emitted array
+#                                       including the JSON framing this adapter
+#                                       adds: the two brackets, one comma between
+#                                       adjacent items, and the trailing newline.
+#                                       The default equals the runner's durable
+#                                       capture cap (bin/fm-procevent.sh's
+#                                       FM_PROCEVENT_MAX_OUTPUT_BYTES, 1 MiB), so
+#                                       a batch this poll emits is never
+#                                       truncated in the captured result.
 #
 # Durability boundary: see bin/fm-procevent.sh. This adapter proves nothing about
 # the service side of the handoff; whether a takeover the service has already
@@ -83,9 +98,10 @@ UNREACHABLE_WINDOW=${FM_RIVER_UNREACHABLE_WINDOW:-1800}
 RETRY_BACKOFF=${FM_RIVER_RETRY_BACKOFF:-5}
 MAX_BURST=${FM_RIVER_MAX_BURST:-64}
 MAX_BYTES=${FM_RIVER_MAX_BYTES:-262144}
+MAX_BATCH_BYTES=${FM_RIVER_MAX_BATCH_BYTES:-1048576}
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,71p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,86p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 require_number() {  # <name> <value>
   case "$2" in ''|*[!0-9]*) die "$1 must be a nonnegative integer: $2" ;; esac
@@ -94,9 +110,13 @@ require_number() {  # <name> <value>
 # Read a single-line private config value. A missing, empty, symlinked, or
 # multi-line file is a refusal, never a guessed default.
 read_config_line() {  # <file>
-  local file=$1 value
+  local file=$1 content value
   [ -f "$file" ] && [ ! -L "$file" ] || return 1
-  value=$(head -c 8192 "$file" | sed -n '1p' | tr -d '\r')
+  content=$(head -c 8192 "$file"; printf x)
+  content=${content%x}
+  case "$content" in *$'\n'?*) return 1 ;; esac
+  value=${content%%$'\n'*}
+  value=${value//$'\r'/}
   value=${value#"${value%%[![:space:]]*}"}
   value=${value%"${value##*[![:space:]]}"}
   [ -n "$value" ] || return 1
@@ -165,6 +185,9 @@ cmd_source_id() {
 cmd_arm() {
   [ "$#" -eq 0 ] || usage
   command -v curl >/dev/null 2>&1 || die "curl is not installed"
+  cleanup_arm() { [ -z "$AUTH_FILE" ] || rm -f -- "$AUTH_FILE"; }
+  trap cleanup_arm EXIT
+  trap 'cleanup_arm; exit 143' HUP INT TERM
   if ! load_config; then
     die "${CONFIG_ERROR:-the River configuration is unusable}"
   fi
@@ -217,6 +240,7 @@ cmd_poll() {
   require_number FM_RIVER_RETRY_BACKOFF "$RETRY_BACKOFF"
   require_number FM_RIVER_MAX_BURST "$MAX_BURST"
   require_number FM_RIVER_MAX_BYTES "$MAX_BYTES"
+  require_number FM_RIVER_MAX_BATCH_BYTES "$MAX_BATCH_BYTES"
   [ "$MAX_BURST" -ge 1 ] || die "FM_RIVER_MAX_BURST must be at least 1"
   command -v curl >/dev/null 2>&1 || die "curl is not installed"
 
@@ -229,7 +253,7 @@ cmd_poll() {
 
   local body="$work/body"
   local fail_since='' fail_since_iso='' backoff=$RETRY_BACKOFF code rc
-  local items=() count=0 n=0
+  local items=() count=0 n=0 batch_bytes=0
 
   # One failed attempt. Reports the outage as a result once the whole
   # unreachable window has passed with nothing usable, otherwise backs off and
@@ -282,12 +306,16 @@ cmd_poll() {
     esac
 
     # An item arrived: burst-batch everything else already queued, with
-    # zero-wait calls, so one burst of speech is one wake.
+    # zero-wait calls, so one burst of speech is one wake. The drain stops while
+    # even a maximum-size next item would still fit the batch byte budget, so
+    # nothing is dequeued that the emitted array cannot carry.
     items=(); count=0; n=0
     cp -- "$body" "$work/item.0" || die "cannot stage the captured item"
     items+=("$work/item.0")
     count=1
+    batch_bytes=$((3 + $(wc -c < "$work/item.0")))
     while [ "$count" -lt "$MAX_BURST" ]; do
+      [ "$((batch_bytes + 1 + MAX_BYTES))" -le "$MAX_BATCH_BYTES" ] || break
       code=$(river_get 0 "$body") || break
       [ "$code" = 200 ] || break
       [ -s "$body" ] || break
@@ -295,6 +323,7 @@ cmd_poll() {
       cp -- "$body" "$work/item.$n" || break
       items+=("$work/item.$n")
       count=$((count + 1))
+      batch_bytes=$((batch_bytes + 1 + $(wc -c < "$work/item.$n")))
     done
     emit_items "${items[@]}"
     exit 0
