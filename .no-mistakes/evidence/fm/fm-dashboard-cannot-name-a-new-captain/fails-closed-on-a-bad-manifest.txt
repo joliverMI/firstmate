@@ -1,0 +1,15 @@
+# The server refuses to start on a malformed manifest rather than falling back to a built-in list:
+$ bin/fm-dashboard.sh start   # with a malformed captains.json
+fm-dashboard.sh: failed to start - see /tmp/fm-badman.n3G236/state/dashboard.log
+exit=1
+
+# ...and the CLI refuses too, with no server running at all:
+$ bin/fm-dashboard.sh captains   # with captains.json deleted
+ID               SHORTHAND  LABEL
+fm-dashboard.sh: captain manifest missing: /tmp/drift-copy/bin/fleet-dashboard/web/captains.json
+exit=1
+
+# server log for that refused start (no silent fallback list):
+  File "/usr/lib/python3.12/json/decoder.py", line 355, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 17 (char 16)

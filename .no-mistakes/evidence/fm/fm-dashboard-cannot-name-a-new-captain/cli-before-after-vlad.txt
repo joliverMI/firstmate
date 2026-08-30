@@ -1,0 +1,19 @@
+# BEFORE the change (base commit a049121), against the same running board:
+$ bin/fm-dashboard.sh add --title "Model the enclosure in build123d" --captain vlad --prompt "..."
+fm-dashboard.sh: unknown captain 'vlad' - valid: firstmate dj river
+exit=1
+
+# AFTER the change, same command, same board:
+$ bin/fm-dashboard.sh add --title "Vlad card, after" --captain vlad --prompt "..."
+vlad-card-after-the-fix-sw51	not_started	captain_vlad	-	Vlad card after the fix
+exit=0
+
+# still fails closed on a captain nobody lists - CLI:
+$ bin/fm-dashboard.sh add --title "Nobody" --captain captain_nobody --prompt "x"
+fm-dashboard.sh: unknown captain 'captain_nobody' - valid: firstmate dj river vlad
+exit=1
+
+# ...and the raw API refuses it independently of the CLI:
+$ curl -X POST /api/tasks -d {"captain":"captain_nobody",...}
+{"error": "captain is required and must be one of: firstmate, captain_dj, captain_river, captain_vlad"}
+HTTP 400

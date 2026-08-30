@@ -1,0 +1,16 @@
+Computed styles read out of a real headless Chrome (CDP), not from the source.
+Values are getComputedStyle() on the rendered captain pill and on the filter chip's --chip-color.
+
+BEFORE - base commit a049121, colours from styles.css variables
+  Firstmate        pill #9a9aa2  border #9a9aa2   chip #9a9aa2
+  Captain DJ       pill #e0559e  border #e0559e   chip #e0559e
+  Captain River    pill #38bdf8  border #38bdf8   chip #38bdf8
+
+AFTER - target commit 0aed5d1, colours from web/captains.json applied inline
+  Firstmate        pill #9a9aa2  border #9a9aa2   chip #9a9aa2   <- unchanged
+  Captain DJ       pill #e0559e  border #e0559e   chip #e0559e   <- unchanged
+  Captain River    pill #38bdf8  border #38bdf8   chip #38bdf8   <- unchanged
+  Captain VLAD     pill #f97316  border #f97316   chip #f97316   <- new, distinct
+
+styles.css carries no per-captain rule after the change, and the three existing
+captains still render byte-identical colours.

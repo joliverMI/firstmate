@@ -1,0 +1,15 @@
+$ bin/fm-dashboard.sh captains
+ID               SHORTHAND  LABEL
+firstmate        firstmate  Firstmate
+captain_dj       dj         Captain DJ
+captain_river    river      Captain River
+captain_vlad     vlad       Captain VLAD
+
+# --- adding a card for the NEW captain, by shorthand `vlad` (this died before the change) ---
+$ bin/fm-dashboard.sh add --title "Model the enclosure in build123d" --captain vlad --prompt "..." --agent cad-1
+model-the-enclosure-in-build123d-tq4p	not_started	captain_vlad	-	Model the enclosure in build123d
+
+$ bin/fm-dashboard.sh add ... --captain dj / river / firstmate
+cut-the-set-for-friday-mxmg	working	captain_dj	-	Cut the set for Friday
+route-the-river-telemetry-pdzv	review	captain_river	-	Route the river telemetry
+keep-the-board-honest-uiab	testing	firstmate	-	Keep the board honest

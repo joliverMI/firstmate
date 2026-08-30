@@ -1,0 +1,35 @@
+### Drift guard proof - the test was made to fail in each direction, in a scratch copy of the tree.
+
+--- (a) the CLI re-hardcodes its own captain list (manifest ignored) ---
+not ok - the CLI and the page disagree about the captains: CLI [firstmate
+captain_dj
+captain_river] vs served [firstmate
+captain_dj
+captain_river
+captain_vlad]
+exit=1
+ok - the testing-to-review split migration converts only pre-existing testing cards, and runs at most once
+ok - a start that cannot bind leaves the migration pending, and stop waits for the port
+ok - restart brings the board back from a crash, from stopped, and from healthy
+ok - the lifecycle commands refuse a recycled pid instead of signalling it
+ok - starring persists and delete requires --confirm
+not ok - the CLI and the page disagree about the captains: CLI [firstmate
+captain_dj
+captain_river] vs served [firstmate
+captain_dj
+captain_river
+captain_vlad]
+exit=1
+
+--- (b) a captain added to the SERVER only (manifest and page unchanged) ---
+captain_vlad
+captain_ghost] vs served [firstmate
+captain_dj
+captain_river
+captain_vlad]
+exit=1
+
+--- (c) the manifest no longer served at the path the page fetches ---
+curl: (22) The requested URL returned error: 404
+not ok - the board does not serve /captains.json - the page cannot name any captain
+exit=1
