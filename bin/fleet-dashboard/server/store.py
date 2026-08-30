@@ -9,6 +9,7 @@ fleet backlog; the board owns its own records deliberately (see docs/dashboard.m
 from __future__ import annotations
 
 import calendar
+import json
 import os
 import random
 import re
@@ -19,7 +20,32 @@ import time
 from contextlib import contextmanager
 
 STATUSES = ("needs_attention", "not_started", "working", "paused", "waiting", "testing", "review", "complete")
-CAPTAINS = ("firstmate", "captain_dj", "captain_river")
+
+# The captain set is NOT written here. web/captains.json is its only copy; the
+# shell wrapper and the browser read that same file, so a captain added there
+# is live in all three at once. Read once at import: the manifest ships with
+# the code and changing it means restarting the server anyway.
+CAPTAINS_MANIFEST = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web", "captains.json"
+)
+
+
+def _load_captains(path: str = CAPTAINS_MANIFEST) -> tuple[str, ...]:
+    """Captain ids in display order, straight from the manifest.
+
+    Refuses to start on a missing or malformed manifest rather than falling
+    back to a built-in list: a silent fallback is exactly the second copy this
+    file exists to avoid, and it would mislabel cards instead of stopping.
+    """
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    ids = tuple(str(c["id"]) for c in data["captains"])
+    if not ids:
+        raise ValueError(f"{path}: no captains defined")
+    return ids
+
+
+CAPTAINS = _load_captains()
 NOTE_TABS = ("interpretation", "communication", "needs")
 NOTE_AUTHORS = ("agent", "firstmate", "admiral")
 

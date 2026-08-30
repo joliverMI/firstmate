@@ -32,7 +32,7 @@ If you are on a secondmate host, the board lives on the primary; point `config/d
 
 Use `add` the moment a task is received and belongs on the board - this is what "you put it up on the dashboard" means in the Admiral's own words.
 Always pass `--prompt` (or `--prompt-file`) with his own words, unedited: that becomes the card's first tab and must never be paraphrased.
-`--captain` takes `firstmate`, `dj`, or `river` - whichever of the three is actually driving the work.
+`--captain` takes whoever is actually driving the work; `bin/fm-dashboard.sh captains` lists the valid ids and their shorthands, and is the only place to look - the set is not restated here or anywhere else in prose, so it cannot go stale.
 New cards default to `not_started`; only set `--status` explicitly if work is already under way.
 Starting a card at `needs-attention` needs `--reason` too, same rule and same server-side guard as changing to it later (see "The eight statuses" below).
 

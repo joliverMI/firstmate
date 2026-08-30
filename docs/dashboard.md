@@ -47,6 +47,23 @@ Two concrete reasons, not a style preference:
 
 Styling is deliberately fixed (`web/styles.css`) - no theme switcher, no runtime style configuration - per the Admiral's own instruction; it does not need to be dynamic to be a dynamic *dashboard*.
 
+## Where the captains are defined
+
+`bin/fleet-dashboard/web/captains.json` is the one hand-maintained list of the board's captains: id, CLI shorthand, display label, pill colour.
+Adding a captain is that one edit, plus a `bin/fm-dashboard.sh restart` before a running board will accept the new captain: the CLI re-reads the file on every call and the page on every load, but the server reads it once at import.
+
+Three separate runtimes need the set, and each reads that same file rather than restating it.
+`bin/fm-dashboard.sh` reads it from disk with `jq` (so `--captain` validation and the shorthands work with no server running), the server reads it from disk with `json` at import, and the page fetches it over `/captains.json` - which is why the manifest lives under `web/`, where the existing static handler already serves it.
+No new route, no build step, no dependency any of the three did not already have.
+
+Colours come from the same entry and are applied inline as `--cap-color` / `--chip-color`, which is the one deliberate exception to the fixed-styling rule above: it is data-driven so that `styles.css` has no per-captain rule to keep in step, not so that anyone can theme the board at runtime.
+
+What is genuinely not collapsed: the three *readers*, one per runtime, which no single-literal scheme can remove without adding a build step or a runtime dependency.
+`tests/fm-dashboard.test.sh`'s captain-set agreement test holds them together - it takes the set from the running board exactly as the browser does, then requires the CLI's own list and the set the server enforces to match it, so re-hardcoding a list in either place fails the suite.
+Its honest limit is stated in the test itself: with no browser in CI it proves the page's manifest is served, at the path the page fetches, with the fields the page renders - not that `app.js` still reads it rather than a list of its own.
+
+Every surface fails closed on an unknown captain rather than filing a card under a wrong one: the CLI refuses, the server refuses, and the page renders a visible load error instead of a blank board.
+
 ## Why the board owns its own records
 
 The dashboard does not read or scrape `data/backlog.md`, any secondmate's backlog, or decision-hold records, and it does not write to them either. It keeps its own SQLite tables, populated only through explicit `bin/fm-dashboard.sh` calls.

@@ -13,7 +13,7 @@
 # under time pressure, and the board rots.
 #
 # Usage:
-#   fm-dashboard.sh add --title <t> --captain <firstmate|dj|river> \
+#   fm-dashboard.sh add --title <t> --captain <captain> \
 #       (--prompt <text> | --prompt-file <path>) [--agent <name>] \
 #       [--status <status>] [--ref <backlog-ref>] [--reason <text>]
 #       --reason is REQUIRED when --status is needs-attention (same rule and
@@ -27,7 +27,8 @@
 #   fm-dashboard.sh show <id> [--json]
 #   fm-dashboard.sh title <id> <new title>
 #   fm-dashboard.sh agent <id> <agent name>
-#   fm-dashboard.sh captain <id> <firstmate|dj|river>
+#   fm-dashboard.sh captain <id> <captain>
+#   fm-dashboard.sh captains                          (the valid captains)
 #   fm-dashboard.sh ref <id> <backlog-ref>
 #   fm-dashboard.sh status <id> <status> [--waiting-on <id>] [--reason <text>]
 #       --reason is what the card is waiting on for `waiting`, or what is
@@ -79,7 +80,10 @@
 #
 # statuses: needs-attention not-started working paused waiting testing review complete
 # tabs:     interpretation communication needs
-# captain shorthands: dj -> captain_dj, river -> captain_river, firstmate -> firstmate
+# captains: `fm-dashboard.sh captains` lists them, ids and shorthands both.
+#           They are defined once, in bin/fleet-dashboard/web/captains.json,
+#           which the server and the page read too - add one there and it is
+#           live everywhere. Nothing else in this repo lists them.
 #
 # Server URL resolution: $FM_DASHBOARD_URL env var, else the first line of
 # $FM_HOME/config/dashboard-url, else http://127.0.0.1:8420. A secondmate on
@@ -201,13 +205,36 @@ canon_status() {
   esac
 }
 
+CAPTAINS_MANIFEST="$SCRIPT_DIR/fleet-dashboard/web/captains.json"
+
+captain_ids() {
+  # Ids and shorthands from the one manifest the server and the page also read.
+  need_tool jq
+  [ -f "$CAPTAINS_MANIFEST" ] || die "captain manifest missing: $CAPTAINS_MANIFEST"
+  jq -er '.captains[] | "\(.id)\t\(.short)\t\(.label)"' "$CAPTAINS_MANIFEST" \
+    || die "captain manifest unreadable: $CAPTAINS_MANIFEST"
+}
+
+captain_names() { captain_ids | cut -f2 | paste -sd' ' -; }
+
 canon_captain() {
-  case "$1" in
-    dj|captain_dj) printf 'captain_dj' ;;
-    river|captain_river) printf 'captain_river' ;;
-    firstmate) printf 'firstmate' ;;
-    *) die "unknown captain '$1' - valid: firstmate dj river" ;;
-  esac
+  # Accepts an id or its shorthand; anything else refuses rather than guessing.
+  local want=$1 rows id short
+  rows=$(captain_ids) || return 1
+  while IFS=$'\t' read -r id short _; do
+    if [ "$want" = "$id" ] || [ "$want" = "$short" ]; then
+      printf '%s' "$id"
+      return 0
+    fi
+  done <<<"$rows"
+  die "unknown captain '$want' - valid: $(printf '%s' "$rows" | cut -f2 | paste -sd' ' -)"
+}
+
+cmd_captains() {
+  printf '%-16s %-10s %s\n' "ID" "SHORTHAND" "LABEL"
+  captain_ids | while IFS=$'\t' read -r id short label; do
+    printf '%-16s %-10s %s\n' "$id" "$short" "$label"
+  done
 }
 
 row_line() {
@@ -231,7 +258,7 @@ cmd_add() {
     esac
   done
   [ -n "$title" ] || die "add: --title is required"
-  [ -n "$captain" ] || die "add: --captain is required (firstmate|dj|river)"
+  [ -n "$captain" ] || die "add: --captain is required - one of: $(captain_names)"
   if [ -n "$prompt_file" ]; then
     [ -f "$prompt_file" ] || die "add: --prompt-file '$prompt_file' not found"
     prompt=$(cat "$prompt_file")
@@ -343,7 +370,7 @@ cmd_agent() {
 
 cmd_captain() {
   local id=${1:-} captain=${2:-}
-  [ -n "$id" ] && [ -n "$captain" ] || die "captain: usage: captain <id> <firstmate|dj|river>"
+  [ -n "$id" ] && [ -n "$captain" ] || die "captain: usage: captain <id> <$(captain_names | tr ' ' '|')>"
   captain=$(canon_captain "$captain") || return 1
   dash_call PATCH "/api/tasks/$id" "$(jq -n --arg c "$captain" '{captain:$c}')" | row_line
 }
@@ -659,6 +686,7 @@ main() {
     title) cmd_title "$@" ;;
     agent) cmd_agent "$@" ;;
     captain) cmd_captain "$@" ;;
+    captains) cmd_captains "$@" ;;
     ref) cmd_ref "$@" ;;
     status) cmd_status "$@" ;;
     star) cmd_star_toggle true "$@" ;;
