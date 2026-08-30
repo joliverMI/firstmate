@@ -112,7 +112,7 @@ valid_base_url() {  # <url>
     *) return 1 ;;
   esac
   case "$1" in
-    *[[:space:]]*|*'"'*|*"'"*|*'\'*|*'?'*|*'#'*) return 1 ;;
+    *[[:space:]]*|*'"'*|*"'"*|*\\*|*'?'*|*'#'*) return 1 ;;
   esac
   return 0
 }
@@ -207,7 +207,7 @@ emit_items() {  # <item-file>...
 
 emit_service_error() {  # <since-iso8601> <detail>
   printf '{"error": "service unreachable since %s", "source": "%s", "detail": "%s"}\n' \
-    "$1" "$SOURCE_ID" "$(printf '%s' "$2" | tr -d '"\\' | tr -d '\000-\037')"
+    "$1" "$SOURCE_ID" "$(printf '%s' "$2" | tr -d '\042\134' | tr -d '\000-\037')"
 }
 
 cmd_poll() {
@@ -228,7 +228,7 @@ cmd_poll() {
   trap 'cleanup_poll; exit 143' HUP INT TERM
 
   local body="$work/body"
-  local fail_since= fail_since_iso= backoff=$RETRY_BACKOFF code rc
+  local fail_since='' fail_since_iso='' backoff=$RETRY_BACKOFF code rc
   local items=() count=0 n=0
 
   # One failed attempt. Reports the outage as a result once the whole
