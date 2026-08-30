@@ -50,7 +50,7 @@ Styling is deliberately fixed (`web/styles.css`) - no theme switcher, no runtime
 ## Where the captains are defined
 
 `bin/fleet-dashboard/web/captains.json` is the one hand-maintained list of the board's captains: id, CLI shorthand, display label, pill colour.
-Adding a captain is that one edit.
+Adding a captain is that one edit, plus a `bin/fm-dashboard.sh restart` before a running board will accept the new captain: the CLI re-reads the file on every call and the page on every load, but the server reads it once at import.
 
 Three separate runtimes need the set, and each reads that same file rather than restating it.
 `bin/fm-dashboard.sh` reads it from disk with `jq` (so `--captain` validation and the shorthands work with no server running), the server reads it from disk with `json` at import, and the page fetches it over `/captains.json` - which is why the manifest lives under `web/`, where the existing static handler already serves it.
