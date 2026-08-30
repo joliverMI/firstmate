@@ -1,0 +1,16 @@
+ok - a burst of three queued takeovers becomes ONE captured result, not three
+ok - the poll authenticates with the home's configured bearer token
+ok - a non-empty item array classifies as takeovers
+ok - an over-budget burst splits into two captures, every item delivered exactly once
+ok - an empty long-poll window re-polls instead of ending the source
+ok - the bearer token appears in neither the registered argv nor any live process argument
+not-autohandled: river-takeover-stream (left for the handler; still unacknowledged)
+ok - a captured takeover wakes firstmate and leaves the standing source armed
+ok - arm registers the continuous source and retire drops it
+ok - arming refuses a home whose River configuration is incomplete or multi-line
+ok - a bounded unreachable window wakes firstmate loudly instead of sleeping through an outage
+ok - an empty batch and an unreadable result both classify as unknown
+ok - no result ever retires this source, so an acknowledged outage cannot silently end it
+ok - the published interface owns the adapter's mechanics
+
+all procevent river tests passed

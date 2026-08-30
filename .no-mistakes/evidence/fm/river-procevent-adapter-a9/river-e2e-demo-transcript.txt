@@ -1,0 +1,59 @@
+### A home is configured with its own gitignored River service URL and token
+
+$ cat $FM_HOME/config/river-service
+http://127.0.0.1:45363
+
+### Arm the standing source (fails closed elsewhere; here the home is configured)
+
+$ /home/javi/.no-mistakes/worktrees/b43f574a0c0c/01M1A7WHCJ8QF1R0JP8GKPP3C8/bin/fm-procevent-river.sh arm
+registered: river-takeover-stream (river)
+armed: river-takeover-stream
+service: http://127.0.0.1:45363
+
+### The captain speaks three phrases in one burst (queued on the service)
+(3 items queued)
+
+### The runner's blocking child captures the burst (normally started by the runner daemon)
+
+$ bin/fm-procevent.sh start river-takeover-stream
+not-autohandled: river-takeover-stream (left for the handler; still unacknowledged)
+captured: /tmp/fm-river-demo-fixed/voice-home/state/procevent-inbox/river-takeover-stream.1.result
+elapsed from queued speech to captured wake: 0.3s
+
+### ONE durable result carries the whole burst as ONE JSON array => ONE wake
+
+$ cat river-takeover-stream.1.result
+[{"phrase":"all hands on deck"},{"phrase":"set course for harbor"},{"phrase":"belay that order"}]
+
+### The wake queue holds exactly one wake for the burst
+
+$ grep -c river-takeover-stream $FM_HOME/state/.wake-queue  (wakes published)
+1
+
+$ cat $FM_HOME/state/.wake-queue
+1788125091	1	check	procevent:river-takeover-stream:1	check: procevent river river-takeover-stream 1
+
+### classify names what arrived; terminal refuses so the source stays standing
+
+$ /home/javi/.no-mistakes/worktrees/b43f574a0c0c/01M1A7WHCJ8QF1R0JP8GKPP3C8/bin/fm-procevent-river.sh classify /tmp/fm-river-demo-fixed/voice-home/state/procevent-inbox/river-takeover-stream.1.result
+takeovers
+
+$ bin/fm-procevent-river.sh terminal river-takeover-stream.1.result; echo exit=$?
+exit=1
+source registration still present after the capture: ARMED
+
+### An outage is loud: service down, bounded window (2s here), one error wake
+
+$ FM_RIVER_UNREACHABLE_WINDOW=2 bin/fm-procevent-river.sh poll   # against a dead service
+{"error": "service unreachable since 2026-08-30T21:24:51Z", "source": "river-takeover-stream", "detail": "the River service could not be reached (curl exit 7)"}
+exit=0 (0: the runner captures it and wakes firstmate about the outage)
+
+### Retire is the only way the source ends
+
+$ /home/javi/.no-mistakes/worktrees/b43f574a0c0c/01M1A7WHCJ8QF1R0JP8GKPP3C8/bin/fm-procevent-river.sh retire
+retired: river-takeover-stream
+
+### The secret token appears nowhere above, nor in any state artifact
+
+$ grep -r $TOKEN $FM_HOME/state; echo grep-exit=$?
+grep-exit=1 (1 = not found anywhere)
