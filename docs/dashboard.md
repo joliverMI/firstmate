@@ -106,7 +106,7 @@ A silent failure here would be the same shape as the bug this fixes, so none of 
 ## Why `needs-attention` is a separate status from `review`
 
 Both statuses put a finished-enough card in front of the Admiral, which is why they used to get conflated - and why doing so once buried several of his genuinely open decisions in a place he had no reason to check closely.
-The two are opposite on the one axis that matters: whether the work still needs him to move forward.
+The two are opposite on the one axis that matters: whose the next step is.
 `review` is done and optional - if he never opens the card, nothing is lost, it is otherwise complete.
 `needs-attention` is stuck without him - a decision, an answer, or a physical action only he can supply.
 That asymmetry is why `needs-attention` sorts first and renders loudest on the page, and why the fleet auditor treats its age as a finding in a way it never does for `review` (see the [`fleet-dashboard`](../.agents/skills/fleet-dashboard/SKILL.md) skill for the exact status definitions and the auditor's per-status procedure).
