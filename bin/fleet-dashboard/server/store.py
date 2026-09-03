@@ -152,9 +152,10 @@ SETTING_SWEEP_RUNNING = "audit_sweep_running"
 SETTING_SWEEP_STARTED_AT = "audit_sweep_started_at"
 SETTING_SWEEP_FORCED = "audit_sweep_forced"
 
-# Marks the one-time split of the old `testing` status - which meant "done,
-# ready for his review" - into `testing` (the fleet is actively exercising it
-# right now) and `review` (done, awaiting him - what `testing` used to mean).
+# Marks the one-time split of the old `testing` status - which had meant
+# "done, and ready for him to look at" - into `testing` (the fleet is
+# actively exercising it right now) and `review` (done, with nothing left
+# for him to do but look if he feels like it).
 # Every card in `testing` the first time this code runs against a database
 # means the old thing: no earlier code could have set the new meaning, since
 # it did not exist yet. This must therefore fire at most once, before the
@@ -226,7 +227,8 @@ class Store:
     # the migration's record that it ran.
     def _migrate_testing_to_review(self, conn: sqlite3.Connection) -> list[str]:
         """One-time split of the old `testing` meaning into `testing` (live
-        fleet activity) and `review` (done, awaiting him - the old meaning).
+        fleet activity) and `review` (done, with nothing left for him to do
+        but look if he feels like it).
         Gated by SETTING_TESTING_REVIEW_SPLIT_MIGRATED so it can only ever
         rewrite the cards that meant the old thing, never a later, genuinely
         in-flight `testing` card. Returns the migrated task ids so the caller
