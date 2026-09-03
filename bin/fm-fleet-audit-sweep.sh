@@ -12,10 +12,9 @@
 # Scope: this implements the deterministic subset of the eight-status
 # procedure in .agents/skills/fleet-dashboard/SKILL.md "The fleet auditor's
 # sweep" - the checks that can be made as a mechanical comparison. Check 5
-# is the one place where the mechanical form is not the whole of the
-# procedure: the skill asks there for a judgment this script does not make
-# (see 5 below), so its rows want a live auditor's reading rather than
-# standing on their own:
+# is the one check whose emitted rows want a live auditor's reading rather
+# than standing on their own, because the skill asks there for a judgment
+# this script does not make (see 5 below):
 #   1. working  - corroborated against bin/fm-crew-state.sh, but ONLY for a
 #      card whose backlog_ref names a task in THIS FM_HOME; a ref naming
 #      another home, or no ref at all, is not verifiable from here and is
