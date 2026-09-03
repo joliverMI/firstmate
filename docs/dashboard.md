@@ -110,7 +110,7 @@ Both statuses put a finished-enough card in front of the Admiral, which is why t
 The two are opposite on the one axis that matters: whose the next step is.
 `review` is done and optional - if he never opens the card, nothing is lost, it is otherwise complete.
 `needs-attention` is stuck without him - a decision, an answer, or a physical action only he can supply.
-That asymmetry is why `needs-attention` sorts first and renders loudest on the page, and why the fleet auditor treats its age as a finding in a way it never does for `review` (see the [`fleet-dashboard`](../.agents/skills/fleet-dashboard/SKILL.md) skill for the exact status definitions and the auditor's per-status procedure).
+That asymmetry is why `needs-attention` sorts first and renders loudest on the page, and why the fleet auditor weighs its age as a finding in a way it never does for `review`, subject to the one carve-out its own sweep procedure states for an ask naming an act with its own physical duration (see the [`fleet-dashboard`](../.agents/skills/fleet-dashboard/SKILL.md) skill for the exact status definitions and the auditor's per-status procedure).
 
 ## Why `testing` split into `testing` and `review`
 
