@@ -30,9 +30,10 @@
 #   5. needs_attention - flags a card that has sat past
 #      FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES (default 60) with no
 #      admiral-authored communication note since it was flagged. It reads
-#      that timestamp only, never needs_attention_reason, so a card point 5
-#      excludes from the age finding is flagged on age like any other; the
-#      skill's own point 5 says how an auditor should read such a row.
+#      that timestamp only, never needs_attention_reason, so a card the
+#      skill's point 5 excludes from the age finding is flagged on age like
+#      any other; the skill's own point 5 says how an auditor should read
+#      such a row.
 #   6. not_started - counted for every not-started card, but flagged only
 #      when a currently-waiting card's own waiting_on_id names it: that
 #      column is only ever non-null while the referencing card is itself
