@@ -1,0 +1,45 @@
+$ # The fleet finished both cards; fm-teardown.sh advances a landed card to `review`.
+$ bin/fm-dashboard.sh list
+print-the-rack-shelf-bracket-7ukx	review	firstmate	-	Print the rack-shelf bracket
+rewrite-the-deploy-notes-fcw0	review	firstmate	-	Rewrite the deploy notes
+
+$ # Doctrine (SKILL.md, `review` bullet): the bracket is printed, but the next step -
+$ # test-fitting it - is his. So it does not belong in `review`, however finished the
+$ # fleet part is. Move it to needs-attention, naming that exact act.
+$ bin/fm-dashboard.sh status print-the-rack-shelf-bracket-7ukx needs-attention
+fm-dashboard.sh: status: needs-attention requires --reason - say what he needs to decide, approve, or supply
+[exit 1]
+
+$ bin/fm-dashboard.sh status print-the-rack-shelf-bracket-7ukx needs-attention --reason "test-fit the printed bracket on the rack rail and say if it seats"
+ok
+
+$ # The deploy-notes card waits on nothing of his - he may look or not look. It stays `review`.
+$ bin/fm-dashboard.sh list
+print-the-rack-shelf-bracket-7ukx	needs_attention	firstmate	-	Print the rack-shelf bracket
+rewrite-the-deploy-notes-fcw0	review	firstmate	-	Rewrite the deploy notes
+
+$ # What he sees on the card itself: the ask, rendered, and the status that sorts first.
+$ bin/fm-dashboard.sh show print-the-rack-shelf-bracket-7ukx
+id:       print-the-rack-shelf-bracket-7ukx
+title:    Print the rack-shelf bracket
+status:   needs_attention
+captain:  firstmate
+agent:    crew-1
+starred:  false
+needs attention: test-fit the printed bracket on the rack rail and say if it seats
+
+--- prompt ---
+Print the bracket for the rack shelf and check it fits.
+
+
+$ bin/fm-dashboard.sh show rewrite-the-deploy-notes-fcw0
+id:       rewrite-the-deploy-notes-fcw0
+title:    Rewrite the deploy notes
+status:   review
+captain:  firstmate
+agent:    crew-2
+starred:  false
+
+--- prompt ---
+Tidy up the deploy notes page.
+
