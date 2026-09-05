@@ -597,6 +597,106 @@ test_a_target_started_then_abandoned_is_flagged_again() {
 # reasoning is about being blocked, not about the word "action", so it has to
 # cover needs_review too - a plan nobody has approved is holding work up just
 # as surely as an unanswered ask.
+# Regression for the failure firstmate hit repeatedly in live use: re-setting a
+# card he is already blocked on, with an updated reason, is the ONLY way to
+# change the ask on such a card, and store.set_status records it as a
+# same-status row. Measuring age from the newest such row restarted his waiting
+# clock on every re-ask - so the sweep that exists to catch cards he has been
+# left waiting on went permanently quiet on the card being re-asked most.
+#
+# The age must run from when he FIRST became blocked and survive a re-ask,
+# while a reply is still measured against the NEWEST ask, so an answer to an
+# earlier question never silences a later one.
+test_a_re_ask_does_not_restart_his_waiting_clock() {
+  local id first_age second_age rows
+  id=$("$DASH" add --title "Re-asked twice" --captain firstmate --prompt "re-ask clock" | awk '{print $1}')
+  [ -n "$id" ] || fail "could not add the card"
+  "$DASH" status "$id" needs-action --reason "pick red or blue for the trim" >/dev/null \
+    || fail "could not block the card"
+
+  FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES=0 "$SWEEP" --forced || fail "first sweep exited non-zero"
+  rows=$(discrepancy_rows_for "$id")
+  [ "$(printf '%s' "$rows" | jq 'length')" -eq 1 ] \
+    || fail "expected one row for the blocked card, got $(printf '%s' "$rows" | jq 'length')"
+  first_age=$(printf '%s' "$rows" | jq -r '.[0].text')
+
+  # Re-ask him something new on the card he is already blocked on.
+  sleep 2
+  "$DASH" status "$id" needs-action --reason "actually, pick the darker shade instead" >/dev/null \
+    || fail "could not re-ask on the already-blocked card"
+  assert_contains "$("$DASH" show "$id")" "needs action: actually, pick the darker shade instead" \
+    "the re-ask did not update the ask the card displays"
+
+  FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES=0 "$SWEEP" --forced || fail "post-re-ask sweep exited non-zero"
+  rows=$(discrepancy_rows_for "$id")
+  # Still one row: one blocked period is one finding, so a re-ask updates the
+  # standing row rather than opening a second beside it.
+  [ "$(printf '%s' "$rows" | jq 'length')" -eq 1 ] \
+    || fail "a re-ask opened a second row instead of updating the standing one"
+  [ "$(printf '%s' "$rows" | jq -r '.[0].occurrences')" -gt 1 ] \
+    || fail "the re-asked card was not flagged again - the re-ask silenced the check"
+  second_age=$(printf '%s' "$rows" | jq -r '.[0].text')
+
+  # The clock must still run from the ORIGINAL block. With the threshold at 0
+  # a restarted clock still flags, so age alone cannot discriminate - and over
+  # a two-second re-ask the rendered minutes are identical either way. The
+  # discriminating observable is the row's own collapse key, which the sweep
+  # builds from the timestamp it measured the age from.
+  local block_at newest_ask row_key
+  block_at=$("$DASH" show "$id" --json \
+    | jq -r '[.status_history[] | select(.to_status=="needs_action" and (.from_status != "needs_action"))] | last | .changed_at')
+  newest_ask=$("$DASH" show "$id" --json \
+    | jq -r '[.status_history[] | select(.to_status=="needs_action")] | last | .changed_at')
+  [ "$block_at" != "$newest_ask" ] \
+    || fail "setup did not actually produce a same-status re-ask row, so this test proves nothing"
+  row_key=$(printf '%s' "$rows" | jq -r '.[0].key')
+  [ "$row_key" = "needs-action-stale:$block_at" ] \
+    || fail "after the re-ask the sweep measured from [$row_key], not from the original block at $block_at - his waiting clock was restarted"
+  [ -n "$second_age" ] || fail "the re-asked card's finding lost its text"
+
+  # A reply is measured against the NEWEST ask: a reply predating it must not
+  # silence the card, and one after it must.
+  "$DASH" note "$id" --tab communication --author admiral --text "blue" >/dev/null \
+    || fail "could not add his reply"
+  sleep 1
+  rows=$(discrepancy_rows_for "$id")
+  local before_occ
+  before_occ=$(printf '%s' "$rows" | jq -r '.[0].occurrences')
+  FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES=0 "$SWEEP" --forced || fail "post-reply sweep exited non-zero"
+  [ "$(discrepancy_rows_for "$id" | jq -r '.[0].occurrences')" = "$before_occ" ] \
+    || fail "a card he has now answered was flagged again"
+
+  pass "a re-ask keeps his waiting clock running from the original block while the card shows the newest ask, and his reply still closes it"
+}
+
+# The twin of the above, on the other side: an answer he gave to an EARLIER
+# question must not silence a later one. Without measuring the reply against
+# the newest ask, his old reply would answer every future re-ask forever.
+test_an_old_reply_does_not_answer_a_later_re_ask() {
+  local id before after
+  id=$("$DASH" add --title "Answered then re-asked" --captain firstmate --prompt "stale reply" | awk '{print $1}')
+  "$DASH" status "$id" needs-action --reason "pick red or blue" >/dev/null || fail "could not block the card"
+  sleep 1
+  "$DASH" note "$id" --tab communication --author admiral --text "blue" >/dev/null \
+    || fail "could not add his reply"
+  sleep 1
+  FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES=0 "$SWEEP" --forced || fail "sweep exited non-zero"
+  before=$(discrepancy_rows_for "$id" | jq 'length')
+
+  # Now ask him something new. His earlier reply says nothing about this.
+  sleep 2
+  "$DASH" status "$id" needs-action --reason "and confirm the hinge finish" >/dev/null \
+    || fail "could not re-ask"
+  FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES=0 "$SWEEP" --forced || fail "post-re-ask sweep exited non-zero"
+  after=$(discrepancy_rows_for "$id" | jq 'length')
+  local occ
+  occ=$(discrepancy_rows_for "$id" | jq -r 'map(.occurrences) | add')
+  [ "$after" -gt "$before" ] || [ "$occ" -gt 1 ] \
+    || fail "a reply to an earlier question silenced a later, unanswered re-ask"
+
+  pass "an answer he gave to an earlier ask does not silence a later one"
+}
+
 test_sweep_flags_a_stale_needs_review_card_the_same_way() {
   local id
   id=$("$DASH" add --title "Awaiting approval" --captain firstmate --prompt "needs-review aging" \
@@ -858,6 +958,8 @@ test_sweep_flags_stale_unreplied_needs_attention_but_not_a_reply
 test_a_needs_attention_card_that_cycles_back_in_gets_a_fresh_row
 test_sweep_flags_a_stale_needs_review_card_the_same_way
 test_an_approval_quiets_the_sweep_but_a_stale_one_does_not
+test_a_re_ask_does_not_restart_his_waiting_clock
+test_an_old_reply_does_not_answer_a_later_re_ask
 test_an_approval_never_quiets_a_needs_action_card
 test_force_button_endpoint_runs_a_real_sweep
 test_force_button_refuses_while_a_sweep_is_already_running

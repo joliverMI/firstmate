@@ -176,6 +176,16 @@ A stale approval is not weak permission; it is evidence he was asked a different
 Unlike the two reason columns, `review_plan` and the approval survive a status change.
 That is a deliberate divergence from the reason-clearing rule, and it is the safer direction here: a reason left on a card that has moved on renders as a live ask that no longer exists, whereas work happens *after* an approval, so destroying the approval the moment the card advances would erase the fleet's own authority exactly when it starts acting on it.
 
+### The one rule behind three separate bugs
+
+Three different writes in this change each reset the evidence that he had not acted, and they were found one at a time: an approval writing a same-status history row, an approval quieting a card it had never been asked about, and a re-ask restarting the clock on a card he was already blocked on.
+They are one rule, and it is worth stating once rather than leaving three fixes to be inferred from:
+
+**Any write that touches a card without him acting must not reset the evidence that he has not acted.**
+
+The auditor's age check is the only thing that catches a card he has been left waiting on, and it reads timestamps. Every one of those bugs made a card he was still waiting on look freshly attended to, which is the same failure as an always-red marker: the check keeps reporting, and stops meaning anything.
+Whoever adds the fourth write path against a card should check it against that sentence before assuming it is inert.
+
 **There is no CLI command that records an approval.**
 `bin/fm-dashboard.sh plan` writes and corrects the plan text, and that is all the CLI can do here.
 His consent is captured only where he himself gives it, on the board's own button, and never by an agent on his behalf - including when he has said yes somewhere else. If he approves a plan in conversation, act on that as you would any other instruction from him; do not go and tick his box for him, because a recorded approval is a durable claim that HE pressed it.

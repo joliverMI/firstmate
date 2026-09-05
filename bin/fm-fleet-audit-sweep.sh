@@ -278,36 +278,63 @@ case "$STALE_MINUTES" in ''|*[!0-9]*) STALE_MINUTES=60 ;; esac
 # explicitly rather than derived from each other at a distance.
 check_blocked_on_him() {  # <status-flag> <stored-status> <label> <key-prefix>
   local status_flag=$1 stored=$2 label=$3 key_prefix=$4
-  local json id detail_json changed_at changed_epoch age_min replied approved_at approval_stale
+  local json id detail_json block_at ask_at changed_at changed_epoch age_min replied approved_at approval_stale
   json=$("$DASH" list --status "$status_flag" --json) \
     || fail_sweep "sweep failed listing $status_flag cards: dashboard unreachable mid-sweep"
   while IFS= read -r id; do
     [ -n "$id" ] || continue
     CHECKED=$((CHECKED + 1))
     detail_json=$("$DASH" show "$id" --json 2>/dev/null) || continue
-    # `needs_attention` is accepted here as the historical spelling of
+    # TWO timestamps, because they answer two different questions.
+    #
+    # BLOCK_AT - when he FIRST became blocked on this card, and what the age
+    # is measured from. The boundary is a row that moves him INTO a blocking
+    # status from one that is not: `from_status` not blocking (or null, for a
+    # card created straight into one) and `to_status` blocking. That is what
+    # makes a re-ask invisible to the clock. Re-setting a card he is already
+    # blocked on - `status <id> needs-action --reason "<new ask>"` - is the
+    # ONLY way to change the ask on such a card, so it is the ordinary path,
+    # not an exotic one, and store.set_status records it as needs_action ->
+    # needs_action. Measuring from the last such row instead would restart
+    # his clock every time we re-worded the question, which is the exact
+    # opposite of what the age is for: the sweep exists to catch cards he has
+    # been left waiting on, and the card being re-asked most is the one it
+    # would go quiet on. A move between the two blocking statuses is not a
+    # boundary either - he has been blocked the whole time, only the shape of
+    # the question changed.
+    #
+    # ASK_AT - the newest ask, and what a reply is measured against, so an
+    # answer he gave to an earlier question never silences a later one. Every
+    # row landing on a blocking status counts here, re-asks included.
+    #
+    # He sees the current question; the sweep sees the true wait.
+    #
+    # Both accept `needs_attention` as the historical spelling of
     # `needs_action`: the split left old status_history rows untouched on
     # purpose, so without this a card blocked since before the split would
-    # have no readable flag time and would silently drop out of this check.
-    # `from_status != to_status` is what makes this a MOVE into the status
-    # rather than any row mentioning it. store.py's approve_plan writes a
-    # same-status row to date the approval, and counting that as a fresh
-    # move would reset the card's age to the moment he answered - turning
-    # every approval into a card that looks freshly flagged. A created card
-    # has from_status null, which is a genuine move and survives this.
-    changed_at=$(printf '%s' "$detail_json" \
-      | jq -r --arg s "$stored" \
-        '[.status_history[]
-          | select(.from_status != .to_status)
+    # have no readable time and would silently drop out of this check.
+    block_at=$(printf '%s' "$detail_json" \
+      | jq -r --arg s "$stored" '
+        def blocking: . == "needs_action" or . == "needs_review" or . == "needs_attention";
+        [.status_history[]
+          | select((.to_status | blocking) and ((.from_status == null) or ((.from_status | blocking) | not)))]
+        | last | .changed_at // empty')
+    ask_at=$(printf '%s' "$detail_json" \
+      | jq -r --arg s "$stored" '
+        [.status_history[]
           | select(.to_status == $s
                    or ($s == "needs_action" and .to_status == "needs_attention"))]
-         | last | .changed_at // empty')
-    [ -n "$changed_at" ] || continue
-    changed_epoch=$(iso_to_epoch "$changed_at") || continue
+        | last | .changed_at // empty')
+    # A card with no readable boundary is skill point 8's unverifiable case:
+    # stay quiet rather than invent a clock.
+    [ -n "$block_at" ] || continue
+    [ -n "$ask_at" ] || ask_at=$block_at
+    changed_at=$block_at
+    changed_epoch=$(iso_to_epoch "$block_at") || continue
     [ -n "$changed_epoch" ] || continue
     age_min=$(( (START_EPOCH - changed_epoch) / 60 ))
     [ "$age_min" -ge "$STALE_MINUTES" ] || continue
-    replied=$(printf '%s' "$detail_json" | jq -r --arg since "$changed_at" \
+    replied=$(printf '%s' "$detail_json" | jq -r --arg since "$ask_at" \
       '([.notes[] | select(.tab=="communication" and .author=="admiral" and .created_at > $since)] | length) > 0')
     [ "$replied" = "true" ] && continue
     # On a needs_review card his approval IS the reply the status asks for -
@@ -331,16 +358,18 @@ check_blocked_on_him() {  # <status-flag> <stored-status> <label> <key-prefix>
       approved_at=$(printf '%s' "$detail_json" | jq -r '.plan_approved_at // empty')
       approval_stale=$(printf '%s' "$detail_json" | jq -r '.plan_approval_stale // false')
       if [ -n "$approved_at" ] && [ "$approval_stale" != "true" ] \
-         && ! [ "$approved_at" \< "$changed_at" ]; then
+         && ! [ "$approved_at" \< "$ask_at" ]; then
         continue
       fi
     fi
-    # Keyed on changed_at, not just the card, so a card that later cycles
-    # back into this status after an earlier reply gets a fresh row rather
-    # than updating the one that reply already closed - the same
-    # fresh-occurrence principle as the not_started check's own
-    # restarted_since handling below, here free because changed_at is already
-    # in hand for the age check above.
+    # Keyed on the block start, not just the card, so a card that later
+    # cycles back in after an earlier reply gets a fresh row rather than
+    # updating the one that reply already closed - the same fresh-occurrence
+    # principle as the not_started check's own restarted_since handling
+    # below, here free because the timestamp is already in hand for the age
+    # check above. Keying it on the block start rather than the newest ask is
+    # deliberate: one blocked period is one finding, so re-asking updates
+    # that standing row instead of opening a second one beside it.
     log_discrepancy "$id" "$label for ${age_min}m with no reply from him since it was flagged" \
       "$key_prefix:$changed_at"
   done < <(printf '%s' "$json" | jq -r '.tasks[].id')

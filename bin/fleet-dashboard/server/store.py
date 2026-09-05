@@ -263,6 +263,15 @@ def _iso_to_epoch(iso: str) -> float:
     return calendar.timegm(time.strptime(iso, "%Y-%m-%dT%H:%M:%SZ"))
 
 
+class PlanChangedError(ValueError):
+    """The plan moved between what he was shown and what he approved.
+
+    A distinct type so the HTTP layer can answer 409 on the fact rather than
+    on the wording of the message - the page's re-approve flow keys off that
+    status code, and a reworded sentence must never be able to change it.
+    """
+
+
 class Store:
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -669,7 +678,7 @@ class Store:
         if not stored:
             raise ValueError("there is no recommended plan on this card to approve")
         if normalized_plan(plan_as_displayed) != stored:
-            raise ValueError(
+            raise PlanChangedError(
                 "the plan changed since it was shown - nothing was approved. "
                 "Re-read the card and approve the plan it now displays."
             )
@@ -680,17 +689,16 @@ class Store:
                 "WHERE id = ?",
                 (ts, stored, ts, task_id),
             )
-            # An approval is a fact about the card worth reading back later,
-            # and status_history is the only place a card keeps dated facts.
-            # Written as a same-status row so it cannot be mistaken for a
-            # transition, and so it never disturbs the auditor's "last move
-            # into this status" timestamp.
-            cur.execute(
-                """INSERT INTO status_history (task_id, from_status, to_status, changed_at, note)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (task_id, current["status"], current["status"], ts,
-                 f"admiral approved the plan: {stored}"),
-            )
+            # Deliberately writes NO status_history row. plan_approved_at and
+            # plan_approved_text are already the durable, readable record of
+            # his word, so a history row would add nothing - and it would cost
+            # something real: it is a same-status row, indistinguishable in
+            # shape from the re-ask rows set_status writes, and the auditor
+            # has to tell those apart to know how long he has been blocked.
+            # An earlier version of this wrote one, and it silently reset the
+            # blocked-age of every card he approved - making the cards he had
+            # answered look freshly flagged to the very sweep that exists to
+            # catch cards he has been left waiting on.
         return self.get_task(task_id)
 
     def delete_task(self, task_id: str) -> None:
