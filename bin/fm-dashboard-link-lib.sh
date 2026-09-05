@@ -144,6 +144,41 @@ fm_dashboard_advance_after_landing() { # <dash> <card> <subject> <target-status>
 
   [ "$current_status" != complete ] || return 0
 
+  # A needs_review card is held here rather than advanced unless his approval
+  # covers the plan the card actually displays. The plan text survives a
+  # status change, but the ASK does not: the approval box renders only on a
+  # needs_review card and the auditor's age check only reaches the two
+  # blocking statuses, so advancing an unapproved plan into `review` takes the
+  # question out of the only status he can answer it from and out of the only
+  # check that would ever remind anyone - a status that means the opposite of
+  # what is actually true. If the landing leaves a step that is HIS, the card
+  # belongs where he can take it.
+  #
+  # It fails safe, and that direction is the whole point. This runs
+  # mechanically from a recorded task identity with nobody watching, so
+  # anything short of a readable "he approved exactly this" holds the card:
+  # an unreadable answer, a missing field, an approval left stale by an edited
+  # plan. An uncertain advance strands him silently; an uncertain hold only
+  # leaves a card on his board that somebody will see.
+  if [ "$current_status" = needs_review ]; then
+    local approval_state
+    approval_state=$(printf '%s' "$shown" | jq -r '
+      if (.plan_approved == true) and (.plan_approval_stale == false) then "covered"
+      elif (.plan_approved == true) or (.plan_approved == false) then "outstanding"
+      else "unknown" end' 2>/dev/null) || approval_state=unknown
+    [ -n "$approval_state" ] || approval_state=unknown
+    case "$approval_state" in
+      covered) : ;;
+      outstanding)
+        echo "dashboard: card $card left at needs-review for $subject - his approval does not cover the plan it shows, and he cannot approve it from $target"
+        return 0 ;;
+      *)
+        echo "warning: dashboard card advance held for $subject -> card $card (approval unreadable): left at needs-review rather than advanced out of the only status he can approve from" >&2
+        "$dash" audit-log --fleet "$audit_msg" --kind error >/dev/null 2>&1 || true
+        return 0 ;;
+    esac
+  fi
+
   # needs_review is deliberately absent from this map. Its held text is the
   # recommended plan, and store.py keeps review_plan and any approval on the
   # card across a status change precisely so the fleet can still read what he

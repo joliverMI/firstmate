@@ -1386,6 +1386,16 @@ test_a_plan_can_only_be_created_on_the_path_that_shows_him_the_box() {
   [ "$("$DASH" show "$id" --json | jq -r '.review_plan // "none"')" = "none" ] \
     || fail "a plan reached a card that was never asked for review"
 
+  # The create route answers the same way rather than accepting the payload
+  # and silently dropping the plan, which is the quieter version of the same
+  # hole: a caller that gets a 201 has no way to learn its plan went nowhere.
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks" -H 'Content-Type: application/json' \
+    -d '{"title":"Created with a stray plan","captain":"firstmate","initial_prompt":"x","status":"working","plan":"Swap the vendor."}')
+  [ "$code" = "400" ] || fail "the create route accepted a plan on a non-needs-review card and dropped it (got HTTP $code)"
+  assert_not_contains "$("$DASH" list)" "Created with a stray plan" \
+    "a card refused for a stray plan was created anyway"
+
   # And the permitted case: a card that reached needs-review and has since
   # moved on still accepts a correction to the wording the fleet is acting on.
   approved_id=$("$DASH" add --title "Corrected after moving on" --captain firstmate --prompt "x" \

@@ -56,8 +56,16 @@
 #       approval box in front of him, so a plan written anywhere else is a
 #       recommendation he has no way to accept.
 #   fm-dashboard.sh plan <id> <recommended plan text>
-#       Set or correct the recommended plan a needs-review card asks him to
-#       approve. If he had already approved the previous wording, that
+#       Correct the recommended plan a needs-review card asks him to approve.
+#       This command corrects a plan; it never creates the first one. The
+#       server refuses a plan on a card that has never been needs-review and
+#       carries none, because only the move to needs-review puts the approval
+#       box in front of him - so the first plan is always written by
+#       `status <id> needs-review --plan "..."` (or `add --status
+#       needs-review --plan "..."`). A card that reached needs-review and has
+#       since moved on still takes a correction, since its plan and his
+#       approval deliberately outlive that status.
+#       If he had already approved the previous wording, that
 #       approval is KEPT as the durable record of his word but is no longer
 #       treated as covering the new text: `show` and --json report it as
 #       stale, the card shows both, and the approve button comes back.

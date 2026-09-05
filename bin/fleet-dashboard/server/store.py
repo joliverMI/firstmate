@@ -492,7 +492,12 @@ class Store:
                 "needs_review requires a recommended-plan summary - an approval box "
                 "with nothing in it is exactly what this status exists to prevent"
             )
-        review_plan = review_plan if status == "needs_review" else None
+        if status != "needs_review" and review_plan is not None:
+            raise ValueError(
+                "a recommended plan can only be created by starting the card at "
+                f"needs_review - a plan on a {status} card renders no approval box, so it "
+                "would be a recommendation he is never actually shown or able to accept"
+            )
         ts = now_iso()
         with self._cursor(write=True) as cur:
             task_id = self._new_id(cur, title)
