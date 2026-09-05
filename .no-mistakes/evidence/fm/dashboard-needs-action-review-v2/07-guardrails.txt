@@ -1,0 +1,24 @@
+$ # 1. An agent cannot record his approval. There is no such command.
+$ bin/fm-dashboard.sh approve consolidate-the-three-overlapping-backup-m7sh
+fm-dashboard.sh: unknown command 'approve' - run: fm-dashboard.sh --help
+   exit=1
+
+$ # 2. needs-review with no plan is refused - an empty approval box is the
+$ #    failure the status exists to prevent - and the server refuses it
+$ #    independently of the CLI:
+$ curl -X POST .../api/tasks/rebuild-the-media-index-yt1p/status -d {"status":"needs_review"}
+   HTTP 400  {"error": "needs-review requires --plan - the short recommended action he is being asked to approve. An approval box with nothing in it is the exact failure this status exists to prevent."}
+$ #    ...and a typo in the card id reports the missing CARD, not a missing plan:
+$ curl -X POST .../api/tasks/rebuild-the-media-indx-yt1p/status -d {"status":"needs_review"}
+   HTTP 404  {"error": "no such task: 'rebuild-the-media-indx-yt1p'"}
+
+$ # 3. needs-action still requires a real ask, in either spelling:
+$ bin/fm-dashboard.sh status rebuild-the-media-index-yt1p needs-attention
+fm-dashboard.sh: status: needs-action requires --reason - say what he needs to decide, approve, or supply
+   exit=1
+
+$ # 4. Approving executes nothing and does not move the card. After the
+$ #    real button click on consolidate-...-m7sh:
+$ bin/fm-dashboard.sh show consolidate-the-three-overlapping-backup-m7sh --json | jq
+   {"status":"needs_review","plan_approved":true,"plan_approved_at":"2026-09-05T16:13:11Z","history":["null -> needs_review"]}
+   (the approval added no status_history row - the card is exactly where it was)

@@ -1,0 +1,41 @@
+### Board: 2 needs-action (unanswered), 2 needs-review
+###   consolidate-...-m7sh : he approved the exact plan the box showed
+###   retire-...-1b1w      : approved, then the plan was edited under him
+
+$ FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES=0 bin/fm-fleet-audit-sweep.sh --forced
+(sweep 1 findings)
+  retire-the-unused-staging-cluster-1b1w
+    text: needs-review for 4m with no reply from him since it was flagged
+    clock-key: needs-review-stale:2026-09-05T16:11:32Z   occurrences: 1
+  rotate-the-expiring-cloudflare-api-token-cfh3
+    text: needs-action for 4m with no reply from him since it was flagged
+    clock-key: needs-action-stale:2026-09-05T16:11:32Z   occurrences: 1
+  swap-the-failed-drive-in-the-rack-vc4d
+    text: needs-action for 4m with no reply from him since it was flagged
+    clock-key: needs-action-stale:2026-09-05T16:11:32Z   occurrences: 1
+
+### The card he approved cleanly is absent - his approval answered it.
+### The card whose plan was edited after his approval is still flagged.
+
+$ # Now re-ask him something new on a card he is ALREADY blocked on:
+$ bin/fm-dashboard.sh status swap-the-failed-drive-in-the-rack-vc4d needs-action --reason "actually seat the spare in bay 4 - bay 3 backplane is suspect"
+(re-asked)
+
+$ FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES=0 bin/fm-fleet-audit-sweep.sh --forced
+(sweep 2 findings)
+  retire-the-unused-staging-cluster-1b1w
+    text: needs-review for 4m with no reply from him since it was flagged
+    clock-key: needs-review-stale:2026-09-05T16:11:32Z   occurrences: 2
+  rotate-the-expiring-cloudflare-api-token-cfh3
+    text: needs-action for 4m with no reply from him since it was flagged
+    clock-key: needs-action-stale:2026-09-05T16:11:32Z   occurrences: 2
+  swap-the-failed-drive-in-the-rack-vc4d
+    text: needs-action for 4m with no reply from him since it was flagged
+    clock-key: needs-action-stale:2026-09-05T16:11:32Z   occurrences: 2
+
+### The re-asked card kept its ORIGINAL clock-key and its count went up:
+### the re-ask did not restart his waiting clock or open a second row.
+
+$ bin/fm-dashboard.sh show swap-the-failed-drive-in-the-rack-vc4d | grep -i "needs action"
+needs action: actually seat the spare in bay 4 - bay 3 backplane is suspect
+### ...while the card itself shows him the NEWEST question.

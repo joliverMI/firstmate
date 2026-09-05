@@ -1,0 +1,9 @@
+$ # He approved this plan in the browser. The fleet now edits it.
+$ bin/fm-dashboard.sh plan retire-the-unused-staging-cluster-1b1w "Tear down the idle staging cluster in ONE pass on Friday, and delete the snapshot immediately."
+retire-the-unused-staging-cluster-1b1w	needs_review	captain_river	-	Retire the unused staging cluster
+
+$ bin/fm-dashboard.sh show retire-the-unused-staging-cluster-1b1w
+status:   needs_review
+recommended plan: Tear down the idle staging cluster in ONE pass on Friday, and delete the snapshot immediately.
+APPROVAL: he approved at 2026-09-05T16:12:38Z, but the plan has been edited since - that approval covers the OLD wording only, not the plan above
+approved wording: Tear down the idle staging cluster in two passes: drain workloads Tuesday, delete the node pool Thursday, keeping the snapshot for 30 days.

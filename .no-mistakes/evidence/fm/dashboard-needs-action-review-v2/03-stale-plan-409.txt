@@ -1,0 +1,17 @@
+$ # He is shown one plan; something tries to approve wording he never saw.
+$ curl -sS -X POST .../api/tasks/consolidate-the-three-overlapping-backup-m7sh/approve-plan -d '{"plan":"Delete all three backup jobs outright."}'
+HTTP 409
+{"error": "the plan changed since it was shown - nothing was approved. Re-read the card and approve the plan it now displays."}
+
+$ # Nothing was recorded - the card still shows an unapproved ask:
+$ bin/fm-dashboard.sh show consolidate-the-three-overlapping-backup-m7sh
+status:   needs_review
+recommended plan: Collapse the three nightly backup crons into one job at 02:00 and keep the existing retention window unchanged.
+
+$ # The same call with the text the box actually rendered is accepted.
+HTTP 200
+{
+  "plan_approved": true,
+  "plan_approved_text": "Collapse the three nightly backup crons into one job at 02:00 and keep the existing retention window unchanged.",
+  "plan_approval_stale": false
+}

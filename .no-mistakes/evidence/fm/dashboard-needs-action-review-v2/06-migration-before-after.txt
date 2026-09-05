@@ -1,0 +1,57 @@
+### A database written in the REAL pre-split shape (status needs_attention,
+### ask stored in a column named needs_attention_reason). BEFORE the new code
+### has ever opened it:
+$ sqlite3 dashboard.db "select id, status, needs_attention_reason from tasks"
+   approve-rack-spend       needs_attention  Decide whether we buy the second PDU this quarter.
+   firmware-verified        review           -
+   reindex-photos           working          -
+   sign-the-isp-contract    needs_attention  Sign and return the fibre contract - only you can sign it.
+
+### The board is started on that same file. AFTER:
+$ bin/fm-dashboard.sh list --sort status
+   approve-rack-spend	needs_action	firstmate	-	Approve the rack PDU spend
+   sign-the-isp-contract	needs_action	firstmate	-	Sign the new ISP contract
+   reindex-photos	working	firstmate	-	Reindex the photo library
+   firmware-verified	review	firstmate	-	Switch firmware verified
+
+### Card for card: 4 cards in, 4 cards out; both needs_attention cards
+### landed in needs_action, none in needs_review, nothing else moved.
+$ bin/fm-dashboard.sh list --status needs-review
+   (no rows - the migration invented no recommended plan)
+
+### The ask survived the column rename, and the note with it:
+$ bin/fm-dashboard.sh show sign-the-isp-contract
+   id:       sign-the-isp-contract
+   title:    Sign the new ISP contract
+   status:   needs_action
+   captain:  firstmate
+   agent:    
+   starred:  false
+   needs action: Sign and return the fibre contract - only you can sign it.
+   
+   --- prompt ---
+   seed prompt
+   
+   --- communication ---
+   [admiral 2026-08-25T14:00:00Z] courier the signed copy
+
+### status_history keeps the OLD spelling and its ORIGINAL timestamp,
+### so the blocked-age the auditor reads is not reset by the migration:
+$ bin/fm-dashboard.sh show sign-the-isp-contract --json | jq -c '.status_history[]'
+   {"id":1,"task_id":"sign-the-isp-contract","from_status":null,"to_status":"not_started","changed_at":"2026-08-25T14:00:00Z","note":"created"}
+   {"id":2,"task_id":"sign-the-isp-contract","from_status":"not_started","to_status":"needs_attention","changed_at":"2026-08-25T14:00:00Z","note":"Sign and return the fibre contract - only you can sign it."}
+
+### An older script that still says needs-attention keeps working,
+### and the board answers in the new spelling:
+$ bin/fm-dashboard.sh list --status needs-attention
+   sign-the-isp-contract	needs_action	firstmate	-	Sign the new ISP contract
+   approve-rack-spend	needs_action	firstmate	-	Approve the rack PDU spend
+
+### And the auditor, run at its DEFAULT 60-minute threshold, ages that
+### migrated card from when he was really blocked (2026-08-25), not from
+### the migration:
+$ bin/fm-fleet-audit-sweep.sh --forced
+   approve-rack-spend: needs-action for 15977m with no reply from him since it was flagged
+     clock-key: needs-action-stale:2026-08-25T14:00:00Z
+   sign-the-isp-contract: needs-action for 15977m with no reply from him since it was flagged
+     clock-key: needs-action-stale:2026-08-25T14:00:00Z
