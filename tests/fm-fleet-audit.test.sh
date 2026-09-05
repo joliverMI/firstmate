@@ -660,6 +660,35 @@ test_an_approval_quiets_the_sweep_but_a_stale_one_does_not() {
   pass "a current approval closes the sweep's age finding, and an approval left stale by an edited plan does not"
 }
 
+# The plan and its approval deliberately survive a status change, so a card
+# can sit in needs_action carrying an approval that answered an entirely
+# different question. An approval is the reply a needs_review card asks for
+# and nothing else; a needs_action card is closed only by his written reply.
+test_an_approval_never_quiets_a_needs_action_card() {
+  local id rows
+  id=$("$DASH" add --title "Approved elsewhere" --captain firstmate --prompt "an approval must not silence an ask" \
+        --status needs-review --plan "Reserve the loading dock for Thursday." | awk '{print $1}')
+  [ -n "$id" ] || fail "could not add the card"
+  "$DASH" status "$id" needs-action --reason "sign the dock permit at the supplier office" >/dev/null \
+    || fail "could not move the card into needs-action"
+  sleep 1
+  curl -sS -o /dev/null -X POST "$BASE/api/tasks/$id/approve-plan" \
+    -H 'Content-Type: application/json' \
+    -d '{"plan":"Reserve the loading dock for Thursday."}' \
+    || fail "could not record the approval"
+
+  FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES=0 "$SWEEP" --forced || fail "sweep exited non-zero"
+  rows=$(discrepancy_rows_for "$id")
+  [ "$(printf '%s' "$rows" | jq 'length')" -ge 1 ] \
+    || fail "an approval recorded on a needs-action card silenced the ask he has never answered"
+  case "$(printf '%s' "$rows" | jq -r '.[0].text')" in
+    needs-action*) : ;;
+    *) fail "the finding does not name the status it is about: $(printf '%s' "$rows" | jq -r '.[0].text')" ;;
+  esac
+
+  pass "an approval never quiets a needs-action card - only his own reply does"
+}
+
 test_sweep_flags_stale_unreplied_needs_attention_but_not_a_reply() {
   local id
   id=$("$DASH" add --title "Needs a call" --captain firstmate --prompt "needs-attention aging" | awk '{print $1}')
@@ -829,6 +858,7 @@ test_sweep_flags_stale_unreplied_needs_attention_but_not_a_reply
 test_a_needs_attention_card_that_cycles_back_in_gets_a_fresh_row
 test_sweep_flags_a_stale_needs_review_card_the_same_way
 test_an_approval_quiets_the_sweep_but_a_stale_one_does_not
+test_an_approval_never_quiets_a_needs_action_card
 test_force_button_endpoint_runs_a_real_sweep
 test_force_button_refuses_while_a_sweep_is_already_running
 test_stale_claim_is_reclaimed_after_max_sweep_seconds

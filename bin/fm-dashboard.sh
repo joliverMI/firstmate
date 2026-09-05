@@ -471,6 +471,11 @@ cmd_status() {
 cmd_plan() {
   local id=${1:-} plan=${2:-}
   [ -n "$id" ] && [ -n "$plan" ] || die "plan: usage: plan <id> <recommended plan text>"
+  # An unquoted multi-word plan would otherwise be recorded as its first word
+  # alone, and his approval would then bind perfectly to that fragment - the
+  # truncation invisible on both sides. Refuse instead of guessing at his
+  # wording by joining what is left.
+  [ $# -le 2 ] || die "plan: too many arguments - quote the plan text: plan <id> \"<recommended plan text>\""
   dash_call PUT "/api/tasks/$id/plan" "$(jq -n --arg p "$plan" '{plan:$p}')" | row_line
 }
 

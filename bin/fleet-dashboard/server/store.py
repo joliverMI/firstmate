@@ -56,6 +56,21 @@ def canonical_status(status: str | None) -> str | None:
     return DEPRECATED_STATUS_ALIASES.get(status, status)
 
 
+def normalized_plan(plan: str | None) -> str | None:
+    """The one normalization a plan gets, applied on every write path.
+
+    The approval binding compares the plan he approved against the plan the
+    card carries, character for character. That comparison is only honest if
+    both sides were normalized the same way and only once: a plan stored with
+    surrounding whitespace but approved as the surface displayed it would be
+    permanently approved-and-stale, with two identical-looking texts on the
+    card and no way back. So every writer routes the plan through here, and
+    every comparison downstream stays exact.
+    """
+    plan = (plan or "").strip()
+    return plan or None
+
+
 # The two statuses that mean the Admiral himself is the next step. Both sort
 # above everything else and both are what the auditor's age check is for.
 BLOCKING_STATUSES = ("needs_action", "needs_review")
@@ -454,12 +469,13 @@ class Store:
         needs_action_reason = needs_action_reason if status == "needs_action" else None
         # The plan is NOT scoped that way - see set_status for why a card that
         # leaves needs_review keeps its plan and its approval.
-        if status == "needs_review" and not (review_plan or "").strip():
+        review_plan = normalized_plan(review_plan)
+        if status == "needs_review" and review_plan is None:
             raise ValueError(
                 "needs_review requires a recommended-plan summary - an approval box "
                 "with nothing in it is exactly what this status exists to prevent"
             )
-        review_plan = (review_plan or None) if status == "needs_review" else None
+        review_plan = review_plan if status == "needs_review" else None
         ts = now_iso()
         with self._cursor(write=True) as cur:
             task_id = self._new_id(cur, title)
@@ -577,10 +593,8 @@ class Store:
         # A move into needs_review needs a plan, either supplied by this call
         # or already on the card; refuse rather than park him in front of an
         # approval box with nothing to approve.
-        next_plan = current.get("review_plan")
-        if review_plan is not None and review_plan.strip():
-            next_plan = review_plan
-        if status == "needs_review" and not (next_plan or "").strip():
+        next_plan = normalized_plan(review_plan) or normalized_plan(current.get("review_plan"))
+        if status == "needs_review" and next_plan is None:
             raise ValueError(
                 "needs_review requires a recommended-plan summary - an approval box "
                 "with nothing in it is exactly what this status exists to prevent"
@@ -620,7 +634,8 @@ class Store:
         card shows both texts, and the approve button comes back. Nothing
         here decides that: it falls out of the two columns disagreeing.
         """
-        if not (plan or "").strip():
+        plan = normalized_plan(plan)
+        if plan is None:
             raise ValueError("a recommended-plan summary cannot be empty")
         current = self.get_task(task_id)
         if current is None:
@@ -650,10 +665,10 @@ class Store:
         current = self.get_task(task_id)
         if current is None:
             raise KeyError(task_id)
-        stored = (current.get("review_plan") or "").strip()
+        stored = current.get("review_plan")
         if not stored:
             raise ValueError("there is no recommended plan on this card to approve")
-        if (plan_as_displayed or "").strip() != stored:
+        if normalized_plan(plan_as_displayed) != stored:
             raise ValueError(
                 "the plan changed since it was shown - nothing was approved. "
                 "Re-read the card and approve the plan it now displays."
