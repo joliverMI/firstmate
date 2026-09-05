@@ -1152,6 +1152,13 @@ test_needs_review_without_a_plan_is_refused_everywhere() {
   assert_contains "$("$DASH" show "$id")" "recommended plan: Rebase onto the open PR" \
     "the card lost the plan it already carried"
 
+  # A card that does not exist is a missing CARD, not a missing plan - the
+  # plan guard must not fire first and send the caller after the wrong mistake.
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/definitely-no-such-card/status" \
+    -H 'Content-Type: application/json' -d '{"status":"needs_review"}')
+  [ "$code" = "404" ] || fail "a typo'd card id on needs-review reported something other than 404 (got HTTP $code)"
+
   pass "needs-review refuses a missing, blank, or absent plan on every writer, and accepts one the card already holds"
 }
 
@@ -1212,6 +1219,22 @@ test_an_approval_binds_to_the_plan_text_it_was_given_for() {
     "show did not say plainly that the approval no longer covers the displayed plan"
   assert_contains "$out" "approved wording: Reserve fixed addresses" \
     "show did not render the wording he actually approved"
+
+  # The 409 must be chosen on the exception TYPE, not by matching the wording
+  # of its message: the page's re-approve flow keys off that status code, so a
+  # reworded sentence in store.py silently downgrading it to 400 would break
+  # the stale-plan path while every test that only checks "it refused" passed.
+  # Proved by the two failure modes answering DIFFERENT codes.
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/$id/approve-plan" -H 'Content-Type: application/json' \
+    -d '{"plan":"wording he was never shown"}')
+  [ "$code" = "409" ] || fail "a changed plan did not answer 409 (got HTTP $code)"
+  local planless
+  planless=$("$DASH" add --title "No plan to approve" --captain firstmate --prompt "x" | awk '{print $1}')
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/$planless/approve-plan" -H 'Content-Type: application/json' \
+    -d '{"plan":"anything"}')
+  [ "$code" = "400" ] || fail "approving a card with no plan at all did not answer 400 (got HTTP $code)"
 
   # And the approval is consent, not execution: the card has not moved.
   assert_contains "$out" "status:   needs_review" \

@@ -19,7 +19,15 @@ import subprocess
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from store import CAPTAINS, NOTE_AUTHORS, NOTE_TABS, STATUSES, Store, canonical_status
+from store import (
+    CAPTAINS,
+    NOTE_AUTHORS,
+    NOTE_TABS,
+    STATUSES,
+    PlanChangedError,
+    Store,
+    canonical_status,
+)
 from validation import (
     InvalidLinkError,
     InvalidPlanError,
@@ -213,8 +221,14 @@ def set_status(store: Store, match, query, body):
     # message specific for the common case of simply forgetting --plan.
     if status == "needs_review" and plan is None:
         existing = store.get_task(task_id)
-        if existing is not None:
-            plan = existing.get("review_plan") or None
+        # A card that does not exist is a 404, not a missing plan. Without
+        # this the plan guard below fires first and a typo'd id reports "you
+        # forgot --plan", which sends the caller looking for the wrong
+        # mistake - and differs from every other status on this route, and
+        # from this same call with --plan supplied.
+        if existing is None:
+            raise ApiError(404, f"no such task: {task_id!r}")
+        plan = existing.get("review_plan") or None
     _guard_status_payload(status, reason, plan)
     try:
         task = store.set_status(
@@ -279,12 +293,17 @@ def approve_plan(store: Store, match, query, body):
         task = store.approve_plan(task_id, plan)
     except KeyError as exc:
         raise ApiError(404, f"no such task: {task_id!r}") from exc
-    except ValueError as exc:
+    except PlanChangedError as exc:
         # A stale plan is a conflict, not a malformed request: the caller did
         # nothing wrong, the card moved underneath it, and 409 is what tells
-        # a client to re-read and show him the current text.
-        status = 409 if "changed since it was shown" in str(exc) else 400
-        raise ApiError(status, str(exc)) from exc
+        # a client to re-read and show him the current text. Selected on the
+        # exception TYPE, never on its message: this status code is what the
+        # page's "Approve this new plan" flow keys off, so choosing it by
+        # substring-matching human-facing prose would silently downgrade the
+        # conflict to a 400 the next time anyone reworded that sentence.
+        raise ApiError(409, str(exc)) from exc
+    except ValueError as exc:
+        raise ApiError(400, str(exc)) from exc
     return 200, task
 
 
