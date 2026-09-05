@@ -528,6 +528,30 @@ class Store:
         task["plan_approval_stale"] = bool(approved_at) and approved_text != task.get("review_plan")
         return task
 
+    # A plan may only be CREATED through the path that also puts the approval
+    # box in front of him, because a plan he is never shown is a
+    # recommendation nobody can accept - `show` would print "recommended
+    # plan:" on a card that renders no button. That is a rule about creation
+    # and not about where a plan may live: a plan and its approval
+    # deliberately outlive the card's status (see set_status), so a card that
+    # has left needs_review still accepts a correction to the wording the
+    # fleet is acting under. So the refusal is exactly this narrow - a card
+    # that has NEVER been needs_review and carries no plan - and it is decided
+    # from the card's own status history rather than its current status, which
+    # says nothing about the doors the card has already been through.
+    @staticmethod
+    def _guard_plan_creation(task: dict) -> None:
+        if task.get("review_plan"):
+            return
+        if any(row.get("to_status") == "needs_review"
+               for row in task.get("status_history") or ()):
+            return
+        raise ValueError(
+            "a recommended plan can only be created by moving the card to needs_review - "
+            "this card has never been needs_review and carries no plan, so nothing would "
+            "show him an approval box for the plan being written"
+        )
+
     def get_task(self, task_id: str) -> dict | None:
         with self._cursor() as cur:
             cur.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
@@ -627,6 +651,8 @@ class Store:
         # It is kept, and kept bound to its own wording: if the plan is later
         # edited, _with_approval_state marks the approval stale rather than
         # letting it drift onto text he never read.
+        if next_plan is not None and status != "needs_review":
+            self._guard_plan_creation(current)
         ts = now_iso()
         # A status write that changes the plan changes the question, so it
         # dates the wording too; one that leaves the plan alone must not, or
@@ -674,6 +700,7 @@ class Store:
         current = self.get_task(task_id)
         if current is None:
             raise KeyError(task_id)
+        self._guard_plan_creation(current)
         ts = now_iso()
         plan_changed_at = (
             ts if plan != current.get("review_plan")

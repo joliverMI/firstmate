@@ -1357,6 +1357,87 @@ test_status_refuses_a_plan_for_any_status_but_needs_review() {
   pass "status refuses a --plan for every status but needs-review, exactly as add does"
 }
 
+# The refusal that actually holds the invariant, because it is the server's
+# and not one CLI command's: a plan is only ever CREATED by the path that also
+# puts the approval box in front of him. Correcting a plan on a card that has
+# already been through that door is housekeeping and stays allowed, which is
+# why the test is history and not the card's current status.
+test_a_plan_can_only_be_created_on_the_path_that_shows_him_the_box() {
+  local id out rc code json approved_id
+  id=$("$DASH" add --title "Never asked for review" --captain firstmate --prompt "x" | awk '{print $1}')
+  [ -n "$id" ] || fail "could not add the card"
+
+  out=$("$DASH" plan "$id" "Swap the vendor and re-run the checks." 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "plan wrote a recommendation onto a card that has never been needs-review"
+  assert_contains "$out" "never been needs_review" \
+    "the refusal did not say why the plan was rejected"
+  assert_not_contains "$("$DASH" show "$id")" "recommended plan:" \
+    "a refused plan reached the card anyway"
+
+  # The same refusal on the raw API, since the CLI is not the only writer.
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X PUT \
+    "http://127.0.0.1:$PORT/api/tasks/$id/plan" -H 'Content-Type: application/json' \
+    -d '{"plan":"Swap the vendor and re-run the checks."}')
+  [ "$code" = "400" ] || fail "the API wrote a plan onto a card that has never been needs-review (got HTTP $code)"
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/$id/status" -H 'Content-Type: application/json' \
+    -d '{"status":"working","plan":"Swap the vendor and re-run the checks."}')
+  [ "$code" = "400" ] || fail "the status API wrote a plan onto a non-needs-review card (got HTTP $code)"
+  [ "$("$DASH" show "$id" --json | jq -r '.review_plan // "none"')" = "none" ] \
+    || fail "a plan reached a card that was never asked for review"
+
+  # And the permitted case: a card that reached needs-review and has since
+  # moved on still accepts a correction to the wording the fleet is acting on.
+  approved_id=$("$DASH" add --title "Corrected after moving on" --captain firstmate --prompt "x" \
+        --status needs-review --plan "Print the six tags face down." | awk '{print $1}')
+  "$DASH" status "$approved_id" working >/dev/null || fail "could not advance the card off needs-review"
+  "$DASH" plan "$approved_id" "Print the six tags face down, two per sheet." >/dev/null \
+    || fail "a card that has been through needs-review refused a plan correction"
+  json=$("$DASH" show "$approved_id" --json)
+  [ "$(printf '%s' "$json" | jq -r '.review_plan')" = "Print the six tags face down, two per sheet." ] \
+    || fail "the correction did not reach a card that has legitimately left needs-review"
+
+  pass "a plan can only be created by the path that shows him the approval box, while a card already through it still accepts a correction"
+}
+
+# The two accepted behaviours have to compose: correcting the plan on a card
+# that has moved past needs-review must still break the binding. A typo
+# correction is still a text change, and the binding does not get to judge
+# which changes are innocent.
+test_correcting_a_plan_after_the_card_moves_on_still_breaks_the_binding() {
+  local id json out
+  id=$("$DASH" add --title "Approved then corrected" --captain firstmate --prompt "x" \
+        --status needs-review --plan "Reserve fixed addresses for the six lights." | awk '{print $1}')
+  [ -n "$id" ] || fail "could not add the needs-review card"
+  curl -sS -o /dev/null -X POST "http://127.0.0.1:$PORT/api/tasks/$id/approve-plan" \
+    -H 'Content-Type: application/json' \
+    -d '{"plan":"Reserve fixed addresses for the six lights."}' \
+    || fail "could not record his approval"
+  "$DASH" status "$id" working >/dev/null || fail "could not advance the approved card"
+  "$DASH" plan "$id" "Reserve fixed addresses for the six lamps." >/dev/null \
+    || fail "the card refused the correction it is allowed to take"
+
+  json=$("$DASH" show "$id" --json)
+  [ "$(printf '%s' "$json" | jq -r '.plan_approved')" = "true" ] \
+    || fail "his approval was destroyed by a plan correction instead of kept as the record of his word"
+  [ "$(printf '%s' "$json" | jq -r '.plan_approval_stale')" = "true" ] \
+    || fail "an approval for the OLD wording still reads as covering the corrected plan"
+  [ "$(printf '%s' "$json" | jq -r '.plan_approved_text')" = "Reserve fixed addresses for the six lights." ] \
+    || fail "the wording he actually approved was overwritten by the correction"
+  [ "$(printf '%s' "$json" | jq -r '.review_plan')" = "Reserve fixed addresses for the six lamps." ] \
+    || fail "the corrected plan did not reach the card"
+
+  out=$("$DASH" show "$id")
+  assert_contains "$out" "recommended plan: Reserve fixed addresses for the six lamps." \
+    "show does not display the plan the card now carries"
+  assert_contains "$out" "covers the OLD wording only" \
+    "show does not say the approval no longer covers the plan on the card"
+  assert_contains "$out" "approved wording: Reserve fixed addresses for the six lights." \
+    "show does not display the wording he actually approved"
+
+  pass "correcting a plan on a card that has left needs-review still breaks the binding and keeps both texts readable"
+}
+
 # Regression: needs_action and needs_review are both louder than everything
 # else, and needs_action leads because it is the one he cannot clear from his
 # phone in a second.
@@ -1518,6 +1599,8 @@ test_needs_review_without_a_plan_is_refused_everywhere
 test_an_approval_binds_to_the_plan_text_it_was_given_for
 test_the_plan_and_its_approval_survive_leaving_needs_review
 test_status_refuses_a_plan_for_any_status_but_needs_review
+test_a_plan_can_only_be_created_on_the_path_that_shows_him_the_box
+test_correcting_a_plan_after_the_card_moves_on_still_breaks_the_binding
 test_a_plan_stored_with_surrounding_whitespace_can_still_be_approved
 test_plan_refuses_unquoted_extra_arguments_rather_than_truncating
 test_both_blocking_statuses_sort_above_the_rest_with_needs_action_first
