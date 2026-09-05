@@ -320,11 +320,20 @@ check_blocked_on_him() {  # <status-flag> <stored-status> <label> <key-prefix>
     # the card, so the card is still genuinely waiting on him and must keep
     # flagging. Reading the server's own derived flag rather than
     # re-deriving it here keeps the two from drifting apart.
-    approved_at=$(printf '%s' "$detail_json" | jq -r '.plan_approved_at // empty')
-    approval_stale=$(printf '%s' "$detail_json" | jq -r '.plan_approval_stale // false')
-    if [ -n "$approved_at" ] && [ "$approval_stale" != "true" ] \
-       && ! [ "$approved_at" \< "$changed_at" ]; then
-      continue
+    #
+    # Scoped to needs_review, and only needs_review. The plan and its
+    # approval deliberately survive a status change, so a card can sit in
+    # needs_action carrying an approval that answered an entirely different
+    # question; letting that quiet the age check would silence the one check
+    # that catches an ask which never reached him. A needs_action card is
+    # closed by his written reply, exactly as before.
+    if [ "$stored" = needs_review ]; then
+      approved_at=$(printf '%s' "$detail_json" | jq -r '.plan_approved_at // empty')
+      approval_stale=$(printf '%s' "$detail_json" | jq -r '.plan_approval_stale // false')
+      if [ -n "$approved_at" ] && [ "$approval_stale" != "true" ] \
+         && ! [ "$approved_at" \< "$changed_at" ]; then
+        continue
+      fi
     fi
     # Keyed on changed_at, not just the card, so a card that later cycles
     # back into this status after an earlier reply gets a fresh row rather

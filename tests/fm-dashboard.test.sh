@@ -1220,6 +1220,67 @@ test_an_approval_binds_to_the_plan_text_it_was_given_for() {
   pass "an approval binds to the verbatim plan it was given for, is refused against any other text, and never drifts onto an edited plan"
 }
 
+# Regression: the CLI and the raw API do not trim a plan, so a plan could be
+# stored with surrounding whitespace while the approval recorded the text as
+# displayed. The two then never compared equal and the card was permanently
+# approved-and-stale, showing him two identical-looking texts with no way out.
+test_a_plan_stored_with_surrounding_whitespace_can_still_be_approved() {
+  local id json plan code
+  id=$("$DASH" add --title "Padded plan" --captain firstmate --prompt "x" \
+        --status needs-review --plan "   Swap the vendor and re-run the checks.  " | awk '{print $1}')
+  json=$("$DASH" show "$id" --json)
+  plan=$(printf '%s' "$json" | jq -r '.review_plan')
+  [ "$plan" = "Swap the vendor and re-run the checks." ] \
+    || fail "the card did not store one normalization of the plan: [$plan]"
+
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/$id/approve-plan" -H 'Content-Type: application/json' \
+    -d "$(jq -n --arg p "$plan" '{plan:$p}')")
+  [ "$code" = "200" ] || fail "approving the plan exactly as displayed failed (got HTTP $code)"
+  json=$("$DASH" show "$id" --json)
+  [ "$(printf '%s' "$json" | jq -r '.plan_approved')" = "true" ] || fail "the approval was not recorded"
+  [ "$(printf '%s' "$json" | jq -r '.plan_approval_stale')" = "false" ] \
+    || fail "an approval of the plan as displayed was reported as covering different wording"
+  assert_contains "$("$DASH" show "$id")" "APPROVAL: he approved this exact plan" \
+    "show reported a card as stale that was approved with the text it displays"
+
+  # Re-writing the same plan with different padding is the same plan, so his
+  # approval still covers it.
+  "$DASH" plan "$id" "  Swap the vendor and re-run the checks. " >/dev/null \
+    || fail "could not rewrite the plan"
+  json=$("$DASH" show "$id" --json)
+  [ "$(printf '%s' "$json" | jq -r '.plan_approval_stale')" = "false" ] \
+    || fail "re-writing the identical plan invalidated an approval that still covers it"
+
+  # And the safety direction is untouched: genuinely different wording is
+  # still stale, and approving text the card no longer carries is still 409.
+  "$DASH" plan "$id" "Keep the vendor and re-run the checks." >/dev/null \
+    || fail "could not edit the plan"
+  [ "$(printf '%s' "$("$DASH" show "$id" --json)" | jq -r '.plan_approval_stale')" = "true" ] \
+    || fail "an approval drifted onto genuinely different wording"
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/$id/approve-plan" -H 'Content-Type: application/json' \
+    -d "$(jq -n --arg p "$plan" '{plan:$p}')")
+  [ "$code" = "409" ] || fail "approving wording the card no longer carries was not refused (got HTTP $code)"
+
+  pass "a plan is stored under one normalization, so approving it exactly as displayed binds cleanly while different wording still reads stale"
+}
+
+# An unquoted multi-word plan would otherwise be recorded as its first word
+# alone, and his approval would bind perfectly to that fragment.
+test_plan_refuses_unquoted_extra_arguments_rather_than_truncating() {
+  local id out rc
+  id=$("$DASH" add --title "Quoting guard" --captain firstmate --prompt "x" \
+        --status needs-review --plan "Order the replacement switch." | awk '{print $1}')
+  out=$("$DASH" plan "$id" swap the vendor 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "an unquoted multi-word plan was accepted and silently truncated"
+  assert_contains "$out" "quote" "the refusal did not point at quoting the plan text"
+  [ "$(printf '%s' "$("$DASH" show "$id" --json)" | jq -r '.review_plan')" = "Order the replacement switch." ] \
+    || fail "a refused plan call changed the card's plan anyway"
+
+  pass "plan refuses an unquoted multi-word plan instead of recording its first word"
+}
+
 # The plan and the approval deliberately outlive the needs_review status,
 # unlike the two reason columns. Work happens AFTER he approves, so the fleet
 # has to still be able to read what he authorised while it is acting on it.
@@ -1402,6 +1463,8 @@ test_needs_attention_is_an_accepted_input_alias_and_never_an_output
 test_needs_review_without_a_plan_is_refused_everywhere
 test_an_approval_binds_to_the_plan_text_it_was_given_for
 test_the_plan_and_its_approval_survive_leaving_needs_review
+test_a_plan_stored_with_surrounding_whitespace_can_still_be_approved
+test_plan_refuses_unquoted_extra_arguments_rather_than_truncating
 test_both_blocking_statuses_sort_above_the_rest_with_needs_action_first
 test_the_needs_attention_split_migrates_every_card_losing_nothing
 test_a_genuine_ask_mentioning_a_report_word_is_accepted

@@ -167,7 +167,7 @@ function Toast({ toast }) {
 // server refuses it if the card's plan has changed since - so an approval can
 // never land on wording he did not read. When that happens the refusal is
 // shown here rather than swallowed, and the refreshed plan is what he sees.
-function PlanBox({ task, onApprovePlan, onOpen }) {
+function PlanBox({ task, onApprovePlan, showFootnote }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const plan = task.review_plan || "";
@@ -206,7 +206,7 @@ function PlanBox({ task, onApprovePlan, onOpen }) {
           ${busy ? "Recording…" : stale ? "Approve this new plan" : "Approve this plan"}
         </button>
       ` : null}
-      ${onOpen ? html`
+      ${showFootnote ? html`
         <div class="plan-box-foot">Approving records your word. It does not start the work by itself.</div>
       ` : null}
     </div>
@@ -246,7 +246,7 @@ function Card({ task, allTasks, onOpen, onToggleStar, onQuickStatus, onApprovePl
         </div>
       ` : null}
       ${task.status === "needs_review" ? html`
-        <${PlanBox} task=${task} onApprovePlan=${onApprovePlan} onOpen=${onOpen} />
+        <${PlanBox} task=${task} onApprovePlan=${onApprovePlan} showFootnote=${true} />
       ` : null}
       ${task.status === "waiting" ? html`
         <div>
@@ -628,7 +628,7 @@ function Overlay({ task, allTasks, onClose, onPatch, onStatus, onAddNote, onTogg
 
         ${task.status === "needs_review" && !showPlanForm ? html`
           <div style=${{ marginTop: 8 }}>
-            <${PlanBox} task=${task} onApprovePlan=${onApprovePlan} onOpen=${null} />
+            <${PlanBox} task=${task} onApprovePlan=${onApprovePlan} showFootnote=${false} />
             <button
               class="quick-action" style=${{ marginTop: 8 }}
               onClick=${() => { setPlanErr(""); setShowPlanForm(true); }}
