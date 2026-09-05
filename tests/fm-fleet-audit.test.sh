@@ -592,6 +592,74 @@ test_a_target_started_then_abandoned_is_flagged_again() {
   pass "a not-started card that was started and abandoned is flagged again, not answered for by the old entry"
 }
 
+# The split gave the board two blocking statuses, and the age check exists
+# because a card sitting on him is evidence the ask never landed. That
+# reasoning is about being blocked, not about the word "action", so it has to
+# cover needs_review too - a plan nobody has approved is holding work up just
+# as surely as an unanswered ask.
+test_sweep_flags_a_stale_needs_review_card_the_same_way() {
+  local id
+  id=$("$DASH" add --title "Awaiting approval" --captain firstmate --prompt "needs-review aging" \
+        --status needs-review --plan "Swap the vendor and re-run the checks." | awk '{print $1}')
+  [ -n "$id" ] || fail "could not add the needs-review card"
+
+  FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES=0 "$SWEEP" --forced || fail "sweep script exited non-zero (needs-review case)"
+  assert_contains "$(audit_status_json)" "$id" "an unapproved stale needs-review card was not flagged"
+  local rows
+  rows=$(discrepancy_rows_for "$id")
+  [ "$(printf '%s' "$rows" | jq -r '.[0].text')" != "null" ] || fail "the needs-review finding has no text"
+  case "$(printf '%s' "$rows" | jq -r '.[0].text')" in
+    needs-review*) : ;;
+    *) fail "the needs-review finding does not name the status it is about: $(printf '%s' "$rows" | jq -r '.[0].text')" ;;
+  esac
+  pass "the sweep ages a needs-review card exactly like a needs-action one, because both mean he is the next step"
+}
+
+# His approval IS the reply a needs_review card asks for - one tap, no note -
+# so it has to close the age finding the way a written reply does. And the
+# hole that would open if it closed it unconditionally: an approval for
+# wording the plan no longer carries has NOT answered the plan on the card,
+# so that card must keep flagging.
+test_an_approval_quiets_the_sweep_but_a_stale_one_does_not() {
+  local id before after
+  id=$("$DASH" add --title "Approve to quiet" --captain firstmate --prompt "approval closes the finding" \
+        --status needs-review --plan "Reserve fixed addresses for the six lights." | awk '{print $1}')
+  [ -n "$id" ] || fail "could not add the needs-review card"
+
+  FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES=0 "$SWEEP" --forced || fail "first sweep exited non-zero"
+  before=$(discrepancy_rows_for "$id")
+  [ "$(printf '%s' "$before" | jq 'length')" -eq 1 ] \
+    || fail "expected exactly one row for the unapproved card, got $(printf '%s' "$before" | jq 'length')"
+
+  sleep 1
+  curl -sS -o /dev/null -X POST "$BASE/api/tasks/$id/approve-plan" \
+    -H 'Content-Type: application/json' \
+    -d '{"plan":"Reserve fixed addresses for the six lights."}' \
+    || fail "could not record the approval"
+  sleep 1
+
+  FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES=0 "$SWEEP" --forced || fail "post-approval sweep exited non-zero"
+  after=$(discrepancy_rows_for "$id")
+  [ "$(printf '%s' "$after" | jq -r '.[0].occurrences')" = "$(printf '%s' "$before" | jq -r '.[0].occurrences')" ] \
+    || fail "an approved needs-review card was flagged again - his approval did not close the finding"
+  [ "$(printf '%s' "$after" | jq -r '.[0].last_seen_at')" = "$(printf '%s' "$before" | jq -r '.[0].last_seen_at')" ] \
+    || fail "an approved needs-review card's row had its last-seen time advanced, so it was re-flagged"
+
+  # Now edit the plan. His approval stands as a record, but it no longer
+  # covers what the card displays, so the card is genuinely waiting on him
+  # again and the sweep must say so.
+  sleep 1
+  "$DASH" plan "$id" "Change the software to find devices by hardware ID." >/dev/null \
+    || fail "could not edit the plan"
+  FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES=0 "$SWEEP" --forced || fail "post-edit sweep exited non-zero"
+  local edited
+  edited=$(discrepancy_rows_for "$id")
+  [ "$(printf '%s' "$edited" | jq -r '.[0].occurrences')" -gt "$(printf '%s' "$after" | jq -r '.[0].occurrences')" ] \
+    || fail "a card whose plan was edited after approval stayed quiet - a stale approval silenced a card genuinely waiting on him"
+
+  pass "a current approval closes the sweep's age finding, and an approval left stale by an edited plan does not"
+}
+
 test_sweep_flags_stale_unreplied_needs_attention_but_not_a_reply() {
   local id
   id=$("$DASH" add --title "Needs a call" --captain firstmate --prompt "needs-attention aging" | awk '{print $1}')
@@ -759,6 +827,8 @@ test_a_quiet_but_outstanding_block_still_counts_toward_the_run_total
 test_a_target_started_then_abandoned_is_flagged_again
 test_sweep_flags_stale_unreplied_needs_attention_but_not_a_reply
 test_a_needs_attention_card_that_cycles_back_in_gets_a_fresh_row
+test_sweep_flags_a_stale_needs_review_card_the_same_way
+test_an_approval_quiets_the_sweep_but_a_stale_one_does_not
 test_force_button_endpoint_runs_a_real_sweep
 test_force_button_refuses_while_a_sweep_is_already_running
 test_stale_claim_is_reclaimed_after_max_sweep_seconds

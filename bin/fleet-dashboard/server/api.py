@@ -19,13 +19,16 @@ import subprocess
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from store import CAPTAINS, NOTE_AUTHORS, NOTE_TABS, STATUSES, Store
+from store import CAPTAINS, NOTE_AUTHORS, NOTE_TABS, STATUSES, Store, canonical_status
 from validation import (
     InvalidLinkError,
+    InvalidPlanError,
     InvalidReasonError,
-    validate_needs_attention_reason,
+    validate_needs_action_reason,
     validate_review_link,
+    validate_review_plan,
 )
+
 
 FLEET_DASHBOARD_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB_DIR = os.path.join(FLEET_DASHBOARD_DIR, "web")
@@ -47,6 +50,32 @@ class ApiError(Exception):
 
 
 ROUTES = []
+
+
+def _resolved_status(raw):
+    """The stored spelling for a status a request supplied, or None if unknown.
+
+    `needs_attention` still resolves - to `needs_action` - so a script or an
+    agent working from the pre-split doctrine keeps working instead of failing
+    on a status the board simply renamed under it.
+    """
+    resolved = canonical_status(raw)
+    return resolved if resolved in STATUSES else None
+
+
+def _guard_status_payload(status, reason, plan):
+    """Refuse a status change whose own required field is missing or unusable."""
+    if status == "needs_action":
+        try:
+            validate_needs_action_reason(reason)
+        except InvalidReasonError as exc:
+            raise ApiError(400, str(exc)) from exc
+    if status == "needs_review":
+        try:
+            validate_review_plan(plan)
+        except InvalidPlanError as exc:
+            raise ApiError(400, str(exc)) from exc
+
 
 
 def route(method: str, pattern: str):
@@ -83,8 +112,14 @@ def list_tasks(store: Store, match, query, body):
     starred = None
     if starred_raw is not None:
         starred = starred_raw.lower() in ("1", "true", "yes")
-    if status and status not in STATUSES:
-        raise ApiError(400, f"unknown status: {status!r}. Valid: {', '.join(STATUSES)}")
+    if status:
+        status = _resolved_status(status)
+        if status is None:
+            raise ApiError(
+                400,
+                f"unknown status: {query.get('status', [None])[0]!r}. "
+                f"Valid: {', '.join(STATUSES)}",
+            )
     if captain and captain not in CAPTAINS:
         raise ApiError(400, f"unknown captain: {captain!r}. Valid: {', '.join(CAPTAINS)}")
     tasks = store.list_tasks(status=status, captain=captain, starred=starred)
@@ -104,24 +139,26 @@ def create_task(store: Store, match, query, body):
         raise ApiError(400, f"captain is required and must be one of: {', '.join(CAPTAINS)}")
     if not prompt or not prompt.strip():
         raise ApiError(400, "initial_prompt is required - his own words, verbatim")
-    status = body.get("status", "not_started")
-    if status not in STATUSES:
-        raise ApiError(400, f"unknown status: {status!r}. Valid: {', '.join(STATUSES)}")
+    raw_status = body.get("status", "not_started")
+    status = _resolved_status(raw_status)
+    if status is None:
+        raise ApiError(400, f"unknown status: {raw_status!r}. Valid: {', '.join(STATUSES)}")
     reason = body.get("reason") or None
-    if status == "needs_attention":
-        try:
-            validate_needs_attention_reason(reason)
-        except InvalidReasonError as exc:
-            raise ApiError(400, str(exc)) from exc
-    task = store.add_task(
-        title=title,
-        captain=captain,
-        initial_prompt=prompt,
-        agent=body.get("agent", "") or "",
-        status=status,
-        backlog_ref=body.get("backlog_ref") or None,
-        needs_attention_reason=reason,
-    )
+    plan = body.get("plan") or None
+    _guard_status_payload(status, reason, plan)
+    try:
+        task = store.add_task(
+            title=title,
+            captain=captain,
+            initial_prompt=prompt,
+            agent=body.get("agent", "") or "",
+            status=status,
+            backlog_ref=body.get("backlog_ref") or None,
+            needs_action_reason=reason,
+            review_plan=plan,
+        )
+    except ValueError as exc:
+        raise ApiError(400, str(exc)) from exc
     return 201, task
 
 
@@ -163,26 +200,91 @@ def delete_task(store: Store, match, query, body):
 @route("POST", r"/api/tasks/(?P<id>[^/]+)/status")
 def set_status(store: Store, match, query, body):
     task_id = match["id"]
-    status = body.get("status")
-    if status not in STATUSES:
-        raise ApiError(400, f"unknown status: {status!r}. Valid: {', '.join(STATUSES)}")
+    raw_status = body.get("status")
+    status = _resolved_status(raw_status)
+    if status is None:
+        raise ApiError(400, f"unknown status: {raw_status!r}. Valid: {', '.join(STATUSES)}")
     reason = body.get("reason") or None
-    if status == "needs_attention":
-        try:
-            validate_needs_attention_reason(reason)
-        except InvalidReasonError as exc:
-            raise ApiError(400, str(exc)) from exc
+    plan = body.get("plan") or None
+    # A move into needs_review may lean on a plan the card already carries, so
+    # the plan guard here only fires when neither this call nor the card has
+    # one; store.set_status makes that same call against the card it is
+    # holding and is the authority. Checking here too keeps the refusal
+    # message specific for the common case of simply forgetting --plan.
+    if status == "needs_review" and plan is None:
+        existing = store.get_task(task_id)
+        if existing is not None:
+            plan = existing.get("review_plan") or None
+    _guard_status_payload(status, reason, plan)
     try:
         task = store.set_status(
             task_id,
             status,
             waiting_on_id=body.get("waiting_on_id") or None,
             reason=reason,
+            review_plan=body.get("plan") or None,
         )
     except KeyError as exc:
         raise ApiError(404, f"no such task: {task_id!r}") from exc
     except ValueError as exc:
         raise ApiError(400, str(exc)) from exc
+    return 200, task
+
+
+@route("PUT", r"/api/tasks/(?P<id>[^/]+)/plan")
+def set_plan(store: Store, match, query, body):
+    """Set or replace the recommended plan a needs_review card asks him to approve.
+
+    Separate from the status route so a plan can be corrected without a
+    status change, and so correcting it is one call rather than three.
+    """
+    task_id = match["id"]
+    plan = body.get("plan")
+    try:
+        validate_review_plan(plan)
+    except InvalidPlanError as exc:
+        raise ApiError(400, str(exc)) from exc
+    try:
+        task = store.set_review_plan(task_id, plan)
+    except KeyError as exc:
+        raise ApiError(404, f"no such task: {task_id!r}") from exc
+    except ValueError as exc:
+        raise ApiError(400, str(exc)) from exc
+    return 200, task
+
+
+@route("POST", r"/api/tasks/(?P<id>[^/]+)/approve-plan")
+def approve_plan(store: Store, match, query, body):
+    """The Admiral's approve button. Records his consent; executes nothing.
+
+    `plan` is the verbatim text the surface he acted on had rendered, and it
+    must still match the card. A mismatch answers 409 and records nothing:
+    the plan changed between what he read and what he tapped, so there is no
+    honest way to say what he approved.
+
+    Approving does not merge, deploy, delete, or advance anything - not here,
+    and not as a side effect anywhere else. It writes his word down. Whatever
+    acts next does so under the boundaries it already had. Do not wire an
+    action onto this endpoint.
+    """
+    task_id = match["id"]
+    plan = body.get("plan")
+    if plan is None:
+        raise ApiError(
+            400,
+            "approve-plan requires the plan text as it was displayed - approving "
+            "without naming what was on screen is exactly the drift this refuses",
+        )
+    try:
+        task = store.approve_plan(task_id, plan)
+    except KeyError as exc:
+        raise ApiError(404, f"no such task: {task_id!r}") from exc
+    except ValueError as exc:
+        # A stale plan is a conflict, not a malformed request: the caller did
+        # nothing wrong, the card moved underneath it, and 409 is what tells
+        # a client to re-read and show him the current text.
+        status = 409 if "changed since it was shown" in str(exc) else 400
+        raise ApiError(status, str(exc)) from exc
     return 200, task
 
 
