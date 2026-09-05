@@ -11,8 +11,10 @@
 #
 # Scope: this implements the deterministic subset of the eight-status
 # procedure in .agents/skills/fleet-dashboard/SKILL.md "The fleet auditor's
-# sweep" - the checks that are genuinely a mechanical comparison, not a
-# judgment call:
+# sweep" - the checks that can be made as a mechanical comparison. Check 5
+# is the one check whose emitted rows want a live auditor's reading rather
+# than standing on their own, because the skill asks there for a judgment
+# this script does not make (see 5 below):
 #   1. working  - corroborated against bin/fm-crew-state.sh, but ONLY for a
 #      card whose backlog_ref names a task in THIS FM_HOME; a ref naming
 #      another home, or no ref at all, is not verifiable from here and is
@@ -27,7 +29,11 @@
 #      paused card as checked but never flags one.
 #   5. needs_attention - flags a card that has sat past
 #      FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES (default 60) with no
-#      admiral-authored communication note since it was flagged.
+#      admiral-authored communication note since it was flagged. It reads
+#      that timestamp only, never needs_attention_reason, so a card the
+#      skill's point 5 excludes from the age finding is flagged on age like
+#      any other; the skill's own point 5 says how an auditor should read
+#      such a row.
 #   6. not_started - counted for every not-started card, but flagged only
 #      when a currently-waiting card's own waiting_on_id names it: that
 #      column is only ever non-null while the referencing card is itself

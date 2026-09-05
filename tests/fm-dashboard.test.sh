@@ -1010,6 +1010,62 @@ test_the_captain_set_agrees_across_every_surface() {
   pass "the CLI, the server and the page the browser loads all name the same captains"
 }
 
+# The doctrine in .agents/skills/fleet-dashboard/SKILL.md sends every card whose
+# next step is the Admiral's to `needs-attention`, so `--reason` is what he
+# actually reads to know what he has to do. That promise is only as good as the
+# narrowest path that can set the status: the ones covered above are the
+# ordinary ones, and these are the rest of the surface - the underscore spelling
+# a caller may reach for, a reason that is present but is only whitespace, and
+# the general-purpose PATCH that edits a card's other fields.
+test_no_path_can_set_needs_attention_without_an_ask() {
+  local id out rc code before after
+  id=$("$DASH" add --title "Enforcement surface" --captain firstmate --prompt "checking every writer" | awk '{print $1}')
+
+  # The CLI canonicalises the status before it refuses, so the underscore
+  # spelling is refused exactly like the dashed one rather than slipping past
+  # the local check.
+  out=$("$DASH" status "$id" needs_attention 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "status needs_attention (underscore) with no --reason was accepted"
+  assert_contains "$out" "requires --reason" "underscore-spelled status rejection did not explain the requirement"
+
+  out=$("$DASH" add --title "Underscore create" --captain firstmate --prompt "x" --status needs_attention 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "add --status needs_attention (underscore) with no --reason was accepted"
+  assert_contains "$out" "requires --reason" "underscore-spelled add rejection did not explain the requirement"
+
+  # A whitespace-only reason is a reason as far as "did the caller pass one"
+  # goes, and renders as nothing at all on the card. The server refuses it on
+  # both writing paths.
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/$id/status" \
+    -H 'Content-Type: application/json' -d '{"status":"needs_attention","reason":"   "}')
+  [ "$code" = "400" ] || fail "the API accepted needs_attention with a whitespace-only reason (got HTTP $code)"
+  assert_contains "$("$DASH" show "$id")" "status:   not_started" \
+    "a refused whitespace-only reason still moved the card"
+
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks" -H 'Content-Type: application/json' \
+    -d '{"title":"Blank-reason create","captain":"firstmate","initial_prompt":"x","status":"needs_attention","reason":"\t\n "}')
+  [ "$code" = "400" ] || fail "the API accepted a created needs_attention card with a whitespace-only reason (got HTTP $code)"
+  assert_not_contains "$("$DASH" list)" "Blank-reason create" \
+    "a card refused for a blank reason was created anyway"
+
+  # PATCH exists to edit a card's other fields; it must not be a second,
+  # unguarded way into needs_attention. It answers, and the status is untouched.
+  before=$("$DASH" show "$id" | grep '^status:')
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X PATCH \
+    "http://127.0.0.1:$PORT/api/tasks/$id" -H 'Content-Type: application/json' \
+    -d '{"title":"Enforcement surface (patched)","status":"needs_attention"}')
+  [ "$code" = "200" ] || fail "PATCH of an ordinary field failed (got HTTP $code)"
+  after=$("$DASH" show "$id" | grep '^status:')
+  [ "$before" = "$after" ] || fail "PATCH wrote a status: was [$before], now [$after]"
+  assert_contains "$("$DASH" show "$id")" "Enforcement surface (patched)" \
+    "PATCH did not apply the field it is allowed to write"
+  assert_not_contains "$("$DASH" show "$id")" "needs attention:" \
+    "PATCH left a needs-attention card behind with no ask on it"
+
+  pass "no path - either spelling, a blank reason, or PATCH - can put a card in needs-attention without a real ask"
+}
+
 test_health_and_server_status
 test_add_and_list_round_trip
 test_status_and_captain_and_title_updates
@@ -1019,6 +1075,7 @@ test_notes_tabs_and_empty_tab_semantics
 test_link_policy_rejects_github_and_localhost
 test_needs_attention_status_carries_reason_and_sorts_first
 test_needs_attention_requires_a_real_ask
+test_no_path_can_set_needs_attention_without_an_ask
 test_a_genuine_ask_mentioning_a_report_word_is_accepted
 test_add_refuses_a_reason_for_a_status_that_cannot_carry_one
 test_documented_guard_rates_still_hold
