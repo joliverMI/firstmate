@@ -108,14 +108,14 @@ fm_dashboard_link_and_advance() { # <dash> <card> <ref> <owner> <subject> <known
 # Admiral's own action made terminal, rather than only from one specific
 # starting status. An already-complete card is left alone rather than
 # downgraded back - his approval is terminal until he reopens it from the
-# card - while a card his own action left needs_attention, or that is
+# card - while a card his own action left needs_action, or that is
 # waiting on something named, still advances: the underlying work landing
 # does not answer whatever it was actually held for, but freezing the card
 # there forever would be its own new stale-card failure. What that advance
 # must not do is throw away what it was held for.
 #
 # Both of those statuses park that text in a status-scoped column
-# (needs_attention_reason, waiting_reason) which store.py's set_status keeps
+# (needs_action_reason, waiting_reason) which store.py's set_status keeps
 # only while the status itself stays put and nulls unconditionally
 # otherwise, writing the call's own --reason - and nothing else - into the
 # card's status history. An advance with no --reason of its own is therefore
@@ -144,8 +144,14 @@ fm_dashboard_advance_after_landing() { # <dash> <card> <subject> <target-status>
 
   [ "$current_status" != complete ] || return 0
 
+  # needs_review is deliberately absent from this map. Its held text is the
+  # recommended plan, and store.py keeps review_plan and any approval on the
+  # card across a status change precisely so the fleet can still read what he
+  # approved while it acts on that approval - so there is nothing here to
+  # rescue into a history note, and passing it as a --reason would write a
+  # second, weaker copy of text the card still holds in full.
   held_reason=$(printf '%s' "$shown" \
-    | jq -r '{needs_attention: .needs_attention_reason, waiting: .waiting_reason}[.status] // empty' 2>/dev/null) \
+    | jq -r '{needs_action: .needs_action_reason, waiting: .waiting_reason}[.status] // empty' 2>/dev/null) \
     || held_reason=
   reason_args=()
   [ -z "$held_reason" ] || reason_args=(--reason "$held_reason")

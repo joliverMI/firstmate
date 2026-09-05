@@ -94,7 +94,7 @@ All three are deliberately narrow, and each narrowing is a specific decision, no
 - **Scout and secondmate teardowns never touch the card.** A scout's worktree is scratch by design and its report, not a card, is the deliverable; a secondmate is recorded in the secondmate registry, never as a backlog item.
 - **A handoff's `--card` requires exactly one item.** A card names one deliverable, so handing off several items at once with one `--card` is refused outright rather than guessing which item the card serves. A `--card` value carrying a tab or a newline is refused just as outright, and before anything moves: the pending record and the superseded ledger are one tab-delimited `<item-key>\t<card-id>` line per pair, so either character would split a pair at the wrong place or forge a second one, leaving a bogus entry that no board answer can ever retire and that only hand-editing state could clear.
 - **An already-`complete` card is never downgraded back to `review`.** The Admiral's own approval is terminal until he reopens it from the card.
-- **A card still `needs_attention` or `waiting` when its work lands still advances to `review`, but the reason it was held for is carried forward rather than discarded.** Freezing the card there forever would just be a different stale-card failure, so the advance exists to stop the card sticking where its worker left it - it is not a verdict that `review` is where the card now belongs, and the fleet's own part being finished is not what decides that (the [`fleet-dashboard`](../.agents/skills/fleet-dashboard/SKILL.md) skill's `review` bullet owns the deciding test and says what to do when this landing leaves a step that is his). The status change itself is what clears the reason (the server keeps `needs_attention_reason` only while status stays `needs_attention`, and `waiting_reason` only while it stays `waiting`, nulling the other unconditionally on every write). A teardown that advanced the card with no `--reason` of its own therefore used to silently destroy the answer to what he had been asked, or to what the card was waiting on, with no trace anywhere. The advance now reads whichever of those two columns is live for the card's current status and passes it back as its own `--reason`, which the server records as the status-history note for that transition.
+- **A card still `needs_action` or `waiting` when its work lands still advances to `review`, but the reason it was held for is carried forward rather than discarded.** Freezing the card there forever would just be a different stale-card failure, so the advance exists to stop the card sticking where its worker left it - it is not a verdict that `review` is where the card now belongs, and the fleet's own part being finished is not what decides that (the [`fleet-dashboard`](../.agents/skills/fleet-dashboard/SKILL.md) skill's `review` bullet owns the deciding test and says what to do when this landing leaves a step that is his). The status change itself is what clears the reason (the server keeps `needs_action_reason` only while status stays `needs_action`, and `waiting_reason` only while it stays `waiting`, nulling the other unconditionally on every write). A teardown that advanced the card with no `--reason` of its own therefore used to silently destroy the answer to what he had been asked, or to what the card was waiting on, with no trace anywhere. The advance now reads whichever of those two columns is live for the card's current status and passes it back as its own `--reason`, which the server records as the status-history note for that transition. A `needs_review` card needs no such rescue: its plan and any approval are kept on the card across the status change by design, so there is nothing for the advance to carry.
   Be blunt about what that buys: the text is now **preserved in the record and retrievable** (`bin/fm-dashboard.sh show <id> --json`, `status_history[].note`), but it is **not surfaced anywhere a human would see it** - neither `show`'s ordinary output nor the web board renders status history, so this falls squarely under the "one further gap, recorded rather than fixed here" limitation described a few sections below. This moves the reason from silently destroyed to silently preserved where nobody can read it yet. That is real progress - the data is no longer lost, and can be surfaced later - not a completed visibility fix; making status history visible is a separate piece of work.
   What that retrieval covers is what *this* advance carries forward, not everything a card was ever asked, and one case falls outside it entirely. A card created straight into `needs_attention` (`add ... --status needs-attention --reason ...`) has that ask written only to the `needs_attention_reason` column: `add_task` records the created row's history note as the literal string `created`, so the ask never enters `status_history` at all. Any later move away then nulls the column and writes as its own history note whatever `--reason` that move carried, or nothing when it carried none - so the original ask survives only where the move re-passes that exact text, which in practice means teardown's advance and nothing else. An agent that reads a card's history back and finds no ask there has hit that known gap, not made a mistake of its own.
   What is carried forward is the free-text reason and nothing else. A `waiting` card also records **which** card it was blocked on (`waiting_on_id`, the other half of what `show` prints for it: `waiting on: <card> - <reason>`), and that pointer is still destroyed by the advance - the server nulls it under the same unconditional rule that clears `waiting_reason`, and `status_history` has no column that could hold it, so unlike the reason there is nowhere for it to go. Nothing here preserves it, and no carrier was invented for it: a field with nothing able to display it would be its own kind of dead weight. Both gaps - the preserved-but-invisible reason and the unpreservable pointer - belong to one piece of follow-up work, since the answer is a real carrier for a card's waiting context designed together with a view that shows it, not either half alone.
@@ -104,30 +104,99 @@ Re-recording the same item key with a *different* card id keeps both pairs and s
 
 A silent failure here would be the same shape as the bug this fixes, so none of the three is allowed to fail quietly. A card id that does not resolve, or a dashboard that will not answer, always prints a loud `warning:` on the calling script's stderr. A failed link at spawn, and a failed advance at teardown, are each also recorded through `bin/fm-dashboard.sh audit-log --fleet` - the same discrepancy log the fleet auditor already reads - because both run only when an agent dispatched or finished a task, never on a cadence of their own. The handoff path is the one that needed a rule, because part of it *is* a machine cadence, and the fleet audit log is never written from such a path: `--resume-pending` is `bin/fm-bootstrap.sh`'s own unattended sweep on every session start, so nothing that runs under it - a superseded pair, a card the host says it does not have, a card that could not be read at all, or a link that failed while it was being written - ever reaches `bin/fm-dashboard.sh audit-log --fleet`, only stderr; a permanently unretirable pair would otherwise grow a cumulative fleet-log entry on a cadence no operator controls. An operator-run handoff (no `--resume-pending`) is different for exactly one of those cases: a link that failed while it was being written - the board refusing or never answering one of the ref/agent/status calls - is also recorded through `audit-log --fleet`, exactly as spawn and teardown do, so a link that could not fire is visible there even when nobody was watching the terminal at the time. That write is capped at most once per invocation, in memory only, so a record still carrying several stale pairs from an earlier crashed attempt cannot turn one sweep into several entries on the Admiral's own trust surface. The other three cases - superseded, no-such-card, unreadable-card - never reach the audit log at all, from either kind of invocation, because none of them proves a link genuinely failed while writing; they stay on stderr only, exactly as described above.
 
-## Why `needs-attention` is a separate status from `review`
+## Why `needs-action` and `needs-review` are two statuses
 
-Both statuses put a finished-enough card in front of the Admiral, which is why they used to get conflated - and why doing so once buried several of his genuinely open decisions in a place he had no reason to check closely.
-The two are opposite on the one axis that matters: whose the next step is.
-On a `review` card nothing waits on him; on a `needs-attention` card the next step is his.
-That asymmetry is why `needs-attention` sorts first and renders loudest on the page, and why the fleet auditor weighs its age as a finding in a way it never does for `review`, subject to the carve-outs its own sweep procedure states (see the [`fleet-dashboard`](../.agents/skills/fleet-dashboard/SKILL.md) skill for the exact status definitions and the auditor's per-status procedure).
+These two, plus `review`, are the statuses the Admiral is most likely to confuse, and each pair gets conflated for a different reason.
+Conflating any of them once already buried several of his genuinely open decisions in a place he had no reason to check closely, which is what every distinction below exists to prevent.
+
+`needs-action` and `needs-review` were one status, `needs-attention`, until his own instruction split them: "let's break out 'needs attention' to 'needs action' and 'needs review'. The first is for when I need to actually do something, and the second is for when you present me a recommended action you will take and ask for my review."
+The problem the split solves is that a card asking his permission read exactly like a card demanding his labour.
+Both said the fleet was stuck on him; only one actually needed him to go and do something.
+Now `needs-action` means he has to act - decide, sign, print, measure, supply a credential - and `needs-review` means the fleet already knows what it wants to do and needs one word before doing it.
+
+`needs-action` sorts above `needs-review`, and both sort above every other status.
+That order is not arbitrary and it is worth stating, because the reverse is defensible-sounding: an approval unblocks a whole thread of fleet work, so it looks urgent.
+It is nevertheless wrong, because urgency is not what the sort is ranking - the cost to HIM is.
+A `needs-review` card costs him one tap from wherever he is standing.
+A `needs-action` card can need him at a printer, at a supplier, or in front of a machine, and can therefore sit for a day for perfectly good reasons.
+Ranking the one-tap ask above the one that needs him to go somewhere would put the cheap thing at the top of his phone every morning.
+
+`needs-review` and `review` are the harder pair, because they are one word apart and one of them is normally the largest column on his board.
+The distinction is whether the work has happened.
+`review` is finished work with nothing left for him to do but look if he feels like it; ignoring it costs nothing.
+`needs-review` is work that has NOT happened and is waiting for permission; ignoring it stops the work.
+Wording alone is not enough separation for something he reads on a phone, so the board separates them structurally: different colours (amber for `needs-review`, gold for `review`), `needs-review` in its own loud section at the top of the board next to `needs-action`, a plan box with an approve button that only `needs-review` cards have, and a deliberately non-overlapping pill label - `review` renders as "Ready to Close" so no two status pills share a word.
+
+`testing` and `review` are covered in the next section.
+One property of the pair is worth knowing before reading a board and concluding something is broken: **`testing` is transient and `review` accumulates.**
+A card is only in `testing` while a crew is genuinely live against it, so that column is routinely empty; `review` is where finished work rests, and is normally the biggest column on the board.
+An empty `testing` column is the status working as designed, not a status nobody uses.
+Measured on the live board on 2026-09-05: 57 transitions into `testing` between 2026-08-17 and 2026-09-01, zero cards sitting in it, and 43 in `review`, with agents visibly moving cards out of `testing` as crews stood down ("Corrected from testing: the fleet finished exercising these hours ago").
+
+### How the split moved his live board
+
+Every card that was `needs_attention` migrated to `needs_action`, and none to `needs_review`.
+That direction is the only safe one: a `needs_review` card must carry a recommended plan, no pre-split card has one, and routing any of them the other way would mean inventing a recommendation the fleet never actually made.
+The migration is in `bin/fleet-dashboard/server/store.py`, gated by a settings marker like the testing/review one, and it reports the count and the exact card ids to the server log rather than running silently.
+It leaves `updated_at` alone so a mechanical relabel does not float his blocked cards to the top of his default sort.
+
+It also leaves `status_history` completely alone, which matters more than it looks.
+Appending a `needs_attention` -> `needs_action` row per card would reset every card's age to the moment the server restarted, and the auditor's age check reads exactly that timestamp - a card he has been sitting on since Tuesday would read as flagged one minute ago, and the one finding that catches an ask that never reached him would go quiet across the whole board.
+Rewriting the old rows in place instead would falsify them, because the board really did say `needs_attention` at the time.
+So the rows stay exactly as they are, and every reader of that timestamp accepts both spellings instead.
+
+`needs_attention` therefore survives in two places on purpose.
+It is still accepted as an INPUT spelling everywhere a status is read - the CLI, the list filter, and both writing endpoints - and always resolves to `needs_action`, so an older script or an agent working from an older copy of the doctrine keeps working rather than failing on a rename.
+And it is still readable in old `status_history` rows, as the historical record of what the board said.
+It is never emitted: no card carries it, no response contains it, and it is not in `STATUSES`, so it cannot be sorted by or filtered to under its own name.
+
+The column holding the ask was renamed with the status - `needs_attention_reason` became `needs_action_reason` - by an in-place `ALTER TABLE ... RENAME COLUMN` rather than by adding a second column and copying.
+Two columns would have been one column's data under two names, and the loser would have started quietly collecting writes while every reader still read the winner.
+The JSON field a caller reads back is renamed to match; `bin/fm-dashboard-link-lib.sh` reads the new name.
+
+## The recommended plan, and what an approval is worth
+
+A `needs-review` card carries a **recommended-plan summary** - the short statement of what the fleet intends to do - and the board renders it in its own bordered box with the approve button INSIDE that box.
+That is a deliberate layout constraint, not a style choice: what he approves has to be unmistakably the text he is looking at, and a button anywhere else on the card could read as approving the card, the title, or whatever happens to sit next to it.
+Setting `needs_review` with no plan is refused server-side on both the create and the status path, because an approval box over empty text would record his consent to nothing at all.
+
+**The button records consent. It does not execute anything.**
+Approving does not merge, deploy, delete, spend, or start the work; it writes down that he said yes.
+Agents act afterwards, under exactly the boundaries they already had.
+Nothing should ever be wired onto this endpoint, and an approval must never be read as authority for anything wider than the plan text itself.
+
+**An approval is bound to the wording it was given for.**
+The board stores three things when he approves: that he approved, when, and the verbatim plan as displayed at that moment (`plan_approved_at`, `plan_approved_text`).
+The approve call must name the plan text the surface it came from had rendered, and the server refuses it with `409` if that no longer matches the card - so a plan edited between his last page refresh and his tap cannot silently collect consent for the new wording.
+If the plan is edited *after* an approval, the approval is deliberately NOT carried over.
+The record of his word survives - it is never destroyed, because it is the authority the fleet may already have acted under - but the card, `show`, and `--json` all report it as covering the old wording only, render both texts side by side, and put the approve button back.
+The derived `plan_approval_stale` flag is what says so, and any reader deciding whether it has permission must read it alongside `plan_approved` rather than trusting `plan_approved` alone.
+A stale approval is not weak permission; it is evidence he was asked a different question.
+
+Unlike the two reason columns, `review_plan` and the approval survive a status change.
+That is a deliberate divergence from the reason-clearing rule, and it is the safer direction here: a reason left on a card that has moved on renders as a live ask that no longer exists, whereas work happens *after* an approval, so destroying the approval the moment the card advances would erase the fleet's own authority exactly when it starts acting on it.
+
+**There is no CLI command that records an approval.**
+`bin/fm-dashboard.sh plan` writes and corrects the plan text, and that is all the CLI can do here.
+His consent is captured only where he himself gives it, on the board's own button, and never by an agent on his behalf - including when he has said yes somewhere else. If he approves a plan in conversation, act on that as you would any other instruction from him; do not go and tick his box for him, because a recorded approval is a durable claim that HE pressed it.
 
 ## Why `testing` split into `testing` and `review`
 
 The status now called `review` used to be called `testing`, carrying two different meanings at once: "done, and ready for the Admiral to look at" and "the fleet is currently exercising this." Conflating them meant a dozen actually-finished cards read no differently from a handful genuinely still in flight, and gave the fleet auditor nothing to check, since an in-flight card and a finished one both just sat there looking the same.
-The split keeps `testing` for the live-fleet-activity meaning and gives the ready-for-him-to-look-at meaning its own status, `review`, which inherits every rule the old `testing` status carried: optional to him, never age-checked by the auditor (see the section above), and the status `bin/fm-teardown.sh` advances a card to once its work has actually landed.
+The split keeps `testing` for the live-fleet-activity meaning and gives the ready-for-him-to-look-at meaning its own status, `review`, which inherits every rule the old `testing` status carried: optional to him, never age-checked by the auditor (see the section above; `needs-review`, despite the shared word, IS age-checked, because it is one of the two statuses that mean he is the next step), and the status `bin/fm-teardown.sh` advances a card to once its work has actually landed.
 Every card that was in `testing` before this split meant the ready-for-him-to-look-at thing, since no code existed yet to set the new meaning - `bin/fleet-dashboard/server/store.py`'s one-time migration converts them to `review`, gated by a settings marker so a genuinely new `testing` card is never later mistaken for a pre-split leftover.
 That migration says what it changed rather than running silently: on the startup that converts them it reports the count and the exact card ids (in the server log `bin/fm-dashboard.sh start` names) and writes a `testing` -> `review` row into each converted card's own status history, while deliberately leaving `updated_at` alone so a mechanical relabel does not float a dozen finished cards to the top of his default sort.
 Reload any board page that was already open when the upgraded server started: a phone tab still holding the pre-split frontend renders a migrated card with a bare `review` pill and no Mark Complete button until it is refreshed - non-destructive and self-clearing on reload, which is why this is an operational step rather than a cache-busting surface on the board.
 `testing` on its own is no longer inert: the fleet auditor's sweep now corroborates it against live crew state exactly like `working`, so a `testing` card nothing is actually exercising is a discrepancy the same way a stale `working` card is.
 
-## The needs-attention reason guard
+## The needs-action reason guard
 
-A card that reaches `needs-attention` with no stated ask, or with a reason that is really only a progress report, spends the Admiral's attention for nothing and teaches him that the loudest status on the board does not always mean him - the same failure that already made one always-red marker into noise he learned to skip.
+A card that reaches `needs-action` with no stated ask, or with a reason that is really only a progress report, spends the Admiral's attention for nothing and teaches him that the loudest status on the board does not always mean him - the same failure that already made one always-red marker into noise he learned to skip.
 Two things are enforced server-side (`POST /api/tasks/{id}/status` and `POST /api/tasks` alike, both routed through `bin/fleet-dashboard/server/validation.py`), not left to an agent remembering to write good text:
 
-1. **A reason is required.** The API refuses to set `needs_attention` - whether on an existing card or a card created straight into that status - with an empty or missing `reason`, rather than substituting placeholder text.
+1. **A reason is required.** The API refuses to set `needs_action` - whether on an existing card or a card created straight into that status - with an empty or missing `reason`, rather than substituting placeholder text.
    `bin/fm-dashboard.sh status` and `add` both also refuse locally before making the call.
-   The page asks instead of failing: choosing `needs-attention` on a card opens a reason field, holds the confirm button disabled until it has text, and renders the server's own refusal next to the field if what was typed is rejected - so the Admiral's own route to this status can never end in a card set loud with nothing to act on.
+   The page asks instead of failing: choosing `needs-action` on a card opens a reason field, holds the confirm button disabled until it has text, and renders the server's own refusal next to the field if what was typed is rejected - so the Admiral's own route to this status can never end in a card set loud with nothing to act on.
 2. **An obviously report-shaped reason is refused.** The reason is rejected if one of a small fixed list of report-shaped phrases (`REPORT_SHAPED_PHRASES` in `validation.py` - things like "being chased", "in progress", "investigating", "working on") sits at an *edge* of the text: it opens or closes either the leading clause or the trailing clause, ignoring a short fixed list of hedges at that edge - a leading "still"/"currently"/"we"/"I", or a trailing "now"/"it".
    Clause edges rather than only the very start, because the motivating failure was a reason of the form "*You reported flares not changing the lights - being chased now*" - a status update tacked onto the end of a sentence, not one that opens with the report phrase.
    Clause edges rather than *anywhere in the text*, because a phrase buried mid-clause is almost always an ordinary noun inside a real ask: "*approve the $400 monitoring subscription renewal*", "*pick which contractor keeps working on the deck*", "*approve the invoice for the in progress work*" are each something he has to do, and refusing them would leave the card silently stuck in `working` with the Admiral never asked - the exact inverse of the failure this guard exists to prevent.
@@ -136,7 +205,7 @@ Two things are enforced server-side (`POST /api/tasks/{id}/status` and `POST /ap
 
 **The phrase list is not the thing protecting this status, and it is not meant to become that thing.**
 It is a cheap catch for one specific careless move - a report phrase tacked onto, or opening, an otherwise ordinary sentence, exactly as in the "*being chased now*" reason that motivated all of this.
-The two things that actually protect `needs-attention` are (a) requiring a reason at all, which is structural and cannot be dodged by phrasing, and (b) the fleet auditor's judgment of whether the stated ask is genuine, which is the only check that can answer "would he actually DO something about this."
+The two things that actually protect `needs-action` are (a) requiring a reason at all, which is structural and cannot be dodged by phrasing, and (b) the fleet auditor's judgment of whether the stated ask is genuine, which is the only check that can answer "would he actually DO something about this."
 A substring-and-edge matcher structurally cannot answer that question, so no amount of extending the phrase list or the hedge list would turn it into the real protection.
 
 This matters because the obvious next move on reading the misses below is to add more phrases and more hedges. That was tried and reverted, and the reason it was reverted is the point:
@@ -161,17 +230,19 @@ What the guard buys is catching the plainest, most common form of carelessness -
 
 **This guard does not replace the fleet auditor's judgment, and the auditor's judgment does not replace this guard.**
 The server checks words; the auditor checks whether the ask is real.
-The auditor's sweep separately reads every `needs-attention` card's reason and judges it against "what would he DO" - if the honest answer is "read it" or "know it," it is a discrepancy regardless of whether it happens to dodge the fixed phrase list (see the [`fleet-dashboard`](../.agents/skills/fleet-dashboard/SKILL.md) skill, fleet auditor's sweep, step 5).
+The auditor's sweep separately reads every `needs-action` card's reason and judges it against "what would he DO" - if the honest answer is "read it" or "know it," it is a discrepancy regardless of whether it happens to dodge the fixed phrase list (see the [`fleet-dashboard`](../.agents/skills/fleet-dashboard/SKILL.md) skill, fleet auditor's sweep, step 5).
 Retiring either check on the assumption the other one covers it would reopen the exact gap this section exists to close.
 
-Existing `needs-attention` cards set before this guard existed are not migrated or rewritten - the guard governs what can be set from now on, not what already sits on the board.
+Existing `needs-action` cards set before this guard existed are not migrated or rewritten - the guard governs what can be set from now on, not what already sits on the board.
+The guard does not run on a `needs-review` plan at all, and that is deliberate rather than an omission: the phrase list is tuned to catch a progress report standing in for an ASK, while a plan is a statement of intent whose natural phrasing ("working on the migration in two passes") routinely opens with words on that list. Running it there would refuse good plans to catch a failure the field cannot have, and a refused plan is the more expensive error - it leaves him never asked. Whether a plan is specific enough to approve is the auditor's judgment, exactly as the equivalent question about a reason is.
 
-One further gap, recorded rather than fixed here: **a status-change reason is only ever persisted and shown for `waiting` and `needs-attention`.**
-Those are the two statuses with a reason column (`waiting_reason`, `needs_attention_reason`).
+One further gap, recorded rather than fixed here: **a status-change reason is only ever persisted and shown for `waiting` and `needs-action`.**
+Those are the two statuses with a reason column (`waiting_reason`, `needs_action_reason`).
+(`needs-review` carries a plan rather than a reason, in its own `review_plan` column, and that one IS rendered - on the card, in `show`, and in `--json`.)
 Passing `--reason` to `bin/fm-dashboard.sh status <id> working|paused|testing|complete` exits 0 and records the text only as a status-history note, which neither the `status` subcommand nor `show` ever surfaces - so it is written somewhere nobody reads.
 That is pre-existing behaviour this task deliberately did not change; it is named here so it is a known gap rather than a surprise.
-What this task did do is stop `add` from adding a second way into the same hole: `add --reason` is refused outright for any status but `needs-attention`, and the refusal only points at the `status` subcommand when the status given is one that genuinely stores a reason there.
-The gap now has a deliberate producer rather than only accidental ones: the mechanical card link's advance-on-landing writes a held `needs_attention_reason`/`waiting_reason` into exactly this note so the status change cannot destroy it (see "The mechanical card link" above), which preserves the text without yet making it visible anywhere.
+What this task did do is stop `add` from adding a second way into the same hole: `add --reason` is refused outright for any status but `needs-action`, and the refusal only points at the `status` subcommand when the status given is one that genuinely stores a reason there.
+The gap now has a deliberate producer rather than only accidental ones: the mechanical card link's advance-on-landing writes a held `needs_action_reason`/`waiting_reason` into exactly this note so the status change cannot destroy it (see "The mechanical card link" above), which preserves the text without yet making it visible anywhere.
 
 ## Link policy (standing order 17)
 
