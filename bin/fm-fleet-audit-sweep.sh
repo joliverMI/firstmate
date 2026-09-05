@@ -9,7 +9,7 @@
 # paths that could quietly drift apart - see docs/dashboard.md "Auditor
 # integration".
 #
-# Scope: this implements the deterministic subset of the eight-status
+# Scope: this implements the deterministic subset of the nine-status
 # procedure in .agents/skills/fleet-dashboard/SKILL.md "The fleet auditor's
 # sweep" - the checks that can be made as a mechanical comparison. Check 5
 # is the one check whose emitted rows want a live auditor's reading rather
@@ -27,21 +27,40 @@
 #      usually unverifiable from state alone: "confirm each is still
 #      genuinely paused by the Admiral's own word") - this script counts a
 #      paused card as checked but never flags one.
-#   5. needs_attention - flags a card that has sat past
-#      FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES (default 60) with no
-#      admiral-authored communication note since it was flagged. It reads
-#      that timestamp only, never needs_attention_reason, so a card the
-#      skill's point 5 excludes from the age finding is flagged on age like
-#      any other; the skill's own point 5 says how an auditor should read
-#      such a row.
+#   5. needs_action and needs_review - flags a card in EITHER status that has
+#      been blocked past FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES (default 60)
+#      with no admiral-authored communication note answering the CURRENT ask.
+#      Both statuses mean he is the next step, so both age the same way; the
+#      env var keeps its pre-split name so an existing crontab or wrapper
+#      that sets it keeps working. A needs_review card he has approved counts
+#      as answered from the approval alone, with no note needed - the
+#      approval IS the reply that status asks for.
+#      Two different timestamps, deliberately, because they answer two
+#      different questions (see check_blocked_on_him):
+#        - AGE runs from when he FIRST became blocked on this card and keeps
+#          running across re-asks, because what the doctrine means by age is
+#          how long he has been left waiting, not how long since somebody
+#          last edited the text. Those coincide only when nobody re-asks.
+#        - The REPLY check runs from the newest ask, so an answer he gave to
+#          an earlier question never silences a later one.
+#      He sees the current question; the sweep sees the true wait.
+#      Both accept the historical `needs_attention` spelling: the split
+#      deliberately left old status_history rows alone (see store.py's
+#      _migrate_needs_attention_to_needs_action), so a card blocked since
+#      before the split still ages from when it was actually blocked rather
+#      than from the restart that renamed it.
+#      It reads those timestamps only, never needs_action_reason or
+#      review_plan, so a card the skill's point 5 excludes from the age
+#      finding is flagged on age like any other; the skill's own point 5 says
+#      how an auditor should read such a row.
 #   6. not_started - counted for every not-started card, but flagged only
 #      when a currently-waiting card's own waiting_on_id names it: that
 #      column is only ever non-null while the referencing card is itself
 #      `waiting` (store.py's set_status clears it on every other status), so
 #      it is a structural fact that live work is genuinely blocked on this
 #      one, not a guess. Age alone is never the signal here - most
-#      not-started cards are legitimately queued, and unlike needs_attention
-#      above this check applies no age threshold at all. Every outstanding
+#      not-started cards are legitimately queued, and unlike the two blocking
+#      statuses above this check applies no age threshold at all. Every outstanding
 #      block counts toward the run's discrepancy total on every sweep, so the
 #      board can never read "clean" while one still stands; what is said once
 #      rather than every sweep is the log *text*. It stays quiet while one of
@@ -53,8 +72,12 @@
 #      silences it, and two waiting cards naming one target are one finding
 #      within a sweep.
 #   review is optional to him by design (the skill's own asymmetry), so it is
-#   never checked here at all - see "Why `needs-attention` is a separate
-#   status from `review`" in docs/dashboard.md.
+#   never checked here at all - see "Why `needs-action` and `needs-review` are
+#   two statuses" in docs/dashboard.md. `review` and `needs_review` are
+#   different statuses and this is the one place in this script where
+#   confusing them would be silent: `review` means nothing waits on him,
+#   `needs_review` means he has an approval to give, and only the second is
+#   checked in 5 above.
 #
 # Collapsing repeats (general mechanism): checks 1, 2, 3, and 5 above can all
 # recur sweep after sweep for as long as their condition stands, and each
@@ -75,7 +98,7 @@
 # passing regression suite, so migrating it for its own sake without a
 # concrete need was not worth the regression risk this task's scope. It
 # could retire onto the general mechanism if its key embedded that same
-# boundary the way the needs_attention check's key now embeds `changed_at`
+# boundary the way the blocking-status check's key now embeds `changed_at`
 # below; that is a legitimate future simplification, not a correctness gap.
 # Checks 1-3 do not embed a boundary either, so a card whose condition
 # resolves and later recurs differently collapses onto its own prior row
@@ -242,33 +265,129 @@ PAUSED_JSON=$("$DASH" list --status paused --json) \
   || fail_sweep "sweep failed listing paused cards: dashboard unreachable mid-sweep"
 CHECKED=$((CHECKED + $(printf '%s' "$PAUSED_JSON" | jq '.tasks | length')))
 
-# ---- 5. needs_attention: age since flagged, with no reply since ----
+# ---- 5. needs_action and needs_review: age since flagged, no reply since ----
+# Both statuses mean he is the next step, so both age identically; the env
+# var keeps its pre-split name so an existing crontab that sets it still
+# works (see the header).
 STALE_MINUTES=${FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES:-60}
 case "$STALE_MINUTES" in ''|*[!0-9]*) STALE_MINUTES=60 ;; esac
-NA_JSON=$("$DASH" list --status needs-attention --json) \
-  || fail_sweep "sweep failed listing needs-attention cards: dashboard unreachable mid-sweep"
-while IFS= read -r id; do
-  [ -n "$id" ] || continue
-  CHECKED=$((CHECKED + 1))
-  detail_json=$("$DASH" show "$id" --json 2>/dev/null) || continue
-  changed_at=$(printf '%s' "$detail_json" \
-    | jq -r '[.status_history[] | select(.to_status=="needs_attention")] | last | .changed_at // empty')
-  [ -n "$changed_at" ] || continue
-  changed_epoch=$(iso_to_epoch "$changed_at") || continue
-  [ -n "$changed_epoch" ] || continue
-  age_min=$(( (START_EPOCH - changed_epoch) / 60 ))
-  [ "$age_min" -ge "$STALE_MINUTES" ] || continue
-  replied=$(printf '%s' "$detail_json" | jq -r --arg since "$changed_at" \
-    '([.notes[] | select(.tab=="communication" and .author=="admiral" and .created_at > $since)] | length) > 0')
-  [ "$replied" = "true" ] && continue
-  # Keyed on changed_at, not just the card, so a card that later cycles back
-  # into needs_attention after an earlier reply gets a fresh row rather than
-  # updating the one that reply already closed - the same fresh-occurrence
-  # principle as the not_started check's own restarted_since handling below,
-  # here free because changed_at is already in hand for the age check above.
-  log_discrepancy "$id" "needs-attention for ${age_min}m with no reply from him since it was flagged" \
-    "needs-attention-stale:$changed_at"
-done < <(printf '%s' "$NA_JSON" | jq -r '.tasks[].id')
+# <status-flag> is the dashed spelling the CLI takes; <stored-status> is the
+# underscored spelling status_history actually records. They are different
+# strings and comparing history against the dashed one silently matches
+# nothing, which reads exactly like a clean board - so both are passed
+# explicitly rather than derived from each other at a distance.
+check_blocked_on_him() {  # <status-flag> <stored-status> <label> <key-prefix>
+  local status_flag=$1 stored=$2 label=$3 key_prefix=$4
+  local json id detail_json block_at ask_at plan_at changed_at changed_epoch age_min replied approved_at approval_stale
+  json=$("$DASH" list --status "$status_flag" --json) \
+    || fail_sweep "sweep failed listing $status_flag cards: dashboard unreachable mid-sweep"
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    CHECKED=$((CHECKED + 1))
+    detail_json=$("$DASH" show "$id" --json 2>/dev/null) || continue
+    # TWO timestamps, because they answer two different questions.
+    #
+    # BLOCK_AT - when he FIRST became blocked on this card, and what the age
+    # is measured from. The boundary is a row that moves him INTO a blocking
+    # status from one that is not: `from_status` not blocking (or null, for a
+    # card created straight into one) and `to_status` blocking. That is what
+    # makes a re-ask invisible to the clock. Re-setting a card he is already
+    # blocked on - `status <id> needs-action --reason "<new ask>"` - is the
+    # ONLY way to change the ask on such a card, so it is the ordinary path,
+    # not an exotic one, and store.set_status records it as needs_action ->
+    # needs_action. Measuring from the last such row instead would restart
+    # his clock every time we re-worded the question, which is the exact
+    # opposite of what the age is for: the sweep exists to catch cards he has
+    # been left waiting on, and the card being re-asked most is the one it
+    # would go quiet on. A move between the two blocking statuses is not a
+    # boundary either - he has been blocked the whole time, only the shape of
+    # the question changed.
+    #
+    # ASK_AT - the newest ask, and what a reply is measured against, so an
+    # answer he gave to an earlier question never silences a later one. Every
+    # row landing on a blocking status counts here, re-asks included, and on
+    # a needs_review card so does the date the plan itself was last changed:
+    # editing the plan is how the ask is re-worded there, exactly as a
+    # re-`status` re-words a needs_action one, and it writes no history row
+    # of its own. Without it a reply he gave about plan A would go on
+    # answering plan B forever. The test is whether he has answered THIS ask,
+    # not whether he has ever replied to this card.
+    #
+    # He sees the current question; the sweep sees the true wait.
+    #
+    # Both accept `needs_attention` as the historical spelling of
+    # `needs_action`: the split left old status_history rows untouched on
+    # purpose, so without this a card blocked since before the split would
+    # have no readable time and would silently drop out of this check.
+    block_at=$(printf '%s' "$detail_json" \
+      | jq -r --arg s "$stored" '
+        def blocking: . == "needs_action" or . == "needs_review" or . == "needs_attention";
+        [.status_history[]
+          | select((.to_status | blocking) and ((.from_status == null) or ((.from_status | blocking) | not)))]
+        | last | .changed_at // empty')
+    ask_at=$(printf '%s' "$detail_json" \
+      | jq -r --arg s "$stored" '
+        [.status_history[]
+          | select(.to_status == $s
+                   or ($s == "needs_action" and .to_status == "needs_attention"))]
+        | last | .changed_at // empty')
+    # A card with no readable boundary is skill point 8's unverifiable case:
+    # stay quiet rather than invent a clock.
+    [ -n "$block_at" ] || continue
+    [ -n "$ask_at" ] || ask_at=$block_at
+    if [ "$stored" = needs_review ]; then
+      plan_at=$(printf '%s' "$detail_json" | jq -r '.review_plan_updated_at // empty')
+      if [ -n "$plan_at" ] && [ "$ask_at" \< "$plan_at" ]; then
+        ask_at=$plan_at
+      fi
+    fi
+    changed_at=$block_at
+    changed_epoch=$(iso_to_epoch "$block_at") || continue
+    [ -n "$changed_epoch" ] || continue
+    age_min=$(( (START_EPOCH - changed_epoch) / 60 ))
+    [ "$age_min" -ge "$STALE_MINUTES" ] || continue
+    replied=$(printf '%s' "$detail_json" | jq -r --arg since "$ask_at" \
+      '([.notes[] | select(.tab=="communication" and .author=="admiral" and .created_at > $since)] | length) > 0')
+    [ "$replied" = "true" ] && continue
+    # On a needs_review card his approval IS the reply the status asks for -
+    # one tap, no note - so an approval dated at or after the flag closes
+    # this the same way a written reply does. Without it the board would
+    # keep nagging him about a plan he has already approved.
+    #
+    # `plan_approval_stale` is what stops that becoming a hole: an approval
+    # for wording the plan no longer carries has NOT answered the plan on
+    # the card, so the card is still genuinely waiting on him and must keep
+    # flagging. Reading the server's own derived flag rather than
+    # re-deriving it here keeps the two from drifting apart.
+    #
+    # Scoped to needs_review, and only needs_review. The plan and its
+    # approval deliberately survive a status change, so a card can sit in
+    # needs_action carrying an approval that answered an entirely different
+    # question; letting that quiet the age check would silence the one check
+    # that catches an ask which never reached him. A needs_action card is
+    # closed by his written reply, exactly as before.
+    if [ "$stored" = needs_review ]; then
+      approved_at=$(printf '%s' "$detail_json" | jq -r '.plan_approved_at // empty')
+      approval_stale=$(printf '%s' "$detail_json" | jq -r '.plan_approval_stale // false')
+      if [ -n "$approved_at" ] && [ "$approval_stale" != "true" ] \
+         && ! [ "$approved_at" \< "$ask_at" ]; then
+        continue
+      fi
+    fi
+    # Keyed on the block start, not just the card, so a card that later
+    # cycles back in after an earlier reply gets a fresh row rather than
+    # updating the one that reply already closed - the same fresh-occurrence
+    # principle as the not_started check's own restarted_since handling
+    # below, here free because the timestamp is already in hand for the age
+    # check above. Keying it on the block start rather than the newest ask is
+    # deliberate: one blocked period is one finding, so re-asking updates
+    # that standing row instead of opening a second one beside it.
+    log_discrepancy "$id" "$label for ${age_min}m with no reply from him since it was flagged" \
+      "$key_prefix:$changed_at"
+  done < <(printf '%s' "$json" | jq -r '.tasks[].id')
+}
+check_blocked_on_him needs-action needs_action "needs-action" "needs-action-stale"
+check_blocked_on_him needs-review needs_review "needs-review" "needs-review-stale"
 
 # ---- 6. not_started: counted for every not-started card, but flagged only
 # when a currently-waiting card's own waiting_on_id names it (see header).

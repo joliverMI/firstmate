@@ -19,7 +19,61 @@ import threading
 import time
 from contextlib import contextmanager
 
-STATUSES = ("needs_attention", "not_started", "working", "paused", "waiting", "testing", "review", "complete")
+# Sort order IS this order: the page, the API's `--sort status`, and the
+# board's own sections all read it left to right. `needs_action` leads
+# because it is the only status nothing can clear but him doing a thing -
+# `needs_review` costs him one tap from wherever he is standing, so a board
+# that put it first would rank the cheaper ask above the one that is
+# genuinely holding work up. See docs/dashboard.md "Why `needs-action` and
+# `needs-review` are two statuses".
+STATUSES = (
+    "needs_action",
+    "needs_review",
+    "not_started",
+    "working",
+    "paused",
+    "waiting",
+    "testing",
+    "review",
+    "complete",
+)
+
+# `needs_attention` was split into the two statuses above. It is still
+# accepted as an INPUT spelling everywhere a status is read - an older
+# script, an agent working from an older copy of the doctrine - and always
+# means `needs_action`, which is where every existing card of that status
+# was migrated. It is never emitted: no card carries it, no response
+# contains it, and it is not in STATUSES, so it cannot be filtered for or
+# sorted by under its old name. Old `status_history` rows keep it, because
+# those record what the board actually said at the time.
+DEPRECATED_STATUS_ALIASES = {"needs_attention": "needs_action"}
+
+
+def canonical_status(status: str | None) -> str | None:
+    """The stored spelling for a status a caller supplied, alias included."""
+    if status is None:
+        return None
+    return DEPRECATED_STATUS_ALIASES.get(status, status)
+
+
+def normalized_plan(plan: str | None) -> str | None:
+    """The one normalization a plan gets, applied on every write path.
+
+    The approval binding compares the plan he approved against the plan the
+    card carries, character for character. That comparison is only honest if
+    both sides were normalized the same way and only once: a plan stored with
+    surrounding whitespace but approved as the surface displayed it would be
+    permanently approved-and-stale, with two identical-looking texts on the
+    card and no way back. So every writer routes the plan through here, and
+    every comparison downstream stays exact.
+    """
+    plan = (plan or "").strip()
+    return plan or None
+
+
+# The two statuses that mean the Admiral himself is the next step. Both sort
+# above everything else and both are what the auditor's age check is for.
+BLOCKING_STATUSES = ("needs_action", "needs_review")
 
 # The captain set is NOT written here. web/captains.json is its only copy; the
 # shell wrapper and the browser read that same file, so a captain added there
@@ -58,7 +112,11 @@ CREATE TABLE IF NOT EXISTS tasks (
   status TEXT NOT NULL,
   waiting_on_id TEXT,
   waiting_reason TEXT,
-  needs_attention_reason TEXT,
+  needs_action_reason TEXT,
+  review_plan TEXT,
+  plan_approved_at TEXT,
+  plan_approved_text TEXT,
+  review_plan_updated_at TEXT,
   starred INTEGER NOT NULL DEFAULT 0,
   backlog_ref TEXT,
   initial_prompt TEXT NOT NULL,
@@ -121,8 +179,28 @@ DEFAULT_AUDIT_INTERVAL_MINUTES = 15
 # already-created table untouched, so a database created before a column
 # existed needs it added explicitly - this keeps existing cards and their
 # history intact instead of requiring a fresh database.
+# `needs_action_reason` is the same column `needs_attention_reason` was, under
+# the name the status now has; _rename_needs_attention_reason below renames it
+# in place on an older database, so it is already present by the time this list
+# is consulted and nothing here re-adds an empty second copy of it.
+#
+# review_plan holds the recommended action a `needs_review` card is asking him
+# to approve. plan_approved_at/plan_approved_text hold his approval and the
+# EXACT plan text that was on the card when he gave it - two columns, not one
+# flag, because an approval is only worth anything against the wording he
+# actually read (see approve_plan).
+# review_plan_updated_at dates the wording itself: when the plan he is being
+# asked about last CHANGED, which is when the question changed. It is what
+# lets a reader tell a new ask from a card that has merely been touched, and
+# `updated_at` cannot do that job - a note, a title edit, or an approval moves
+# `updated_at` without changing anything he is being asked (see set_review_plan
+# and the auditor's newest-ask timestamp in bin/fm-fleet-audit-sweep.sh).
 _TASK_COLUMN_MIGRATIONS = (
-    ("needs_attention_reason", "TEXT"),
+    ("needs_action_reason", "TEXT"),
+    ("review_plan", "TEXT"),
+    ("plan_approved_at", "TEXT"),
+    ("plan_approved_text", "TEXT"),
+    ("review_plan_updated_at", "TEXT"),
 )
 
 _AUDIT_RUN_COLUMN_MIGRATIONS = (
@@ -164,6 +242,18 @@ SETTING_SWEEP_FORCED = "audit_sweep_forced"
 # restart.
 SETTING_TESTING_REVIEW_SPLIT_MIGRATED = "migrated_testing_review_split_v1"
 
+# Marks the one-time split of `needs_attention` into `needs_action` (he has to
+# do a thing himself) and `needs_review` (the fleet is proposing an action and
+# asking him to approve it). Every existing `needs_attention` card migrates to
+# `needs_action`, never to `needs_review`: a `needs_review` card must carry a
+# recommended-plan summary, and no pre-split card has one, so routing any of
+# them the other way would mean inventing a recommendation the fleet never
+# actually made. Gated by this marker for the same reason the testing/review
+# split is, though the guard is weaker here by construction: nothing can write
+# `needs_attention` after the split, so a second run would find nothing to do
+# anyway.
+SETTING_NEEDS_ATTENTION_SPLIT_MIGRATED = "migrated_needs_attention_split_v1"
+
 # A claimed sweep that has not released itself within this long is treated as
 # abandoned (crashed subprocess, killed server) rather than left stuck forever
 # refusing every future tick and button press. Overridable so a test can prove
@@ -181,6 +271,15 @@ def _iso_to_epoch(iso: str) -> float:
     return calendar.timegm(time.strptime(iso, "%Y-%m-%dT%H:%M:%SZ"))
 
 
+class PlanChangedError(ValueError):
+    """The plan moved between what he was shown and what he approved.
+
+    A distinct type so the HTTP layer can answer 409 on the fact rather than
+    on the wording of the message - the page's re-approve flow keys off that
+    status code, and a reworded sentence must never be able to change it.
+    """
+
+
 class Store:
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -189,6 +288,7 @@ class Store:
             os.makedirs(directory, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(SCHEMA)
+            self._rename_needs_attention_reason(conn)
             existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
             for name, coltype in _TASK_COLUMN_MIGRATIONS:
                 if name not in existing_columns:
@@ -207,10 +307,16 @@ class Store:
                 (str(DEFAULT_AUDIT_INTERVAL_MINUTES),),
             )
             migrated = self._migrate_testing_to_review(conn)
+            split = self._migrate_needs_attention_to_needs_action(conn)
         if migrated:
             print(
                 f"dashboard: migrated {len(migrated)} card(s) from testing to review "
                 f"(testing/review split): {', '.join(migrated)}"
+            )
+        if split:
+            print(
+                f"dashboard: migrated {len(split)} card(s) from needs_attention to "
+                f"needs_action (needs-action/needs-review split): {', '.join(split)}"
             )
 
     # Accepted tradeoff, not an oversight: a phone tab already open across a
@@ -257,6 +363,63 @@ class Store:
         conn.execute(
             "INSERT OR IGNORE INTO settings(key, value) VALUES (?, '1')",
             (SETTING_TESTING_REVIEW_SPLIT_MIGRATED,),
+        )
+        return ids
+
+    # A database created before the needs-action/needs-review split holds the
+    # ask in a column named for the status that no longer exists. Renamed in
+    # place rather than added-and-copied: the two would be one column's data
+    # under two names, and the loser would silently start collecting the
+    # writes while every reader still read the winner. Guarded on the columns
+    # actually present so it is a no-op on a fresh database (where SCHEMA
+    # already created the new name) and on an already-renamed one.
+    def _rename_needs_attention_reason(self, conn: sqlite3.Connection) -> None:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
+        if "needs_attention_reason" in columns and "needs_action_reason" not in columns:
+            conn.execute(
+                "ALTER TABLE tasks RENAME COLUMN needs_attention_reason TO needs_action_reason"
+            )
+
+    # Deliberately leaves updated_at alone, for the same reason the
+    # testing/review migration above does: it means when his work last
+    # actually changed, not when a script relabelled it, and floating a dozen
+    # blocked cards to the top of his default sort would be a mechanical
+    # relabel pretending to be news.
+    #
+    # Deliberately leaves status_history alone too, which is the more
+    # load-bearing of the two. A needs_attention -> needs_action row per card
+    # would date an ask he was never actually asked, and the auditor measures
+    # his reply against the newest ask - so every card he had already answered
+    # would read as unanswered again at the next sweep. Rewriting the old rows
+    # in place instead would falsify them: the board really did say
+    # `needs_attention` then. So the rows stay as they are, `needs_attention`
+    # keeps its meaning as a readable historical spelling, and every reader of
+    # those timestamps accepts both spellings (bin/fm-fleet-audit-sweep.sh's
+    # check 5 does, which is also why its age survives a relabel between two
+    # blocking statuses). See docs/dashboard.md "How the split moved his live
+    # board" for the decision itself. The record that this migration ran is the
+    # settings marker and the startup line naming every card it moved.
+    def _migrate_needs_attention_to_needs_action(self, conn: sqlite3.Connection) -> list[str]:
+        """One-time move of every `needs_attention` card to `needs_action`.
+
+        Never to `needs_review`: that status requires a recommended-plan
+        summary, and no pre-split card has one. Returns the migrated ids so
+        the caller can report exactly what changed.
+        """
+        already = conn.execute(
+            "SELECT 1 FROM settings WHERE key = ?", (SETTING_NEEDS_ATTENTION_SPLIT_MIGRATED,)
+        ).fetchone()
+        if already is not None:
+            return []
+        ids = [row[0] for row in conn.execute("SELECT id FROM tasks WHERE status = 'needs_attention'")]
+        if ids:
+            conn.executemany(
+                "UPDATE tasks SET status = 'needs_action' WHERE id = ?",
+                [(task_id,) for task_id in ids],
+            )
+        conn.execute(
+            "INSERT OR IGNORE INTO settings(key, value) VALUES (?, '1')",
+            (SETTING_NEEDS_ATTENTION_SPLIT_MIGRATED,),
         )
         return ids
 
@@ -309,26 +472,44 @@ class Store:
         agent: str = "",
         status: str = "not_started",
         backlog_ref: str | None = None,
-        needs_attention_reason: str | None = None,
+        needs_action_reason: str | None = None,
+        review_plan: str | None = None,
     ) -> dict:
         if captain not in CAPTAINS:
             raise ValueError(f"unknown captain: {captain!r}")
+        status = canonical_status(status)
         if status not in STATUSES:
             raise ValueError(f"unknown status: {status!r}")
         # Mirrors set_status: the reason column is only ever populated for
         # the status it belongs to, so a later transition away from
-        # needs_attention can't leave a stale reason rendering on the card.
-        needs_attention_reason = needs_attention_reason if status == "needs_attention" else None
+        # needs_action can't leave a stale reason rendering on the card.
+        needs_action_reason = needs_action_reason if status == "needs_action" else None
+        # The plan is NOT scoped that way - see set_status for why a card that
+        # leaves needs_review keeps its plan and its approval.
+        review_plan = normalized_plan(review_plan)
+        if status == "needs_review" and review_plan is None:
+            raise ValueError(
+                "needs_review requires a recommended-plan summary - an approval box "
+                "with nothing in it is exactly what this status exists to prevent"
+            )
+        if status != "needs_review" and review_plan is not None:
+            raise ValueError(
+                "a recommended plan can only be created by starting the card at "
+                f"needs_review - a plan on a {status} card renders no approval box, so it "
+                "would be a recommendation he is never actually shown or able to accept"
+            )
         ts = now_iso()
         with self._cursor(write=True) as cur:
             task_id = self._new_id(cur, title)
             cur.execute(
                 """INSERT INTO tasks
                    (id, title, agent, captain, status, waiting_on_id, waiting_reason,
-                    needs_attention_reason, starred, backlog_ref, initial_prompt, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, 0, ?, ?, ?, ?)""",
-                (task_id, title, agent, captain, status, needs_attention_reason,
-                 backlog_ref, initial_prompt, ts, ts),
+                    needs_action_reason, review_plan, plan_approved_at, plan_approved_text,
+                    review_plan_updated_at, starred, backlog_ref, initial_prompt,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, NULL, ?, 0, ?, ?, ?, ?)""",
+                (task_id, title, agent, captain, status, needs_action_reason, review_plan,
+                 ts if review_plan else None, backlog_ref, initial_prompt, ts, ts),
             )
             cur.execute(
                 """INSERT INTO status_history (task_id, from_status, to_status, changed_at, note)
@@ -337,13 +518,52 @@ class Store:
             )
         return self.get_task(task_id)
 
+    # Derived on the way out rather than stored, so it can never disagree with
+    # the two columns it is derived from. `plan_approved` says he approved
+    # something; `plan_approval_stale` says the plan has been edited since,
+    # so what he approved is NOT what the card now displays. A reader that
+    # only checks `plan_approved` and acts is acting on authority it does not
+    # have, which is why the stale flag travels beside it everywhere, in
+    # `show`, in --json, and on the page.
+    @staticmethod
+    def _with_approval_state(task: dict) -> dict:
+        approved_at = task.get("plan_approved_at")
+        approved_text = task.get("plan_approved_text")
+        task["plan_approved"] = bool(approved_at)
+        task["plan_approval_stale"] = bool(approved_at) and approved_text != task.get("review_plan")
+        return task
+
+    # A plan may only be CREATED through the path that also puts the approval
+    # box in front of him, because a plan he is never shown is a
+    # recommendation nobody can accept - `show` would print "recommended
+    # plan:" on a card that renders no button. That is a rule about creation
+    # and not about where a plan may live: a plan and its approval
+    # deliberately outlive the card's status (see set_status), so a card that
+    # has left needs_review still accepts a correction to the wording the
+    # fleet is acting under. So the refusal is exactly this narrow - a card
+    # that has NEVER been needs_review and carries no plan - and it is decided
+    # from the card's own status history rather than its current status, which
+    # says nothing about the doors the card has already been through.
+    @staticmethod
+    def _guard_plan_creation(task: dict) -> None:
+        if task.get("review_plan"):
+            return
+        if any(row.get("to_status") == "needs_review"
+               for row in task.get("status_history") or ()):
+            return
+        raise ValueError(
+            "a recommended plan can only be created by moving the card to needs_review - "
+            "this card has never been needs_review and carries no plan, so nothing would "
+            "show him an approval box for the plan being written"
+        )
+
     def get_task(self, task_id: str) -> dict | None:
         with self._cursor() as cur:
             cur.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
             row = cur.fetchone()
             if row is None:
                 return None
-            task = dict(row)
+            task = self._with_approval_state(dict(row))
             cur.execute(
                 "SELECT * FROM notes WHERE task_id = ? ORDER BY created_at ASC, id ASC",
                 (task_id,),
@@ -362,7 +582,7 @@ class Store:
         params: list = []
         if status:
             query += " AND status = ?"
-            params.append(status)
+            params.append(canonical_status(status))
         if captain:
             query += " AND captain = ?"
             params.append(captain)
@@ -372,7 +592,7 @@ class Store:
         query += " ORDER BY updated_at DESC"
         with self._cursor() as cur:
             cur.execute(query, params)
-            return [dict(r) for r in cur.fetchall()]
+            return [self._with_approval_state(dict(r)) for r in cur.fetchall()]
 
     def task_exists(self, task_id: str) -> bool:
         with self._cursor() as cur:
@@ -401,7 +621,8 @@ class Store:
         return self.get_task(task_id)
 
     def set_status(self, task_id: str, status: str, waiting_on_id: str | None = None,
-                    reason: str | None = None) -> dict:
+                    reason: str | None = None, review_plan: str | None = None) -> dict:
+        status = canonical_status(status)
         if status not in STATUSES:
             raise ValueError(f"unknown status: {status!r}")
         current = self.get_task(task_id)
@@ -410,24 +631,136 @@ class Store:
         if waiting_on_id and not self.task_exists(waiting_on_id):
             raise ValueError(f"waiting_on_id does not exist: {waiting_on_id!r}")
         # `reason` is repurposed per status: what a card is waiting on for
-        # `waiting`, what is being asked of him for `needs_attention`. The two
+        # `waiting`, what is being asked of him for `needs_action`. The two
         # are mutually exclusive, so only the active status's column is kept.
         waiting_reason = reason if status == "waiting" else None
-        needs_attention_reason = reason if status == "needs_attention" else None
+        needs_action_reason = reason if status == "needs_action" else None
         if status != "waiting":
             waiting_on_id = None
+        # A move into needs_review needs a plan, either supplied by this call
+        # or already on the card; refuse rather than park him in front of an
+        # approval box with nothing to approve.
+        next_plan = normalized_plan(review_plan) or normalized_plan(current.get("review_plan"))
+        if status == "needs_review" and next_plan is None:
+            raise ValueError(
+                "needs_review requires a recommended-plan summary - an approval box "
+                "with nothing in it is exactly what this status exists to prevent"
+            )
+        # The plan and his approval deliberately do NOT clear when the card
+        # leaves needs_review, unlike the two reason columns above. Those are
+        # scoped to their status because a stale one renders as a live ask;
+        # an approval is the opposite kind of record - it is the Admiral's own
+        # word about what the fleet may do, and work happens AFTER he gives
+        # it, so destroying it the moment the card advances would erase the
+        # authority the fleet is acting under exactly when it starts acting.
+        # It is kept, and kept bound to its own wording: if the plan is later
+        # edited, _with_approval_state marks the approval stale rather than
+        # letting it drift onto text he never read.
+        if next_plan is not None and status != "needs_review":
+            self._guard_plan_creation(current)
         ts = now_iso()
+        # A status write that changes the plan changes the question, so it
+        # dates the wording too; one that leaves the plan alone must not, or
+        # every unrelated status change would read as a fresh ask.
+        plan_changed_at = (
+            ts if next_plan != current.get("review_plan")
+            else current.get("review_plan_updated_at")
+        )
         with self._cursor(write=True) as cur:
             cur.execute(
                 """UPDATE tasks SET status = ?, waiting_on_id = ?, waiting_reason = ?,
-                   needs_attention_reason = ?, updated_at = ? WHERE id = ?""",
-                (status, waiting_on_id, waiting_reason, needs_attention_reason, ts, task_id),
+                   needs_action_reason = ?, review_plan = ?, review_plan_updated_at = ?,
+                   updated_at = ? WHERE id = ?""",
+                (status, waiting_on_id, waiting_reason, needs_action_reason, next_plan,
+                 plan_changed_at, ts, task_id),
             )
             cur.execute(
                 """INSERT INTO status_history (task_id, from_status, to_status, changed_at, note)
                    VALUES (?, ?, ?, ?, ?)""",
                 (task_id, current["status"], status, ts, reason),
             )
+        return self.get_task(task_id)
+
+    def set_review_plan(self, task_id: str, plan: str) -> dict:
+        """Write the recommended-plan summary a needs_review card asks him to approve.
+
+        Editing the plan does not delete an approval he already gave - that
+        record is his word and is never silently thrown away - but it does
+        break the binding, because the approval was for the old wording.
+        _with_approval_state then reports the card as approved AND stale, the
+        card shows both texts, and the approve button comes back. Nothing
+        here decides that: it falls out of the two columns disagreeing.
+
+        Replacing the wording also dates it in `review_plan_updated_at`, which
+        is the durable mark that says the ask itself changed here. Without it
+        the only trace of a plan edit is `updated_at`, and the auditor reading
+        that could not tell a new question from a note being added - so a
+        reply he gave to the OLD plan would go on silencing a card that now
+        asks him something he has never seen. Re-writing the same text is not
+        a new question and deliberately leaves the date where it was.
+        """
+        plan = normalized_plan(plan)
+        if plan is None:
+            raise ValueError("a recommended-plan summary cannot be empty")
+        current = self.get_task(task_id)
+        if current is None:
+            raise KeyError(task_id)
+        self._guard_plan_creation(current)
+        ts = now_iso()
+        plan_changed_at = (
+            ts if plan != current.get("review_plan")
+            else current.get("review_plan_updated_at")
+        )
+        with self._cursor(write=True) as cur:
+            cur.execute(
+                "UPDATE tasks SET review_plan = ?, review_plan_updated_at = ?, updated_at = ? "
+                "WHERE id = ?",
+                (plan, plan_changed_at, ts, task_id),
+            )
+        return self.get_task(task_id)
+
+    def approve_plan(self, task_id: str, plan_as_displayed: str) -> dict:
+        """Record that the Admiral approved the plan he was actually looking at.
+
+        `plan_as_displayed` is the verbatim text the surface he clicked on had
+        rendered. It must equal the plan currently stored, or this refuses:
+        that is the whole safety property. Without it, a plan edited between
+        the page's last poll and his tap would collect an approval for wording
+        he never saw, and an agent would then act on authority he did not give.
+
+        This records consent and NOTHING else. It does not merge, deploy,
+        delete, advance the card, or start any work - deliberately, and stated
+        here so a later change has to argue with this comment first. Agents act
+        afterwards, under exactly the boundaries they already had.
+        """
+        current = self.get_task(task_id)
+        if current is None:
+            raise KeyError(task_id)
+        stored = current.get("review_plan")
+        if not stored:
+            raise ValueError("there is no recommended plan on this card to approve")
+        if normalized_plan(plan_as_displayed) != stored:
+            raise PlanChangedError(
+                "the plan changed since it was shown - nothing was approved. "
+                "Re-read the card and approve the plan it now displays."
+            )
+        ts = now_iso()
+        with self._cursor(write=True) as cur:
+            cur.execute(
+                "UPDATE tasks SET plan_approved_at = ?, plan_approved_text = ?, updated_at = ? "
+                "WHERE id = ?",
+                (ts, stored, ts, task_id),
+            )
+            # Deliberately writes NO status_history row. plan_approved_at and
+            # plan_approved_text are already the durable, readable record of
+            # his word, so a history row would add nothing - and it would cost
+            # something real: it is a same-status row, indistinguishable in
+            # shape from the re-ask rows set_status writes, and the auditor
+            # has to tell those apart to know how long he has been blocked.
+            # An earlier version of this wrote one, and it silently reset the
+            # blocked-age of every card he approved - making the cards he had
+            # answered look freshly flagged to the very sweep that exists to
+            # catch cards he has been left waiting on.
         return self.get_task(task_id)
 
     def delete_task(self, task_id: str) -> None:

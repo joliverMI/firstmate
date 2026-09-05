@@ -12,7 +12,14 @@
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, system-ui, sans-serif;
 
   /* status colors */
-  --st-needs_attention: #ff3b30;
+  /* The two blocking statuses are both loud but never the same colour: he has
+     to be able to tell "I have to go and do this" from "I just have to say
+     yes" across a room. Red is the one that holds work up; amber is the one
+     that costs him a tap. --st-review stays yellow-gold and is a different
+     hue again, so a "Ready to Close" pill can never be mistaken for a
+     "Needs Review" one at a glance. */
+  --st-needs_action: #ff3b30;
+  --st-needs_review: #ff9f0a;
   --st-not_started: #7a8699;
   --st-working: #1db954;
   --st-paused: #e0a940;
@@ -20,7 +27,8 @@
   --st-testing: #22d3ee;
   --st-review: #ffd700;
   --st-complete: #5b8cff;
-  --st-needs_attention-bg: rgba(255, 59, 48, .12);
+  --st-needs_action-bg: rgba(255, 59, 48, .12);
+  --st-needs_review-bg: rgba(255, 159, 10, .12);
 
   /* Captain colors are deliberately absent: they come from web/captains.json
      and are applied inline as --cap-color / --chip-color, so adding a captain
@@ -141,9 +149,13 @@ h2.section .count { color: var(--text); font-weight: 700; }
   display: flex; flex-direction: column; gap: 8px; min-width: 0;
 }
 .card:hover { border-color: #4a4a4a; }
-.card.st-needs_attention {
-  border-left-width: 6px; border-left-color: var(--st-needs_attention);
-  border-color: var(--st-needs_attention); background: var(--st-needs_attention-bg);
+.card.st-needs_action {
+  border-left-width: 6px; border-left-color: var(--st-needs_action);
+  border-color: var(--st-needs_action); background: var(--st-needs_action-bg);
+}
+.card.st-needs_review {
+  border-left-width: 6px; border-left-color: var(--st-needs_review);
+  border-color: var(--st-needs_review); background: var(--st-needs_review-bg);
 }
 .card.st-not_started { border-left-color: var(--st-not_started); }
 .card.st-working { border-left-color: var(--st-working); }
@@ -167,7 +179,8 @@ h2.section .count { color: var(--text); font-weight: 700; }
   padding: 2.5px 8px; border-radius: 99px; white-space: nowrap;
 }
 .pill.status { color: #06110b; }
-.pill.status.st-needs_attention { background: var(--st-needs_attention); color: #2b0503; }
+.pill.status.st-needs_action { background: var(--st-needs_action); color: #2b0503; }
+.pill.status.st-needs_review { background: var(--st-needs_review); color: #2b1602; }
 .pill.status.st-not_started { background: var(--st-not_started); color: #0c1116; }
 .pill.status.st-working { background: var(--st-working); }
 .pill.status.st-paused { background: var(--st-paused); color: #221a04; }
@@ -193,15 +206,52 @@ h2.section .count { color: var(--text); font-weight: 700; }
   100% { box-shadow: 0 0 0 0 transparent; }
 }
 
-.needs-attention-banner {
+.needs-action-banner {
   font-size: 13px; font-weight: 700; color: #ffb4ac;
-  background: var(--danger-bg); border: 1px solid var(--st-needs_attention);
+  background: var(--danger-bg); border: 1px solid var(--st-needs_action);
   border-radius: 6px; padding: 8px 10px;
 }
 
-h2.section.needs-attention-section { color: var(--st-needs_attention); }
-h2.section.needs-attention-section::after { background: var(--st-needs_attention); opacity: .4; }
-.needs-attention-grid { margin-top: 10px; margin-bottom: 6px; }
+h2.section.needs-action-section { color: var(--st-needs_action); }
+h2.section.needs-action-section::after { background: var(--st-needs_action); opacity: .4; }
+.needs-action-grid { margin-top: 10px; margin-bottom: 6px; }
+
+h2.section.needs-review-section { color: var(--st-needs_review); }
+h2.section.needs-review-section::after { background: var(--st-needs_review); opacity: .4; }
+.needs-review-grid { margin-top: 10px; margin-bottom: 6px; }
+
+/* The recommended-plan box. Plan text and approve button are one bordered
+   element on purpose - what he approves must be unmistakably the text inside
+   the same box as the button, never something else on the card. */
+.plan-box {
+  border: 1px solid var(--st-needs_review); border-left-width: 4px;
+  background: var(--st-needs_review-bg); border-radius: 6px;
+  padding: 10px 11px; display: flex; flex-direction: column; gap: 8px;
+  cursor: default;
+}
+.plan-box-label {
+  font-size: 10.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--st-needs_review);
+}
+.plan-box-text { font-size: 13.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+.plan-box-foot { font-size: 11.5px; color: var(--text-muted); }
+.plan-approve-btn {
+  font-size: 13.5px; font-weight: 700; border-radius: 6px; padding: 9px 12px;
+  border: 1px solid var(--st-needs_review); background: var(--st-needs_review);
+  color: #2b1602; cursor: pointer; width: 100%;
+}
+.plan-approve-btn:hover:not(:disabled) { filter: brightness(1.1); }
+.plan-approve-btn:disabled { opacity: .5; cursor: default; }
+.plan-approved { font-size: 12.5px; font-weight: 600; color: var(--ok); }
+/* An approval that no longer matches the plan is a genuinely wrong state to
+   act on, so it gets the danger treatment rather than the status colour. */
+.plan-approval-stale {
+  font-size: 12.5px; color: #ffb4ac; background: var(--danger-bg);
+  border: 1px solid var(--danger); border-radius: 6px; padding: 7px 9px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.plan-approved-text { color: var(--text-muted); white-space: pre-wrap; word-break: break-word; }
+.plan-error { font-size: 12.5px; color: var(--danger); }
 
 .waiting-link-btn, .quick-action {
   font-size: 12px; font-weight: 600; border-radius: 6px; padding: 6px 10px;

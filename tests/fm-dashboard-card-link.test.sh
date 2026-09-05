@@ -418,24 +418,24 @@ test_lib_advance_after_landing_advances_an_ordinary_status_with_no_reason() {
 }
 
 # The defect this whole extraction was scoped to fix: a card still
-# needs_attention when its work lands must still advance (freezing it is its
+# needs_action when its work lands must still advance (freezing it is its
 # own stale-card failure), but the status change itself is what discards
-# needs_attention_reason - so the advance call must carry it forward as its
+# needs_action_reason - so the advance call must carry it forward as its
 # own --reason instead of letting it vanish with no trace.
-test_lib_advance_after_landing_carries_needs_attention_reason_forward() {
+test_lib_advance_after_landing_carries_needs_action_reason_forward() {
   reset_fake_dash
-  FAKE_DASH_SHOW_JSON='{"status":"needs_attention","needs_attention_reason":"approve the new vendor"}'
+  FAKE_DASH_SHOW_JSON='{"status":"needs_action","needs_action_reason":"approve the new vendor"}'
   run_lib fm_dashboard_advance_after_landing "$FAKE_DASH" card-10 t10 review "audit msg t10"
   assert_contains "$LIB_OUT" "dashboard: advanced card card-10 to review for t10" \
-    "a needs_attention card whose work landed was not advanced to review"
+    "a needs_action card whose work landed was not advanced to review"
   assert_grep_line "status card-10 review --reason approve the new vendor" "$FAKE_DASH_LOG" \
-    "the needs_attention reason was not carried forward as the advance call's own --reason"
-  pass "fm_dashboard_advance_after_landing carries a needs_attention card's reason forward instead of discarding it"
+    "the needs_action reason was not carried forward as the advance call's own --reason"
+  pass "fm_dashboard_advance_after_landing carries a needs_action card's reason forward instead of discarding it"
 }
 
 # The exact same defect on the sibling status: store.py's set_status nulls
 # waiting_reason on any write whose target status is not waiting, by the same
-# unconditional rule that clears needs_attention_reason, and teardown's guard
+# unconditional rule that clears needs_action_reason, and teardown's guard
 # (advance from anything but complete) reaches a waiting card just as readily.
 # Which of the two columns is live is the only thing that differs.
 test_lib_advance_after_landing_carries_waiting_reason_forward() {
@@ -447,6 +447,64 @@ test_lib_advance_after_landing_carries_waiting_reason_forward() {
   assert_grep_line "status card-13 review --reason the vendor to countersign" "$FAKE_DASH_LOG" \
     "the waiting reason was not carried forward as the advance call's own --reason"
   pass "fm_dashboard_advance_after_landing carries a waiting card's reason forward instead of discarding it"
+}
+
+# The ask must not vanish into a status he cannot answer from. The approve
+# button renders only on a needs_review card and the auditor's age check only
+# reaches the two blocking statuses, so advancing an unapproved plan into
+# `review` retires his question with nobody deciding that it should be.
+test_lib_advance_after_landing_holds_an_unapproved_needs_review_card() {
+  reset_fake_dash
+  FAKE_DASH_SHOW_JSON='{"status":"needs_review","review_plan":"Swap the vendor.","plan_approved":false,"plan_approval_stale":false}'
+  run_lib fm_dashboard_advance_after_landing "$FAKE_DASH" card-14 t14 review "audit msg t14"
+  assert_no_grep 'status card-14' "$FAKE_DASH_LOG" \
+    "a needs_review card he has never approved was advanced out of the only status he can approve from"
+  assert_contains "$LIB_OUT" "dashboard: card card-14 left at needs-review for t14" \
+    "the hold was silent, so nobody running teardown learns the card stayed put"
+  pass "fm_dashboard_advance_after_landing leaves an unapproved needs_review card exactly where he can still answer it"
+}
+
+# The other direction, so the hold cannot be satisfied by simply never
+# advancing: once his approval covers the plan the card displays, there is no
+# outstanding ask left and the card advances exactly as any other status does.
+test_lib_advance_after_landing_advances_an_approved_needs_review_card() {
+  reset_fake_dash
+  FAKE_DASH_SHOW_JSON='{"status":"needs_review","review_plan":"Swap the vendor.","plan_approved":true,"plan_approval_stale":false}'
+  run_lib fm_dashboard_advance_after_landing "$FAKE_DASH" card-15 t15 review "audit msg t15"
+  assert_contains "$LIB_OUT" "dashboard: advanced card card-15 to review for t15" \
+    "a needs_review card whose plan he has approved was held anyway"
+  assert_grep_line 'status card-15 review' "$FAKE_DASH_LOG" \
+    "the approved card's advance did not happen, or carried arguments it was never given"
+  pass "fm_dashboard_advance_after_landing advances a needs_review card once his approval covers the plan it shows"
+}
+
+# A stale approval is evidence he was asked a different question, so it is not
+# an answer to the plan the card now displays and must not release the hold.
+test_lib_advance_after_landing_holds_a_stale_approval_needs_review_card() {
+  reset_fake_dash
+  FAKE_DASH_SHOW_JSON='{"status":"needs_review","review_plan":"Keep the vendor.","plan_approved":true,"plan_approval_stale":true}'
+  run_lib fm_dashboard_advance_after_landing "$FAKE_DASH" card-16 t16 review "audit msg t16"
+  assert_no_grep 'status card-16' "$FAKE_DASH_LOG" \
+    "an approval for wording the card no longer carries released the hold"
+  assert_contains "$LIB_OUT" "dashboard: card card-16 left at needs-review for t16" \
+    "the stale-approval hold was silent"
+  pass "fm_dashboard_advance_after_landing holds a needs_review card whose approval covers only the old wording"
+}
+
+# Fail safe, and this direction is the requirement rather than a preference:
+# teardown fires mechanically with nobody watching, so an answer it cannot
+# read must leave the ask standing rather than retire it.
+test_lib_advance_after_landing_holds_a_needs_review_card_it_cannot_read() {
+  reset_fake_dash
+  FAKE_DASH_SHOW_JSON='{"status":"needs_review","review_plan":"Swap the vendor."}'
+  run_lib fm_dashboard_advance_after_landing "$FAKE_DASH" card-17 t17 review "audit msg t17"
+  assert_no_grep 'status card-17' "$FAKE_DASH_LOG" \
+    "a card whose approval state could not be read was advanced anyway"
+  assert_contains "$LIB_OUT" "warning: dashboard card advance held for t17 -> card card-17 (approval unreadable)" \
+    "an unreadable approval state did not warn"
+  assert_grep 'audit-log --fleet audit msg t17 --kind error' "$FAKE_DASH_LOG" \
+    "an unreadable approval state did not record a fleet audit-log finding"
+  pass "fm_dashboard_advance_after_landing resolves an unreadable approval toward leaving the ask standing"
 }
 
 test_lib_advance_after_landing_show_failure_warns_and_audit_logs() {
@@ -808,55 +866,78 @@ test_teardown_never_downgrades_an_already_complete_card() {
   pass "teardown never downgrades a card the Admiral already marked complete"
 }
 
-# Regression: a card still needs_attention when its serving task finally lands
+# The same hold, proved through the real teardown script against the real
+# board rather than the fake dash: a plan he has never approved must still be
+# on his board, in the status that renders the approve button, after the work
+# serving it has landed and been torn down.
+test_teardown_holds_a_needs_review_card_he_has_not_approved() {
+  local id case_dir card out
+  id=teardown-heldplan-b7
+  card=$(add_card "Unapproved plan coverage" --status working)
+  "$DASH" status "$card" needs-review --plan "Swap to the other supplier and re-run the fit check." >/dev/null \
+    || fail "setup: could not move card to needs-review"
+  case_dir=$(make_teardown_case teardown-heldplan "$id")
+  printf 'dashboard_card=%s\n' "$card" >> "$case_dir/state/$id.meta"
+  land_teardown_case "$case_dir" "$id"
+
+  out=$(run_teardown_case "$case_dir" "$id")
+  expect_code 0 "$?" "landed teardown should succeed" "$out"
+  assert_contains "$out" "left at needs-review" "teardown did not say it had held the card"
+  [ "$(card_status "$card")" = needs_review ] \
+    || fail "a plan he has never approved was moved to $(card_status "$card"), where the approve button does not exist"
+
+  pass "teardown leaves a card carrying a plan he has never approved where he can still approve it"
+}
+
+# Regression: a card still needs_action when its serving task finally lands
 # used to be advanced to review exactly like any other status - correct, since
-# freezing it at needs_attention forever would just be a different stale-card
+# freezing it at needs_action forever would just be a different stale-card
 # failure - but the status change itself silently discarded
-# needs_attention_reason with no trace at all (store.py's set_status keeps
-# that column only while status stays needs_attention, and teardown never
+# needs_action_reason with no trace at all (store.py's set_status keeps
+# that column only while status stays needs_action, and teardown never
 # passed a --reason to carry it anywhere else). The Admiral could no longer
 # tell what he had been asked, even though the card's own status history is
 # exactly where that answer belongs.
-test_teardown_preserves_needs_attention_reason_in_history_on_landing() {
+test_teardown_preserves_needs_action_reason_in_history_on_landing() {
   local id case_dir card out shown
   id=teardown-keepreason-b6
   card=$(add_card "Needs-attention reason coverage" --status working)
-  "$DASH" status "$card" needs_attention --reason "approve the \$400 renewal" >/dev/null \
-    || fail "setup: could not move card to needs_attention"
+  "$DASH" status "$card" needs_action --reason "approve the \$400 renewal" >/dev/null \
+    || fail "setup: could not move card to needs_action"
   case_dir=$(make_teardown_case teardown-keepreason "$id")
   printf 'dashboard_card=%s\n' "$card" >> "$case_dir/state/$id.meta"
   land_teardown_case "$case_dir" "$id"
 
   out=$(run_teardown_case "$case_dir" "$id")
   expect_code 0 "$?" "landed teardown should succeed" "$out"
-  assert_contains "$out" "dashboard: advanced card $card to review" "teardown did not advance a needs_attention card whose work had actually landed"
+  assert_contains "$out" "dashboard: advanced card $card to review" "teardown did not advance a needs_action card whose work had actually landed"
   [ "$(card_status "$card")" = review ] \
-    || fail "a needs_attention card must still advance once its work has landed - freezing it is its own stale-card bug"
-  [ -z "$(card_field "$card" needs_attention_reason)" ] \
-    || fail "needs_attention_reason must clear once the card leaves needs_attention (store.py's own contract)"
+    || fail "a needs_action card must still advance once its work has landed - freezing it is its own stale-card bug"
+  [ -z "$(card_field "$card" needs_action_reason)" ] \
+    || fail "needs_action_reason must clear once the card leaves needs_action (store.py's own contract)"
 
   # The reason text is ALSO present in an earlier status_history row (the
-  # needs_attention transition set up above), regardless of what teardown
+  # needs_action transition set up above), regardless of what teardown
   # does - asserting only "the JSON blob contains this text somewhere" would
   # pass unchanged against the old code that discarded it, since that earlier
   # row survives either way. The thing that actually distinguishes old from
-  # new behavior is whether THIS transition - needs_attention -> review, the
+  # new behavior is whether THIS transition - needs_action -> review, the
   # one teardown itself just made - carries the reason as its own note.
   shown=$("$DASH" show "$card" --json)
   local last_to last_note
   last_to=$(printf '%s' "$shown" | jq -r '.status_history[-1].to_status // empty')
   last_note=$(printf '%s' "$shown" | jq -r '.status_history[-1].note // empty')
-  [ "$last_to" = review ] || fail "the most recent status history entry was not the needs_attention -> review transition (got to_status=$last_to)"
+  [ "$last_to" = review ] || fail "the most recent status history entry was not the needs_action -> review transition (got to_status=$last_to)"
   [ "$last_note" = "approve the \$400 renewal" ] \
-    || fail "the needs_attention -> review transition's own history note did not carry the reason forward (got note=[$last_note]) - the reason was silently discarded instead of carried into the card's status history"
-  pass "teardown preserves a needs_attention card's reason in its status history instead of silently nulling it"
+    || fail "the needs_action -> review transition's own history note did not carry the reason forward (got note=[$last_note]) - the reason was silently discarded instead of carried into the card's status history"
+  pass "teardown preserves a needs_action card's reason in its status history instead of silently nulling it"
 }
 
 # The same regression on the sibling status, end to end against a real server:
 # `waiting` is the other status with a reason column, store.py's set_status
 # nulls it by the identical unconditional rule, and teardown's advance guard
 # (anything but complete) reaches a waiting card exactly as it reaches a
-# needs_attention one. Asserted the same discriminating way: on the note of the
+# needs_action one. Asserted the same discriminating way: on the note of the
 # most recent status_history row, which is the waiting -> review transition
 # teardown itself just made, not on the reason text appearing somewhere in the
 # card's JSON (the earlier waiting-setting row carries that either way).
@@ -2197,8 +2278,12 @@ test_lib_link_agent_failure_is_reported
 test_lib_link_status_advance_failure_is_reported
 test_lib_advance_after_landing_skips_a_complete_card
 test_lib_advance_after_landing_advances_an_ordinary_status_with_no_reason
-test_lib_advance_after_landing_carries_needs_attention_reason_forward
+test_lib_advance_after_landing_carries_needs_action_reason_forward
 test_lib_advance_after_landing_carries_waiting_reason_forward
+test_lib_advance_after_landing_holds_an_unapproved_needs_review_card
+test_lib_advance_after_landing_advances_an_approved_needs_review_card
+test_lib_advance_after_landing_holds_a_stale_approval_needs_review_card
+test_lib_advance_after_landing_holds_a_needs_review_card_it_cannot_read
 test_lib_advance_after_landing_show_failure_warns_and_audit_logs
 test_lib_advance_after_landing_status_failure_warns_and_audit_logs
 test_spawn_links_card_and_advances_not_started_to_working
@@ -2211,7 +2296,8 @@ test_teardown_with_unreachable_dashboard_still_succeeds_and_warns
 test_teardown_without_dashboard_card_meta_is_a_noop
 test_teardown_force_discard_never_advances_the_card
 test_teardown_never_downgrades_an_already_complete_card
-test_teardown_preserves_needs_attention_reason_in_history_on_landing
+test_teardown_holds_a_needs_review_card_he_has_not_approved
+test_teardown_preserves_needs_action_reason_in_history_on_landing
 test_teardown_preserves_waiting_reason_in_history_on_landing
 # Only the handoff cases move backlog items, which bin/fm-backlog-handoff.sh
 # delegates to tasks-axi; the spawn/teardown cases above need none of it, so

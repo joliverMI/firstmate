@@ -11,15 +11,35 @@ import htm from "./vendor/htm.module.js";
 const { useState, useEffect, useCallback, useMemo, useRef } = React;
 const html = htm.bind(React.createElement);
 
-const STATUSES = ["needs_attention", "not_started", "working", "paused", "waiting", "testing", "review", "complete"];
+// Order here is the board's sort order and its section order, and it matches
+// STATUSES in bin/fleet-dashboard/server/store.py, which is where the reason
+// for needs_action leading is written down.
+const STATUSES = [
+  "needs_action",
+  "needs_review",
+  "not_started",
+  "working",
+  "paused",
+  "waiting",
+  "testing",
+  "review",
+  "complete",
+];
+// `needs_review` and `review` are one word apart and mean different things,
+// so the two labels deliberately share no wording: "Needs Review" is an
+// approval he has to give before the fleet acts, "Ready to Close" is finished
+// work with nothing left for him but to look if he feels like it. They also
+// never sit together - a needs_review card is in its own loud section at the
+// top with a plan box, a review card is an ordinary card with Mark Complete.
 const STATUS_META = {
-  needs_attention: { label: "Needs Attention" },
+  needs_action: { label: "Needs Action" },
+  needs_review: { label: "Needs Review" },
   not_started: { label: "Not Started" },
   working: { label: "Working" },
   paused: { label: "Paused" },
   waiting: { label: "Waiting" },
   testing: { label: "Testing" },
-  review: { label: "Review" },
+  review: { label: "Ready to Close" },
   complete: { label: "Complete" },
 };
 // The captain set lives in captains.json and nowhere else - see that file's
@@ -132,9 +152,70 @@ function Toast({ toast }) {
   return html`<div class="toast ${toast.kind || ""}" role="status">${toast.text}</div>`;
 }
 
+// ---- the recommended-plan box ----
+//
+// The plan text and the approve button are ONE element on purpose. What he
+// approves has to be unambiguously the text he is looking at, so the button
+// never sits elsewhere on the card where it could read as approving the card,
+// the title, or whatever else is nearby.
+//
+// The button records his consent and nothing else. It does not merge, deploy,
+// delete, or start anything; the fleet acts afterwards under the boundaries
+// it already had. Do not wire an action onto this.
+//
+// The approval is sent with the exact plan string this box rendered, and the
+// server refuses it if the card's plan has changed since - so an approval can
+// never land on wording he did not read. When that happens the refusal is
+// shown here rather than swallowed, and the refreshed plan is what he sees.
+function PlanBox({ task, onApprovePlan, showFootnote }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const plan = task.review_plan || "";
+  const stale = !!task.plan_approval_stale;
+  const approved = !!task.plan_approved;
+
+  const approve = async (e) => {
+    e.stopPropagation();
+    setBusy(true);
+    setErr("");
+    try {
+      await onApprovePlan(task, plan);
+    } catch (ex) {
+      setErr(ex.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return html`
+    <div class="plan-box" onClick=${(e) => e.stopPropagation()}>
+      <div class="plan-box-label">Recommended plan - your approval</div>
+      <div class="plan-box-text">${plan || "(no plan recorded - this card should not be in Needs Review)"}</div>
+      ${approved && !stale ? html`
+        <div class="plan-approved">✓ You approved this on ${fmtDateTime(task.plan_approved_at)}.</div>
+      ` : null}
+      ${stale ? html`
+        <div class="plan-approval-stale">
+          <div>⚠ Your approval on ${fmtDateTime(task.plan_approved_at)} was for different wording, and does not cover the plan above.</div>
+          <div class="plan-approved-text">What you approved: ${task.plan_approved_text}</div>
+        </div>
+      ` : null}
+      ${err ? html`<div class="plan-error">${err}</div>` : null}
+      ${!approved || stale ? html`
+        <button class="plan-approve-btn" disabled=${busy || !plan} onClick=${approve}>
+          ${busy ? "Recording…" : stale ? "Approve this new plan" : "Approve this plan"}
+        </button>
+      ` : null}
+      ${showFootnote ? html`
+        <div class="plan-box-foot">Approving records your word. It does not start the work by itself.</div>
+      ` : null}
+    </div>
+  `;
+}
+
 // ---- card ----
 
-function Card({ task, allTasks, onOpen, onToggleStar, onQuickStatus, highlighted }) {
+function Card({ task, allTasks, onOpen, onToggleStar, onQuickStatus, onApprovePlan, highlighted }) {
   const waitingOn = task.status === "waiting" && task.waiting_on_id
     ? allTasks.find((t) => t.id === task.waiting_on_id)
     : null;
@@ -159,10 +240,13 @@ function Card({ task, allTasks, onOpen, onToggleStar, onQuickStatus, highlighted
         <${StatusPill} status=${task.status} />
         <${CaptainPill} captain=${task.captain} />
       </div>
-      ${task.status === "needs_attention" ? html`
-        <div class="needs-attention-banner">
-          ⚑ ${task.needs_attention_reason || "Needs his decision or action to continue."}
+      ${task.status === "needs_action" ? html`
+        <div class="needs-action-banner">
+          ⚑ ${task.needs_action_reason || "Needs his decision or action to continue."}
         </div>
+      ` : null}
+      ${task.status === "needs_review" ? html`
+        <${PlanBox} task=${task} onApprovePlan=${onApprovePlan} showFootnote=${true} />
       ` : null}
       ${task.status === "waiting" ? html`
         <div>
@@ -338,18 +422,22 @@ function Tab({ tab, task, onAddNote }) {
   `;
 }
 
-function Overlay({ task, allTasks, onClose, onPatch, onStatus, onAddNote, onToggleStar }) {
+function Overlay({ task, allTasks, onClose, onPatch, onStatus, onAddNote, onToggleStar, onApprovePlan, onSetPlan }) {
   const [activeTab, setActiveTab] = useState("prompt");
   const [title, setTitle] = useState(task.title);
   const [agent, setAgent] = useState(task.agent);
   const [waitingTarget, setWaitingTarget] = useState(task.waiting_on_id || "");
   const [waitingReason, setWaitingReason] = useState(task.waiting_reason || "");
   const [showWaitingForm, setShowWaitingForm] = useState(false);
-  const [naReason, setNaReason] = useState(task.needs_attention_reason || "");
+  const [naReason, setNaReason] = useState(task.needs_action_reason || "");
   const [showNAForm, setShowNAForm] = useState(false);
   const [naErr, setNaErr] = useState("");
+  const [planDraft, setPlanDraft] = useState(task.review_plan || "");
+  const [showPlanForm, setShowPlanForm] = useState(false);
+  const [planErr, setPlanErr] = useState("");
 
   useEffect(() => { setTitle(task.title); setAgent(task.agent); }, [task.id]);
+  useEffect(() => { setPlanDraft(task.review_plan || ""); }, [task.id, task.review_plan]);
 
   const otherTasks = allTasks.filter((t) => t.id !== task.id);
 
@@ -359,9 +447,17 @@ function Overlay({ task, allTasks, onClose, onPatch, onStatus, onAddNote, onTogg
       setShowWaitingForm(true);
       return;
     }
-    if (next === "needs_attention") {
+    if (next === "needs_action") {
       setNaErr("");
       setShowNAForm(true);
+      return;
+    }
+    if (next === "needs_review") {
+      // Never send this one blind: the server refuses needs_review with no
+      // plan, and asking for the plan first is the difference between a
+      // useful prompt and a red error he has to decode.
+      setPlanErr("");
+      setShowPlanForm(true);
       return;
     }
     onStatus(task.id, next);
@@ -372,13 +468,33 @@ function Overlay({ task, allTasks, onClose, onPatch, onStatus, onAddNote, onTogg
     setShowWaitingForm(false);
   };
 
-  const confirmNeedsAttention = async () => {
+  const confirmNeedsAction = async () => {
     setNaErr("");
     try {
-      await onStatus(task.id, "needs_attention", null, naReason || null);
+      await onStatus(task.id, "needs_action", null, naReason || null);
       setShowNAForm(false);
     } catch (e) {
       setNaErr(e.message);
+    }
+  };
+
+  const confirmNeedsReview = async () => {
+    setPlanErr("");
+    try {
+      await onStatus(task.id, "needs_review", null, null, planDraft.trim());
+      setShowPlanForm(false);
+    } catch (e) {
+      setPlanErr(e.message);
+    }
+  };
+
+  const savePlan = async () => {
+    setPlanErr("");
+    try {
+      await onSetPlan(task.id, planDraft.trim());
+      setShowPlanForm(false);
+    } catch (e) {
+      setPlanErr(e.message);
     }
   };
 
@@ -453,7 +569,7 @@ function Overlay({ task, allTasks, onClose, onPatch, onStatus, onAddNote, onTogg
         ${showNAForm ? html`
           <div class="note-item" style=${{ marginTop: 8 }}>
             <div class="field-label" style=${{ marginBottom: 6 }}>
-              What does he need to decide, approve, or supply?
+              What does he need to decide, do, or supply himself?
             </div>
             <input
               type="text" placeholder="Reason (shown on the card - an ask, not a status update)"
@@ -466,12 +582,57 @@ function Overlay({ task, allTasks, onClose, onPatch, onStatus, onAddNote, onTogg
             />
             ${naErr ? html`<div style=${{ color: "var(--danger)", fontSize: "12.5px", marginBottom: 8 }}>${naErr}</div>` : null}
             <div class="compose-actions">
-              <button disabled=${!naReason.trim()} onClick=${confirmNeedsAttention}>Set Needs Attention</button>
+              <button disabled=${!naReason.trim()} onClick=${confirmNeedsAction}>Set Needs Action</button>
               <button
                 onClick=${() => { setShowNAForm(false); setNaErr(""); }}
                 style=${{ background: "var(--surface2)", color: "var(--text)" }}
               >Cancel</button>
             </div>
+          </div>
+        ` : null}
+
+        ${showPlanForm ? html`
+          <div class="note-item" style=${{ marginTop: 8 }}>
+            <div class="field-label" style=${{ marginBottom: 6 }}>
+              What is the fleet recommending, in one or two lines? This is what he approves.
+            </div>
+            <textarea
+              placeholder="Recommended plan (shown in the approval box on the card)"
+              value=${planDraft} onInput=${(e) => setPlanDraft(e.target.value)}
+              style=${{
+                width: "100%", minHeight: "70px", background: "var(--surface2)",
+                border: "1px solid var(--border)", color: "var(--text)", borderRadius: "6px",
+                padding: "8px 10px", fontFamily: "var(--font)", fontSize: "13px", marginBottom: 8,
+              }}
+            ></textarea>
+            ${task.plan_approved && planDraft.trim() !== (task.plan_approved_text || "") ? html`
+              <div class="plan-approval-stale" style=${{ marginBottom: 8 }}>
+                ⚠ He has already approved wording on this card. Saving different text does not
+                carry that approval over - the card will show his approval as covering the old
+                wording only, and ask him again.
+              </div>
+            ` : null}
+            ${planErr ? html`<div style=${{ color: "var(--danger)", fontSize: "12.5px", marginBottom: 8 }}>${planErr}</div>` : null}
+            <div class="compose-actions">
+              <button
+                disabled=${!planDraft.trim()}
+                onClick=${task.status === "needs_review" ? savePlan : confirmNeedsReview}
+              >${task.status === "needs_review" ? "Save Plan" : "Set Needs Review"}</button>
+              <button
+                onClick=${() => { setShowPlanForm(false); setPlanErr(""); setPlanDraft(task.review_plan || ""); }}
+                style=${{ background: "var(--surface2)", color: "var(--text)" }}
+              >Cancel</button>
+            </div>
+          </div>
+        ` : null}
+
+        ${task.status === "needs_review" && !showPlanForm ? html`
+          <div style=${{ marginTop: 8 }}>
+            <${PlanBox} task=${task} onApprovePlan=${onApprovePlan} showFootnote=${false} />
+            <button
+              class="quick-action" style=${{ marginTop: 8 }}
+              onClick=${() => { setPlanErr(""); setShowPlanForm(true); }}
+            >Edit plan</button>
           </div>
         ` : null}
 
@@ -677,12 +838,34 @@ function App() {
     await refresh();
   };
 
-  const setStatus = async (id, status, waitingOnId, reason) => {
+  const setStatus = async (id, status, waitingOnId, reason, plan) => {
     await api(`/tasks/${id}/status`, {
       method: "POST",
-      body: { status, waiting_on_id: waitingOnId || null, reason: reason || null },
+      body: { status, waiting_on_id: waitingOnId || null, reason: reason || null, plan: plan || null },
     });
     await refresh();
+  };
+
+  const setPlan = async (id, plan) => {
+    await api(`/tasks/${id}/plan`, { method: "PUT", body: { plan } });
+    await refresh();
+  };
+
+  // `planAsDisplayed` is the exact string the box he tapped had rendered. The
+  // server compares it against the card and refuses on a mismatch, so an
+  // approval cannot land on wording he never read - a plan edited between the
+  // page's last poll and his tap fails loudly here instead of silently
+  // recording consent to the new text.
+  const approvePlan = async (task, planAsDisplayed) => {
+    try {
+      await api(`/tasks/${task.id}/approve-plan`, {
+        method: "POST",
+        body: { plan: planAsDisplayed },
+      });
+      showToast("Approval recorded. The fleet will act on it - nothing was started by the button itself.");
+    } finally {
+      await refresh();
+    }
   };
 
   const addNote = async (id, tab, text, linkUrl, linkLabel) => {
@@ -737,12 +920,16 @@ function App() {
     return sorted;
   }, [tasks, filters]);
 
-  // Needs Attention is pulled out of every other section - blocking-on-him
-  // work must be the first thing he sees, never buried among starred or
-  // routine cards regardless of the active sort or filter.
-  const needsAttention = useMemo(() => filtered.filter((t) => t.status === "needs_attention"), [filtered]);
-  const favorites = useMemo(() => filtered.filter((t) => t.starred && t.status !== "needs_attention"), [filtered]);
-  const rest = useMemo(() => filtered.filter((t) => !t.starred && t.status !== "needs_attention"), [filtered]);
+  // Both blocking statuses are pulled out of every other section - work that
+  // waits on him must be the first thing he sees, never buried among starred
+  // or routine cards regardless of the active sort or filter. They get two
+  // sections rather than one so the difference is visible before he reads a
+  // word: Needs Action is his to do, Needs Review is his to approve.
+  const isBlocking = (t) => t.status === "needs_action" || t.status === "needs_review";
+  const needsAction = useMemo(() => filtered.filter((t) => t.status === "needs_action"), [filtered]);
+  const needsReview = useMemo(() => filtered.filter((t) => t.status === "needs_review"), [filtered]);
+  const favorites = useMemo(() => filtered.filter((t) => t.starred && !isBlocking(t)), [filtered]);
+  const rest = useMemo(() => filtered.filter((t) => !t.starred && !isBlocking(t)), [filtered]);
 
   const counts = useMemo(() => {
     const status = {}, captain = {};
@@ -798,14 +985,30 @@ function App() {
 
       <${ConnBanner} error=${connError} lastOkAt=${lastOkAt} />
 
-      ${needsAttention.length > 0 ? html`
-        <h2 class="section needs-attention-section">Needs Attention <span class="count">(${needsAttention.length})</span></h2>
-        <div class="grid needs-attention-grid">
-          ${needsAttention.map((t) => html`
+      ${needsAction.length > 0 ? html`
+        <h2 class="section needs-action-section">Needs Action <span class="count">(${needsAction.length})</span></h2>
+        <div class="grid needs-action-grid">
+          ${needsAction.map((t) => html`
             <${Card}
               key=${t.id} task=${t} allTasks=${tasks}
               onOpen=${setSelectedId} onToggleStar=${toggleStar}
               onQuickStatus=${(task, status) => setStatus(task.id, status)}
+              onApprovePlan=${approvePlan}
+              highlighted=${highlightId === t.id}
+            />
+          `)}
+        </div>
+      ` : null}
+
+      ${needsReview.length > 0 ? html`
+        <h2 class="section needs-review-section">Needs Review <span class="count">(${needsReview.length})</span></h2>
+        <div class="grid needs-review-grid">
+          ${needsReview.map((t) => html`
+            <${Card}
+              key=${t.id} task=${t} allTasks=${tasks}
+              onOpen=${setSelectedId} onToggleStar=${toggleStar}
+              onQuickStatus=${(task, status) => setStatus(task.id, status)}
+              onApprovePlan=${approvePlan}
               highlighted=${highlightId === t.id}
             />
           `)}
@@ -820,6 +1023,7 @@ function App() {
               key=${t.id} task=${t} allTasks=${tasks}
               onOpen=${setSelectedId} onToggleStar=${toggleStar}
               onQuickStatus=${(task, status) => setStatus(task.id, status)}
+              onApprovePlan=${approvePlan}
               highlighted=${highlightId === t.id}
             />
           `)}
@@ -840,6 +1044,7 @@ function App() {
             key=${t.id} task=${t} allTasks=${tasks}
             onOpen=${setSelectedId} onToggleStar=${toggleStar}
             onQuickStatus=${(task, status) => setStatus(task.id, status)}
+            onApprovePlan=${approvePlan}
             highlighted=${highlightId === t.id}
           />
         `)}
@@ -863,9 +1068,11 @@ function App() {
         task=${selected} allTasks=${tasks}
         onClose=${() => setSelectedId(null)}
         onPatch=${(fields) => patchTask(selected.id, fields)}
-        onStatus=${(id, status, waitingOnId, reason) => setStatus(id, status, waitingOnId, reason)}
+        onStatus=${(id, status, waitingOnId, reason, plan) => setStatus(id, status, waitingOnId, reason, plan)}
         onAddNote=${addNote}
         onToggleStar=${toggleStar}
+        onApprovePlan=${approvePlan}
+        onSetPlan=${setPlan}
       />
     ` : null}
   `;

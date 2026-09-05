@@ -15,13 +15,17 @@
 # Usage:
 #   fm-dashboard.sh add --title <t> --captain <captain> \
 #       (--prompt <text> | --prompt-file <path>) [--agent <name>] \
-#       [--status <status>] [--ref <backlog-ref>] [--reason <text>]
-#       --reason is REQUIRED when --status is needs-attention (same rule and
+#       [--status <status>] [--ref <backlog-ref>] [--reason <text>] \
+#       [--plan <text>]
+#       --reason is REQUIRED when --status is needs-action (same rule and
 #       same server-side guard as the `status` subcommand below), and is
 #       REFUSED for every other starting status. Only `waiting` and
-#       `needs-attention` store a reason on the card at all; for `waiting`
+#       `needs-action` store a reason on the card at all; for `waiting`
 #       the `status` subcommand owns it, and for the rest a reason is not
 #       stored anywhere `show` will render it.
+#       --plan is REQUIRED when --status is needs-review, and REFUSED for
+#       every other starting status: it is the short recommended action the
+#       card's approval box asks him to approve.
 #   fm-dashboard.sh list [--status <status>] [--captain <c>] [--starred] \
 #       [--sort updated|date|status|title] [--json]
 #   fm-dashboard.sh show <id> [--json]
@@ -30,18 +34,44 @@
 #   fm-dashboard.sh captain <id> <captain>
 #   fm-dashboard.sh captains                          (the valid captains)
 #   fm-dashboard.sh ref <id> <backlog-ref>
-#   fm-dashboard.sh status <id> <status> [--waiting-on <id>] [--reason <text>]
+#   fm-dashboard.sh status <id> <status> [--waiting-on <id>] [--reason <text>] \
+#       [--plan <text>]
 #       --reason is what the card is waiting on for `waiting`, or what is
-#       being asked of him for `needs-attention`. For every other status it
+#       being asked of him for `needs-action`. For every other status it
 #       is not stored on the card at all, only as that transition's
 #       status-history note - not ignored, and load-bearing:
 #       bin/fm-dashboard-link-lib.sh's advance-on-landing passes a held
 #       reason back this way so the status change does not destroy it (see
 #       docs/dashboard.md "The mechanical card link").
-#       needs-attention REQUIRES --reason: the server refuses the status
+#       needs-action REQUIRES --reason: the server refuses the status
 #       change with no reason, and refuses a reason it can mechanically
 #       tell is only a progress report rather than an ask (see
 #       bin/fleet-dashboard/server/validation.py's REPORT_SHAPED_PHRASES).
+#       needs-review REQUIRES a recommended plan, either passed here as
+#       --plan or already on the card from an earlier `plan` call; the
+#       server refuses the status change when neither exists, because an
+#       approval box with nothing in it is the failure that status exists
+#       to prevent. --plan is REFUSED for every other status, exactly as
+#       `add` refuses it: needs-review is the only status that puts an
+#       approval box in front of him, so a plan written anywhere else is a
+#       recommendation he has no way to accept.
+#   fm-dashboard.sh plan <id> <recommended plan text>
+#       Correct the recommended plan a needs-review card asks him to approve.
+#       This command corrects a plan; it never creates the first one. The
+#       server refuses a plan on a card that has never been needs-review and
+#       carries none, because only the move to needs-review puts the approval
+#       box in front of him - so the first plan is always written by
+#       `status <id> needs-review --plan "..."` (or `add --status
+#       needs-review --plan "..."`). A card that reached needs-review and has
+#       since moved on still takes a correction, since its plan and his
+#       approval deliberately outlive that status.
+#       If he had already approved the previous wording, that
+#       approval is KEPT as the durable record of his word but is no longer
+#       treated as covering the new text: `show` and --json report it as
+#       stale, the card shows both, and the approve button comes back.
+#       There is deliberately no `approve` subcommand here. Approval is his
+#       word, so it is recorded only where he himself gives it - the board's
+#       own approve button - and never by an agent on his behalf.
 #   fm-dashboard.sh star <id>
 #   fm-dashboard.sh unstar <id>
 #   fm-dashboard.sh note <id> --tab <interpretation|communication|needs> \
@@ -78,7 +108,13 @@
 # bin/fm-fleet-audit-sweep.sh are the actual timer and sweep executor); an
 # agent doing ordinary dashboard work never needs them directly.
 #
-# statuses: needs-attention not-started working paused waiting testing review complete
+# statuses: needs-action needs-review not-started working paused waiting
+#           testing review complete
+#           needs-attention is still ACCEPTED as an input spelling and means
+#           needs-action, so an older script keeps working; it is never
+#           emitted. needs-review (the fleet proposes, he approves) and
+#           review (done, nothing left for him but to look) are different
+#           statuses - see .agents/skills/fleet-dashboard/SKILL.md.
 # tabs:     interpretation communication needs
 # captains: `fm-dashboard.sh captains` lists them, ids and shorthands both.
 #           They are defined once, in bin/fleet-dashboard/web/captains.json,
@@ -196,12 +232,19 @@ dash_call() {
 
 json_escape() { need_tool jq; jq -Rs . <<<"$1"; }
 
+# needs-attention is a deprecated INPUT alias for needs-action, accepted in
+# both spellings so an older script, or an agent working from the pre-split
+# doctrine, keeps working rather than failing on a status the board renamed
+# under it. It is never printed back: this function's output is always the
+# canonical stored spelling.
 canon_status() {
   case "$1" in
     not-started|not_started) printf 'not_started' ;;
-    needs-attention|needs_attention) printf 'needs_attention' ;;
+    needs-action|needs_action) printf 'needs_action' ;;
+    needs-review|needs_review) printf 'needs_review' ;;
+    needs-attention|needs_attention) printf 'needs_action' ;;
     working|paused|waiting|testing|review|complete) printf '%s' "$1" ;;
-    *) die "unknown status '$1' - valid: needs-attention not-started working paused waiting testing review complete" ;;
+    *) die "unknown status '$1' - valid: needs-action needs-review not-started working paused waiting testing review complete" ;;
   esac
 }
 
@@ -243,7 +286,7 @@ row_line() {
 }
 
 cmd_add() {
-  local title="" captain="" prompt="" prompt_file="" agent="" status="not_started" ref="" reason=""
+  local title="" captain="" prompt="" prompt_file="" agent="" status="not_started" ref="" reason="" plan=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --title) title=$2; shift 2 ;;
@@ -254,6 +297,7 @@ cmd_add() {
       --status) status=$(canon_status "$2") || return 1; shift 2 ;;
       --ref) ref=$2; shift 2 ;;
       --reason) reason=$2; shift 2 ;;
+      --plan) plan=$2; shift 2 ;;
       *) die "add: unknown argument '$1'" ;;
     esac
   done
@@ -264,31 +308,42 @@ cmd_add() {
     prompt=$(cat "$prompt_file")
   fi
   [ -n "$prompt" ] || die "add: --prompt or --prompt-file is required - his own words, verbatim"
-  # See cmd_status's matching check: the server enforces this too, but fail
-  # here rather than spend a round-trip on the obvious case.
-  if [ "$status" = needs_attention ] && [ -z "$reason" ]; then
-    die "add: --status needs-attention requires --reason - say what he needs to decide, approve, or supply"
+  # See cmd_status's matching checks: the server enforces both of these too,
+  # but fail here rather than spend a round-trip on the obvious case.
+  if [ "$status" = needs_action ] && [ -z "$reason" ]; then
+    die "add: --status needs-action requires --reason - say what he needs to decide, approve, or supply"
   fi
-  # needs_attention is the only status whose reason `add` can write. Refuse
+  if [ "$status" = needs_review ] && [ -z "$plan" ]; then
+    die "add: --status needs-review requires --plan - the short recommended action he is being asked to approve"
+  fi
+  # needs_action is the only status whose reason `add` can write. Refuse
   # rather than send a value the server will drop on the floor - and only
   # point at the `status` subcommand for a status that actually persists a
   # reason there, since for the rest that command drops it just as quietly.
-  if [ "$status" != needs_attention ] && [ -n "$reason" ]; then
+  if [ "$status" != needs_action ] && [ -n "$reason" ]; then
     local why
     case "$status" in
-      needs_attention|waiting)
+      waiting)
         why="use 'fm-dashboard.sh status <id> $status --reason ...' instead" ;;
+      needs_review)
+        why="a needs-review card carries a --plan, not a --reason" ;;
       *)
-        why="a reason is not stored for '$status' - drop --reason or use --status needs-attention" ;;
+        why="a reason is not stored for '$status' - drop --reason or use --status needs-action" ;;
     esac
-    die "add: --reason is only accepted with --status needs-attention (got status '$status'); $why"
+    die "add: --reason is only accepted with --status needs-action (got status '$status'); $why"
+  fi
+  # Same rule for the plan, and for the same reason: only needs_review stores
+  # one, so anywhere else it would be accepted and then silently dropped.
+  if [ "$status" != needs_review ] && [ -n "$plan" ]; then
+    die "add: --plan is only accepted with --status needs-review (got status '$status'); a recommended plan is what a needs-review card's approval box shows him"
   fi
   local body
   body=$(jq -n --arg t "$title" --arg c "$captain" --arg p "$prompt" --arg a "$agent" \
-              --arg s "$status" --arg r "$ref" --arg rs "$reason" \
+              --arg s "$status" --arg r "$ref" --arg rs "$reason" --arg pl "$plan" \
     '{title:$t, captain:$c, initial_prompt:$p, agent:$a, status:$s}
      + (if $r=="" then {} else {backlog_ref:$r} end)
-     + (if $rs=="" then {} else {reason:$rs} end)')
+     + (if $rs=="" then {} else {reason:$rs} end)
+     + (if $pl=="" then {} else {plan:$pl} end)')
   dash_call POST /api/tasks "$body" | row_line
 }
 
@@ -338,7 +393,16 @@ cmd_show() {
     "agent:    \(.agent)",
     "starred:  \(.starred == 1)",
     (if .status == "waiting" then "waiting on: \(.waiting_on_id // "(no card)") - \(.waiting_reason // "")" else empty end),
-    (if .status == "needs_attention" then "needs attention: \(.needs_attention_reason // "(no reason recorded)")" else empty end),
+    (if .status == "needs_action" then "needs action: \(.needs_action_reason // "(no reason recorded)")" else empty end),
+    (if .review_plan then "recommended plan: \(.review_plan)" else empty end),
+    (if .plan_approved then
+       (if .plan_approval_stale then
+          "APPROVAL: he approved at \(.plan_approved_at), but the plan has been edited since - that approval covers the OLD wording only, not the plan above",
+          "approved wording: \(.plan_approved_text)"
+        else
+          "APPROVAL: he approved this exact plan at \(.plan_approved_at)"
+        end)
+     else empty end),
     (if .backlog_ref then "ref:      \(.backlog_ref)" else empty end),
     "",
     "--- prompt ---",
@@ -384,26 +448,54 @@ cmd_ref() {
 cmd_status() {
   local id=${1:-}; shift || true
   local status=${1:-}; shift || true
-  [ -n "$id" ] && [ -n "$status" ] || die "status: usage: status <id> <status> [--waiting-on <id>] [--reason <text>]"
+  [ -n "$id" ] && [ -n "$status" ] || die "status: usage: status <id> <status> [--waiting-on <id>] [--reason <text>] [--plan <text>]"
   status=$(canon_status "$status") || return 1
-  local waiting_on="" reason=""
+  local waiting_on="" reason="" plan=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --waiting-on) waiting_on=$2; shift 2 ;;
       --reason) reason=$2; shift 2 ;;
+      --plan) plan=$2; shift 2 ;;
       *) die "status: unknown argument '$1'" ;;
     esac
   done
-  # needs_attention is the loudest status on the board and claims him; the
+  # needs_action is the loudest status on the board and claims him; the
   # server also enforces this (and further refuses a report-shaped reason),
   # but fail here too rather than spend a round-trip on the obvious case.
-  if [ "$status" = needs_attention ] && [ -z "$reason" ]; then
-    die "status: needs-attention requires --reason - say what he needs to decide, approve, or supply"
+  if [ "$status" = needs_action ] && [ -z "$reason" ]; then
+    die "status: needs-action requires --reason - say what he needs to decide, approve, or supply"
+  fi
+  # needs_review is not checked locally the way needs_action is: the card may
+  # already carry a plan from an earlier `plan` call, and only the server
+  # holds the card. Sending it and letting the server refuse is what makes
+  # "he already has a plan on this card" work without a second round-trip
+  # here to go and look.
+  # The other direction IS checked here, exactly as `add` checks it: a plan
+  # only means anything on the status that renders the approval box, so
+  # writing one anywhere else would put a recommendation in front of him with
+  # no way to accept it - `show` would print "recommended plan:" on a working
+  # card he was never actually asked about.
+  if [ "$status" != needs_review ] && [ -n "$plan" ]; then
+    die "status: --plan is only accepted with needs-review (got status '$status'); a recommended plan is what a needs-review card's approval box shows him"
   fi
   local body
-  body=$(jq -n --arg s "$status" --arg w "$waiting_on" --arg r "$reason" \
-    '{status:$s} + (if $w=="" then {} else {waiting_on_id:$w} end) + (if $r=="" then {} else {reason:$r} end)')
+  body=$(jq -n --arg s "$status" --arg w "$waiting_on" --arg r "$reason" --arg pl "$plan" \
+    '{status:$s}
+     + (if $w=="" then {} else {waiting_on_id:$w} end)
+     + (if $r=="" then {} else {reason:$r} end)
+     + (if $pl=="" then {} else {plan:$pl} end)')
   dash_call POST "/api/tasks/$id/status" "$body" | row_line
+}
+
+cmd_plan() {
+  local id=${1:-} plan=${2:-}
+  [ -n "$id" ] && [ -n "$plan" ] || die "plan: usage: plan <id> <recommended plan text>"
+  # An unquoted multi-word plan would otherwise be recorded as its first word
+  # alone, and his approval would then bind perfectly to that fragment - the
+  # truncation invisible on both sides. Refuse instead of guessing at his
+  # wording by joining what is left.
+  [ $# -le 2 ] || die "plan: too many arguments - quote the plan text: plan <id> \"<recommended plan text>\""
+  dash_call PUT "/api/tasks/$id/plan" "$(jq -n --arg p "$plan" '{plan:$p}')" | row_line
 }
 
 cmd_star_toggle() {
@@ -689,6 +781,7 @@ main() {
     captains) cmd_captains "$@" ;;
     ref) cmd_ref "$@" ;;
     status) cmd_status "$@" ;;
+    plan) cmd_plan "$@" ;;
     star) cmd_star_toggle true "$@" ;;
     unstar) cmd_star_toggle false "$@" ;;
     note) cmd_note "$@" ;;

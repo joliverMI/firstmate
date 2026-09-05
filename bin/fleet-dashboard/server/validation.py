@@ -1,4 +1,4 @@
-"""Structural enforcement of the board's link and needs-attention policy.
+"""Structural enforcement of the board's link, ask, and plan policy.
 
 The Admiral receives files for review as links he can open on his phone.
 Two rules from standing order 17 and his own words are enforced here, not
@@ -8,11 +8,15 @@ just documented, so a card cannot silently carry a link that fails them:
   2. Never a link that cannot open on his phone (a bare path, or a host
      that only resolves on this machine).
 
-A third rule enforced here: `needs_attention` is the loudest status on the
-board and means the work is blocked on him. A card set to that status with
-no reason, or with a reason that only opens or closes as a progress
-report, spends his attention for nothing - see
-`validate_needs_attention_reason`.
+A third rule enforced here: `needs_action` is the loudest status on the
+board and means the work is blocked on him doing something himself. A card
+set to that status with no reason, or with a reason that only opens or
+closes as a progress report, spends his attention for nothing - see
+`validate_needs_action_reason`.
+
+A fourth: `needs_review` puts an approval box in front of him, so it must
+carry the recommended plan that box is asking him to approve - see
+`validate_review_plan`.
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ from urllib.parse import urlparse
 
 LOCAL_HOSTNAMES = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
 
-# Phrases that mark a needs_attention reason as a progress report rather
+# Phrases that mark a needs_action reason as a progress report rather
 # than an ask. A phrase only counts when it sits at an *edge* of the
 # reason - the start or the end of the leading or trailing clause - not
 # when it is buried inside one. That is the shape the failure this guards
@@ -39,7 +43,7 @@ LOCAL_HOSTNAMES = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
 # This is deliberately a small, fixed list, not a language model: it
 # catches only the plainest report-shaped language and says nothing about
 # whether a reason that dodges every phrase here is actually a real ask.
-# See docs/dashboard.md "The needs-attention reason guard" for the
+# See docs/dashboard.md "The needs-action reason guard" for the
 # reviewed catch and false-positive rates and the fleet auditor's
 # complementary, non-mechanical check.
 REPORT_SHAPED_PHRASES = (
@@ -77,7 +81,7 @@ _CLAUSE_SEPARATORS = re.compile(r"\s+[-\u2013\u2014]+\s+|[,;:.!?()\[\]/\n]+")
 # worth $80 a month?", "Was looking into the second quote worth the delay?"),
 # which is the more expensive failure: a refused ask leaves the card in
 # `working` and never reaches him at all. See docs/dashboard.md, "The
-# needs-attention reason guard", for why the mechanical guard is deliberately
+# needs-action reason guard", for why the mechanical guard is deliberately
 # not the thing protecting this status.
 _LEADING_FILLER = frozenset(
     {"still", "currently", "now", "just", "already", "we", "we're", "i", "i'm", "im"}
@@ -162,10 +166,10 @@ class InvalidReasonError(ValueError):
     pass
 
 
-def validate_needs_attention_reason(reason: str | None) -> None:
-    """Raise InvalidReasonError if reason cannot back a needs_attention card.
+def validate_needs_action_reason(reason: str | None) -> None:
+    """Raise InvalidReasonError if reason cannot back a needs_action card.
 
-    Empty is always rejected: needs_attention is the loudest status on the
+    Empty is always rejected: needs_action is the loudest status on the
     board, and a card with no stated ask is exactly how it becomes noise.
     A non-empty reason is further rejected if one of REPORT_SHAPED_PHRASES
     opens or closes its leading or trailing clause, on the theory that a
@@ -177,7 +181,7 @@ def validate_needs_attention_reason(reason: str | None) -> None:
     text = (reason or "").strip()
     if not text:
         raise InvalidReasonError(
-            "needs-attention requires --reason - say what he needs to decide, "
+            "needs-action requires --reason - say what he needs to decide, "
             "approve, or supply, not what happened"
         )
     phrase = find_report_shaped_phrase(text)
@@ -186,6 +190,38 @@ def validate_needs_attention_reason(reason: str | None) -> None:
             f"that reason reads as a progress report, not something he can act on "
             f"(matched {phrase!r} at the start or end of a clause) - say what he needs "
             f"to decide, approve, or supply: {text!r}"
+        )
+
+
+class InvalidPlanError(ValueError):
+    pass
+
+
+def validate_review_plan(plan: str | None) -> None:
+    """Raise InvalidPlanError if plan cannot back a needs_review card.
+
+    Empty is rejected for the same reason an empty needs_action reason is:
+    the status renders a control he can act on, and a control with nothing
+    behind it spends his attention for nothing. Here it is worse than noise -
+    an approve button over blank text would record his consent to nothing at
+    all, and something downstream would read that as his word.
+
+    REPORT_SHAPED_PHRASES deliberately does NOT apply. That list exists to
+    catch a progress report smuggled into a field that should hold an ask,
+    and a plan is neither: it is a statement of what the fleet intends to do
+    next, so its natural phrasing ("working on the migration in two passes")
+    routinely opens with words that list flags. Running it here would refuse
+    good plans to catch a failure this field cannot have, and the false
+    refusal is the more expensive one - it leaves him never asked at all.
+    Whether a plan is a real, specific recommendation is a judgment call, and
+    it belongs to the fleet auditor's read, exactly like the equivalent
+    judgment on a needs_action reason.
+    """
+    if not (plan or "").strip():
+        raise InvalidPlanError(
+            "needs-review requires --plan - the short recommended action he is "
+            "being asked to approve. An approval box with nothing in it is the "
+            "exact failure this status exists to prevent."
         )
 
 

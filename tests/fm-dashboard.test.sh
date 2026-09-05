@@ -134,35 +134,35 @@ test_waiting_status_carries_target_and_reason() {
   pass "waiting status carries its target card and reason"
 }
 
-test_needs_attention_status_carries_reason_and_sorts_first() {
+test_needs_action_status_carries_reason_and_sorts_first() {
   local id working_id out
-  id=$("$DASH" add --title "Needs a decision" --captain firstmate --prompt "checking needs-attention" | awk '{print $1}')
+  id=$("$DASH" add --title "Needs a decision" --captain firstmate --prompt "checking needs-action" | awk '{print $1}')
   working_id=$("$DASH" add --title "Being actively worked" --captain firstmate --prompt "sort-order control" --status working | awk '{print $1}')
 
-  "$DASH" status "$id" needs-attention --reason "pick red or blue for the trim" >/dev/null \
-    || fail "status transition to needs-attention failed"
+  "$DASH" status "$id" needs-action --reason "pick red or blue for the trim" >/dev/null \
+    || fail "status transition to needs-action failed"
   out=$("$DASH" show "$id")
-  assert_contains "$out" "status:   needs_attention" "needs-attention status did not persist"
-  assert_contains "$out" "needs attention: pick red or blue for the trim" "needs-attention reason did not persist"
+  assert_contains "$out" "status:   needs_action" "needs-action status did not persist"
+  assert_contains "$out" "needs action: pick red or blue for the trim" "needs-action reason did not persist"
 
   local first_id
   first_id=$("$DASH" list --sort status | head -n1 | awk '{print $1}')
-  [ "$first_id" = "$id" ] || fail "needs-attention ($id) did not sort above a working card ($working_id) under --sort status, got: $first_id"
+  [ "$first_id" = "$id" ] || fail "needs-action ($id) did not sort above a working card ($working_id) under --sort status, got: $first_id"
 
-  "$DASH" status "$id" working >/dev/null || fail "leaving needs-attention failed"
-  assert_not_contains "$("$DASH" show "$id")" "needs attention:" "needs-attention reason was not cleared on status change"
+  "$DASH" status "$id" working >/dev/null || fail "leaving needs-action failed"
+  assert_not_contains "$("$DASH" show "$id")" "needs action:" "needs-action reason was not cleared on status change"
 
-  pass "needs-attention status carries a reason and sorts above every other status"
+  pass "needs-action status carries a reason and sorts above every other status"
 }
 
-test_needs_attention_requires_a_real_ask() {
+test_needs_action_requires_a_real_ask() {
   local id out rc
-  id=$("$DASH" add --title "Reason guard coverage" --captain firstmate --prompt "checking the needs-attention guard" | awk '{print $1}')
+  id=$("$DASH" add --title "Reason guard coverage" --captain firstmate --prompt "checking the needs-action guard" | awk '{print $1}')
 
   # The CLI refuses locally, before any network round-trip, on the obvious
   # missing-reason case.
-  out=$("$DASH" status "$id" needs-attention 2>&1); rc=$?
-  [ "$rc" -ne 0 ] || fail "needs-attention with no --reason was accepted"
+  out=$("$DASH" status "$id" needs-action 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "needs-action with no --reason was accepted"
   assert_contains "$out" "requires --reason" "missing-reason rejection did not explain the requirement"
 
   # The server enforces the same rule structurally, not just the CLI's
@@ -170,54 +170,54 @@ test_needs_attention_requires_a_real_ask() {
   local raw_code
   raw_code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
     "http://127.0.0.1:$PORT/api/tasks/$id/status" \
-    -H 'Content-Type: application/json' -d '{"status":"needs_attention"}')
-  [ "$raw_code" = "400" ] || fail "the API accepted needs_attention with no reason (got HTTP $raw_code)"
+    -H 'Content-Type: application/json' -d '{"status":"needs_action"}')
+  [ "$raw_code" = "400" ] || fail "the API accepted needs_action with no reason (got HTTP $raw_code)"
 
   # A reason that only reports progress is refused too, even though it is
   # non-empty.
-  out=$("$DASH" status "$id" needs-attention --reason "You reported flares not changing the lights - being chased now" 2>&1); rc=$?
-  [ "$rc" -ne 0 ] || fail "a report-shaped needs-attention reason was accepted"
+  out=$("$DASH" status "$id" needs-action --reason "You reported flares not changing the lights - being chased now" 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "a report-shaped needs-action reason was accepted"
   assert_contains "$out" "reads as a progress report" "report-shaped rejection did not explain why"
 
   # A genuine ask is accepted and persists.
-  "$DASH" status "$id" needs-attention --reason "approve the trim color before the install" >/dev/null \
+  "$DASH" status "$id" needs-action --reason "approve the trim color before the install" >/dev/null \
     || fail "a genuine ask was rejected as report-shaped"
-  assert_contains "$("$DASH" show "$id")" "needs attention: approve the trim color before the install" \
+  assert_contains "$("$DASH" show "$id")" "needs action: approve the trim color before the install" \
     "a genuine ask did not persist after the guard ran"
 
-  # Creating a card straight into needs-attention is governed the same way.
-  out=$("$DASH" add --title "Bad create" --captain firstmate --prompt "x" --status needs-attention 2>&1); rc=$?
-  [ "$rc" -ne 0 ] || fail "add --status needs-attention with no --reason was accepted"
+  # Creating a card straight into needs-action is governed the same way.
+  out=$("$DASH" add --title "Bad create" --captain firstmate --prompt "x" --status needs-action 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "add --status needs-action with no --reason was accepted"
   assert_contains "$out" "requires --reason" "add's missing-reason rejection did not explain the requirement"
 
   out=$("$DASH" add --title "Reporty create" --captain firstmate --prompt "x" \
-    --status needs-attention --reason "looking into the checkout timeout" 2>&1); rc=$?
-  [ "$rc" -ne 0 ] || fail "add --status needs-attention with a report-shaped reason was accepted"
+    --status needs-action --reason "looking into the checkout timeout" 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "add --status needs-action with a report-shaped reason was accepted"
   assert_contains "$out" "reads as a progress report" "add's report-shaped rejection did not explain why"
 
   # And the create path is enforced by the server itself, not only by the
   # CLI's local pre-check - the same treatment the status path gets above.
   raw_code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
     "http://127.0.0.1:$PORT/api/tasks" -H 'Content-Type: application/json' \
-    -d '{"title":"Direct bad create","captain":"firstmate","initial_prompt":"x","status":"needs_attention"}')
-  [ "$raw_code" = "400" ] || fail "the API accepted a created needs_attention card with no reason (got HTTP $raw_code)"
+    -d '{"title":"Direct bad create","captain":"firstmate","initial_prompt":"x","status":"needs_action"}')
+  [ "$raw_code" = "400" ] || fail "the API accepted a created needs_action card with no reason (got HTTP $raw_code)"
 
   raw_code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
     "http://127.0.0.1:$PORT/api/tasks" -H 'Content-Type: application/json' \
-    -d '{"title":"Direct reporty create","captain":"firstmate","initial_prompt":"x","status":"needs_attention","reason":"still chasing the supplier"}')
-  [ "$raw_code" = "400" ] || fail "the API accepted a created needs_attention card with a report-shaped reason (got HTTP $raw_code)"
+    -d '{"title":"Direct reporty create","captain":"firstmate","initial_prompt":"x","status":"needs_action","reason":"still chasing the supplier"}')
+  [ "$raw_code" = "400" ] || fail "the API accepted a created needs_action card with a report-shaped reason (got HTTP $raw_code)"
 
   local created
   created=$("$DASH" add --title "Good create" --captain firstmate --prompt "x" \
-    --status needs-attention --reason "sign the updated contractor agreement" | awk '{print $1}')
-  [ -n "$created" ] || fail "add --status needs-attention with a real ask should have succeeded"
-  assert_contains "$("$DASH" show "$created")" "needs attention: sign the updated contractor agreement" \
-    "a card created straight into needs-attention did not carry its reason"
+    --status needs-action --reason "sign the updated contractor agreement" | awk '{print $1}')
+  [ -n "$created" ] || fail "add --status needs-action with a real ask should have succeeded"
+  assert_contains "$("$DASH" show "$created")" "needs action: sign the updated contractor agreement" \
+    "a card created straight into needs-action did not carry its reason"
 
-  pass "needs-attention refuses a missing or report-shaped reason, on both status and add, and the server enforces both independently of the CLI"
+  pass "needs-action refuses a missing or report-shaped reason, on both status and add, and the server enforces both independently of the CLI"
 }
 
-# `add` can only write the needs_attention reason; every other status's reason
+# `add` can only write the needs_action reason; every other status's reason
 # belongs to the `status` subcommand, which is the one path that persists it.
 # Passing --reason with any other starting status used to exit 0 and drop the
 # text on the floor, so refuse it outright rather than lose it silently.
@@ -226,8 +226,8 @@ test_add_refuses_a_reason_for_a_status_that_cannot_carry_one() {
   out=$("$DASH" add --title "Waiting with a reason" --captain firstmate --prompt "x" \
     --status waiting --reason "waiting on the plumber" 2>&1); rc=$?
   [ "$rc" -ne 0 ] || fail "add --status waiting --reason was accepted, and the reason is silently dropped"
-  assert_contains "$out" "only accepted with --status needs-attention" \
-    "add's refusal did not explain that --reason belongs to needs-attention"
+  assert_contains "$out" "only accepted with --status needs-action" \
+    "add's refusal did not explain that --reason belongs to needs-action"
   assert_contains "$out" "waiting" "add's refusal did not name the status that was given"
   # `waiting` genuinely persists a reason through the status subcommand, so it
   # is the one status the refusal may redirect to.
@@ -254,7 +254,7 @@ test_add_refuses_a_reason_for_a_status_that_cannot_carry_one() {
   assert_contains "$("$DASH" show "$id")" "waiting on the plumber" \
     "the waiting reason set through the status subcommand did not persist"
 
-  pass "add refuses a --reason no status but needs-attention can carry, instead of dropping it"
+  pass "add refuses a --reason no status but needs-action can carry, instead of dropping it"
 }
 
 # A genuine ask that merely mentions one of the report phrases mid-sentence
@@ -265,17 +265,17 @@ test_a_genuine_ask_mentioning_a_report_word_is_accepted() {
   local id
   id=$("$DASH" add --title "Mid-sentence report word" --captain firstmate --prompt "checking edge anchoring" | awk '{print $1}')
 
-  "$DASH" status "$id" needs-attention --reason "approve the \$400 monitoring subscription renewal" >/dev/null \
+  "$DASH" status "$id" needs-action --reason "approve the \$400 monitoring subscription renewal" >/dev/null \
     || fail "a genuine ask containing 'monitoring' mid-sentence was refused"
   assert_contains "$("$DASH" show "$id")" "monitoring subscription renewal" \
     "the accepted mid-sentence ask did not persist"
 
-  "$DASH" status "$id" working >/dev/null || fail "leaving needs-attention failed"
-  "$DASH" status "$id" needs-attention --reason "pick which contractor keeps working on the deck" >/dev/null \
+  "$DASH" status "$id" working >/dev/null || fail "leaving needs-action failed"
+  "$DASH" status "$id" needs-action --reason "pick which contractor keeps working on the deck" >/dev/null \
     || fail "a genuine ask containing 'working on' mid-sentence was refused"
 
-  "$DASH" status "$id" working >/dev/null || fail "leaving needs-attention failed"
-  "$DASH" status "$id" needs-attention --reason "approve the invoice for the in progress work" >/dev/null \
+  "$DASH" status "$id" working >/dev/null || fail "leaving needs-action failed"
+  "$DASH" status "$id" needs-action --reason "approve the invoice for the in progress work" >/dev/null \
     || fail "a genuine ask containing 'in progress' mid-sentence was refused"
 
   pass "a report phrase buried mid-clause does not refuse a genuine ask"
@@ -286,13 +286,13 @@ test_a_genuine_ask_mentioning_a_report_word_is_accepted() {
 # documented blind spot. Pin the numbers to executed behaviour so narrowing or
 # extending REPORT_SHAPED_PHRASES cannot silently make the prose false.
 test_documented_guard_rates_still_hold() {
-  python3 - "$ROOT/bin/fleet-dashboard/server" <<'GUARD_RATES' || fail "the documented needs-attention guard rates no longer hold"
+  python3 - "$ROOT/bin/fleet-dashboard/server" <<'GUARD_RATES' || fail "the documented needs-action guard rates no longer hold"
 import sys
 
 sys.path.insert(0, sys.argv[1])
-from validation import InvalidReasonError, validate_needs_attention_reason
+from validation import InvalidReasonError, validate_needs_action_reason
 
-# The three corpora documented in docs/dashboard.md, "The needs-attention
+# The three corpora documented in docs/dashboard.md, "The needs-action
 # reason guard". Keep these in step with the counts stated there.
 REPORT_SHAPED = [
     "You reported flares not changing the lights - being chased now",
@@ -351,7 +351,7 @@ GENUINE_ASKS = [
 
 def refused(reason):
     try:
-        validate_needs_attention_reason(reason)
+        validate_needs_action_reason(reason)
     except InvalidReasonError:
         return True
     return False
@@ -549,7 +549,7 @@ test_help_prints_the_whole_header_through_its_last_block() {
   local out
   out=$("$DASH" --help) || fail "--help should succeed"
 
-  assert_contains "$out" "statuses: needs-attention" "--help lost the statuses block"
+  assert_contains "$out" "statuses: needs-action" "--help lost the statuses block"
   assert_contains "$out" "Server URL resolution" "--help lost the server URL resolution block"
   assert_contains "$out" "--connect-timeout 5s and --max-time 20s" \
     "--help lost the call-bounding block"
@@ -1011,25 +1011,25 @@ test_the_captain_set_agrees_across_every_surface() {
 }
 
 # The doctrine in .agents/skills/fleet-dashboard/SKILL.md sends every card whose
-# next step is the Admiral's to `needs-attention`, so `--reason` is what he
+# next step is the Admiral's own labour to `needs-action`, so `--reason` is what he
 # actually reads to know what he has to do. That promise is only as good as the
 # narrowest path that can set the status: the ones covered above are the
 # ordinary ones, and these are the rest of the surface - the underscore spelling
 # a caller may reach for, a reason that is present but is only whitespace, and
 # the general-purpose PATCH that edits a card's other fields.
-test_no_path_can_set_needs_attention_without_an_ask() {
+test_no_path_can_set_needs_action_without_an_ask() {
   local id out rc code before after
   id=$("$DASH" add --title "Enforcement surface" --captain firstmate --prompt "checking every writer" | awk '{print $1}')
 
   # The CLI canonicalises the status before it refuses, so the underscore
   # spelling is refused exactly like the dashed one rather than slipping past
   # the local check.
-  out=$("$DASH" status "$id" needs_attention 2>&1); rc=$?
-  [ "$rc" -ne 0 ] || fail "status needs_attention (underscore) with no --reason was accepted"
+  out=$("$DASH" status "$id" needs_action 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "status needs_action (underscore) with no --reason was accepted"
   assert_contains "$out" "requires --reason" "underscore-spelled status rejection did not explain the requirement"
 
-  out=$("$DASH" add --title "Underscore create" --captain firstmate --prompt "x" --status needs_attention 2>&1); rc=$?
-  [ "$rc" -ne 0 ] || fail "add --status needs_attention (underscore) with no --reason was accepted"
+  out=$("$DASH" add --title "Underscore create" --captain firstmate --prompt "x" --status needs_action 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "add --status needs_action (underscore) with no --reason was accepted"
   assert_contains "$out" "requires --reason" "underscore-spelled add rejection did not explain the requirement"
 
   # A whitespace-only reason is a reason as far as "did the caller pass one"
@@ -1037,33 +1037,561 @@ test_no_path_can_set_needs_attention_without_an_ask() {
   # both writing paths.
   code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
     "http://127.0.0.1:$PORT/api/tasks/$id/status" \
-    -H 'Content-Type: application/json' -d '{"status":"needs_attention","reason":"   "}')
-  [ "$code" = "400" ] || fail "the API accepted needs_attention with a whitespace-only reason (got HTTP $code)"
+    -H 'Content-Type: application/json' -d '{"status":"needs_action","reason":"   "}')
+  [ "$code" = "400" ] || fail "the API accepted needs_action with a whitespace-only reason (got HTTP $code)"
   assert_contains "$("$DASH" show "$id")" "status:   not_started" \
     "a refused whitespace-only reason still moved the card"
 
   code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
     "http://127.0.0.1:$PORT/api/tasks" -H 'Content-Type: application/json' \
-    -d '{"title":"Blank-reason create","captain":"firstmate","initial_prompt":"x","status":"needs_attention","reason":"\t\n "}')
-  [ "$code" = "400" ] || fail "the API accepted a created needs_attention card with a whitespace-only reason (got HTTP $code)"
+    -d '{"title":"Blank-reason create","captain":"firstmate","initial_prompt":"x","status":"needs_action","reason":"\t\n "}')
+  [ "$code" = "400" ] || fail "the API accepted a created needs_action card with a whitespace-only reason (got HTTP $code)"
   assert_not_contains "$("$DASH" list)" "Blank-reason create" \
     "a card refused for a blank reason was created anyway"
 
   # PATCH exists to edit a card's other fields; it must not be a second,
-  # unguarded way into needs_attention. It answers, and the status is untouched.
+  # unguarded way into needs_action. It answers, and the status is untouched.
   before=$("$DASH" show "$id" | grep '^status:')
   code=$(curl -sS -o /dev/null -w '%{http_code}' -X PATCH \
     "http://127.0.0.1:$PORT/api/tasks/$id" -H 'Content-Type: application/json' \
-    -d '{"title":"Enforcement surface (patched)","status":"needs_attention"}')
+    -d '{"title":"Enforcement surface (patched)","status":"needs_action"}')
   [ "$code" = "200" ] || fail "PATCH of an ordinary field failed (got HTTP $code)"
   after=$("$DASH" show "$id" | grep '^status:')
   [ "$before" = "$after" ] || fail "PATCH wrote a status: was [$before], now [$after]"
   assert_contains "$("$DASH" show "$id")" "Enforcement surface (patched)" \
     "PATCH did not apply the field it is allowed to write"
-  assert_not_contains "$("$DASH" show "$id")" "needs attention:" \
-    "PATCH left a needs-attention card behind with no ask on it"
+  assert_not_contains "$("$DASH" show "$id")" "needs action:" \
+    "PATCH left a needs-action card behind with no ask on it"
 
-  pass "no path - either spelling, a blank reason, or PATCH - can put a card in needs-attention without a real ask"
+  pass "no path - either spelling, a blank reason, or PATCH - can put a card in needs-action without a real ask"
+}
+
+# The deprecated spelling has to keep WORKING, not merely be tolerated: the
+# fleet auditor's sweep, bin/fm-dashboard-link-lib.sh, and any agent holding an
+# older copy of the doctrine all still say needs-attention. It must land on
+# needs_action, and it must never be echoed back as a status of its own.
+test_needs_attention_is_an_accepted_input_alias_and_never_an_output() {
+  local id out
+  id=$("$DASH" add --title "Alias coverage" --captain firstmate --prompt "x" | awk '{print $1}')
+
+  "$DASH" status "$id" needs-attention --reason "approve the trim color before the install" >/dev/null \
+    || fail "the deprecated needs-attention spelling was refused instead of mapped"
+  assert_contains "$("$DASH" show "$id")" "status:   needs_action" \
+    "needs-attention did not land on needs_action"
+
+  # Underscored spelling, and the raw API, are the same door.
+  "$DASH" status "$id" working >/dev/null || fail "could not reset the card"
+  "$DASH" status "$id" needs_attention --reason "sign the updated contractor agreement" >/dev/null \
+    || fail "the underscored deprecated spelling was refused"
+  assert_contains "$("$DASH" show "$id")" "status:   needs_action" \
+    "needs_attention did not land on needs_action"
+
+  "$DASH" status "$id" working >/dev/null || fail "could not reset the card"
+  local code
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/$id/status" -H 'Content-Type: application/json' \
+    -d '{"status":"needs_attention","reason":"pick red or blue for the trim"}')
+  [ "$code" = "200" ] || fail "the API refused the deprecated spelling (got HTTP $code)"
+  assert_contains "$("$DASH" show "$id")" "status:   needs_action" \
+    "the API did not map needs_attention onto needs_action"
+
+  # Filtering by the old name finds the migrated card, and answers in the new one.
+  out=$("$DASH" list --status needs-attention)
+  assert_contains "$out" "$id" "listing by the deprecated status name did not find the card"
+  assert_contains "$out" "needs_action" "listing by the deprecated name did not answer in the new one"
+  assert_not_contains "$out" "needs_attention" "the board echoed the retired status name back as output"
+
+  # And the alias is a rename, not a bypass: the reason rule still binds.
+  out=$("$DASH" status "$id" needs-attention 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "the deprecated spelling was accepted with no --reason"
+  assert_contains "$out" "requires --reason" "the alias path skipped the reason requirement"
+
+  pass "needs-attention is accepted as an input alias for needs-action, enforced the same way, and never emitted"
+}
+
+# The whole point of needs_review is the approval box, and an approval box with
+# nothing in it would record his consent to nothing at all. Every writer must
+# refuse it, not just the convenient one.
+test_needs_review_without_a_plan_is_refused_everywhere() {
+  local id out rc code
+  id=$("$DASH" add --title "Plan requirement" --captain firstmate --prompt "x" | awk '{print $1}')
+
+  out=$("$DASH" status "$id" needs-review 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "needs-review with no --plan was accepted"
+  assert_contains "$out" "requires --plan" "the refusal did not explain the plan requirement"
+  assert_contains "$("$DASH" show "$id")" "status:   not_started" \
+    "a refused needs-review still moved the card"
+
+  out=$("$DASH" add --title "Planless create" --captain firstmate --prompt "x" --status needs-review 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "add --status needs-review with no --plan was accepted"
+  assert_not_contains "$("$DASH" list)" "Planless create" "a card refused for a missing plan was created anyway"
+
+  # The server enforces it independently of the CLI, on both writing paths,
+  # and a whitespace-only plan is no plan at all - it renders as an empty box.
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/$id/status" -H 'Content-Type: application/json' \
+    -d '{"status":"needs_review"}')
+  [ "$code" = "400" ] || fail "the API accepted needs_review with no plan (got HTTP $code)"
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/$id/status" -H 'Content-Type: application/json' \
+    -d '{"status":"needs_review","plan":"  \t \n "}')
+  [ "$code" = "400" ] || fail "the API accepted needs_review with a whitespace-only plan (got HTTP $code)"
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks" -H 'Content-Type: application/json' \
+    -d '{"title":"Direct planless","captain":"firstmate","initial_prompt":"x","status":"needs_review"}')
+  [ "$code" = "400" ] || fail "the API created a needs_review card with no plan (got HTTP $code)"
+  assert_contains "$("$DASH" show "$id")" "status:   not_started" \
+    "a refused needs_review still moved the card"
+
+  # A plan already on the card is enough - it does not have to be re-passed.
+  "$DASH" status "$id" needs-review --plan "Rebase onto the open PR and re-run the checks." >/dev/null \
+    || fail "needs-review with a plan was refused"
+  "$DASH" status "$id" working >/dev/null || fail "could not leave needs-review"
+  "$DASH" status "$id" needs-review >/dev/null \
+    || fail "needs-review was refused on a card that already carries a plan"
+  assert_contains "$("$DASH" show "$id")" "recommended plan: Rebase onto the open PR" \
+    "the card lost the plan it already carried"
+
+  # A card that does not exist is a missing CARD, not a missing plan - the
+  # plan guard must not fire first and send the caller after the wrong mistake.
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/definitely-no-such-card/status" \
+    -H 'Content-Type: application/json' -d '{"status":"needs_review"}')
+  [ "$code" = "404" ] || fail "a typo'd card id on needs-review reported something other than 404 (got HTTP $code)"
+
+  pass "needs-review refuses a missing, blank, or absent plan on every writer, and accepts one the card already holds"
+}
+
+# The safety property of this whole change: an approval is bound to the exact
+# wording he was looking at, and can never drift onto text he never read.
+test_an_approval_binds_to_the_plan_text_it_was_given_for() {
+  local id json code
+  id=$("$DASH" add --title "Approval binding" --captain firstmate --prompt "x" \
+        --status needs-review --plan "Reserve fixed addresses for the six lights." | awk '{print $1}')
+
+  # Approving wording the card does not carry is refused as a conflict, and
+  # records nothing at all.
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/$id/approve-plan" -H 'Content-Type: application/json' \
+    -d '{"plan":"Something he was never shown."}')
+  [ "$code" = "409" ] || fail "approving text that does not match the card was not refused as a conflict (got HTTP $code)"
+  json=$("$DASH" show "$id" --json)
+  [ "$(printf '%s' "$json" | jq -r '.plan_approved')" = "false" ] \
+    || fail "a refused approval was recorded anyway"
+
+  # Naming no wording at all is refused too - that is the same drift with the
+  # check simply omitted.
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/$id/approve-plan" -H 'Content-Type: application/json' -d '{}')
+  [ "$code" = "400" ] || fail "approving without naming the displayed plan was accepted (got HTTP $code)"
+
+  # The exact displayed text is approved, and both the approval and the text
+  # it is bound to are readable back.
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/$id/approve-plan" -H 'Content-Type: application/json' \
+    -d '{"plan":"Reserve fixed addresses for the six lights."}')
+  [ "$code" = "200" ] || fail "approving the displayed plan failed (got HTTP $code)"
+  json=$("$DASH" show "$id" --json)
+  [ "$(printf '%s' "$json" | jq -r '.plan_approved')" = "true" ] || fail "the approval was not recorded"
+  [ "$(printf '%s' "$json" | jq -r '.plan_approval_stale')" = "false" ] \
+    || fail "a fresh approval was reported as stale"
+  [ "$(printf '%s' "$json" | jq -r '.plan_approved_text')" = "Reserve fixed addresses for the six lights." ] \
+    || fail "the approval did not record the verbatim text it was given for"
+  [ -n "$(printf '%s' "$json" | jq -r '.plan_approved_at // empty')" ] || fail "the approval recorded no time"
+  assert_contains "$("$DASH" show "$id")" "APPROVAL: he approved this exact plan" \
+    "show did not report a current approval"
+
+  # Editing the plan must not carry the approval over. The record of his word
+  # survives - it is never destroyed - but it is reported as covering the old
+  # wording only, and both texts are visible.
+  "$DASH" plan "$id" "Change the software to find devices by hardware ID." >/dev/null \
+    || fail "could not edit the plan"
+  json=$("$DASH" show "$id" --json)
+  [ "$(printf '%s' "$json" | jq -r '.plan_approved')" = "true" ] \
+    || fail "editing the plan destroyed the record that he had approved something"
+  [ "$(printf '%s' "$json" | jq -r '.plan_approval_stale')" = "true" ] \
+    || fail "an approval silently carried over onto plan text he never read"
+  [ "$(printf '%s' "$json" | jq -r '.plan_approved_text')" = "Reserve fixed addresses for the six lights." ] \
+    || fail "the bound text changed when the plan was edited"
+  local out
+  out=$("$DASH" show "$id")
+  assert_contains "$out" "that approval covers the OLD wording only" \
+    "show did not say plainly that the approval no longer covers the displayed plan"
+  assert_contains "$out" "approved wording: Reserve fixed addresses" \
+    "show did not render the wording he actually approved"
+
+  # The 409 must be chosen on the exception TYPE, not by matching the wording
+  # of its message: the page's re-approve flow keys off that status code, so a
+  # reworded sentence in store.py silently downgrading it to 400 would break
+  # the stale-plan path while every test that only checks "it refused" passed.
+  # Proved by the two failure modes answering DIFFERENT codes.
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/$id/approve-plan" -H 'Content-Type: application/json' \
+    -d '{"plan":"wording he was never shown"}')
+  [ "$code" = "409" ] || fail "a changed plan did not answer 409 (got HTTP $code)"
+  local planless
+  planless=$("$DASH" add --title "No plan to approve" --captain firstmate --prompt "x" | awk '{print $1}')
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/$planless/approve-plan" -H 'Content-Type: application/json' \
+    -d '{"plan":"anything"}')
+  [ "$code" = "400" ] || fail "approving a card with no plan at all did not answer 400 (got HTTP $code)"
+
+  # And the approval is consent, not execution: the card has not moved.
+  assert_contains "$out" "status:   needs_review" \
+    "approving a plan moved the card by itself - it must record consent and nothing else"
+
+  pass "an approval binds to the verbatim plan it was given for, is refused against any other text, and never drifts onto an edited plan"
+}
+
+# Regression: the CLI and the raw API do not trim a plan, so a plan could be
+# stored with surrounding whitespace while the approval recorded the text as
+# displayed. The two then never compared equal and the card was permanently
+# approved-and-stale, showing him two identical-looking texts with no way out.
+test_a_plan_stored_with_surrounding_whitespace_can_still_be_approved() {
+  local id json plan code
+  id=$("$DASH" add --title "Padded plan" --captain firstmate --prompt "x" \
+        --status needs-review --plan "   Swap the vendor and re-run the checks.  " | awk '{print $1}')
+  json=$("$DASH" show "$id" --json)
+  plan=$(printf '%s' "$json" | jq -r '.review_plan')
+  [ "$plan" = "Swap the vendor and re-run the checks." ] \
+    || fail "the card did not store one normalization of the plan: [$plan]"
+
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/$id/approve-plan" -H 'Content-Type: application/json' \
+    -d "$(jq -n --arg p "$plan" '{plan:$p}')")
+  [ "$code" = "200" ] || fail "approving the plan exactly as displayed failed (got HTTP $code)"
+  json=$("$DASH" show "$id" --json)
+  [ "$(printf '%s' "$json" | jq -r '.plan_approved')" = "true" ] || fail "the approval was not recorded"
+  [ "$(printf '%s' "$json" | jq -r '.plan_approval_stale')" = "false" ] \
+    || fail "an approval of the plan as displayed was reported as covering different wording"
+  assert_contains "$("$DASH" show "$id")" "APPROVAL: he approved this exact plan" \
+    "show reported a card as stale that was approved with the text it displays"
+
+  # Re-writing the same plan with different padding is the same plan, so his
+  # approval still covers it.
+  "$DASH" plan "$id" "  Swap the vendor and re-run the checks. " >/dev/null \
+    || fail "could not rewrite the plan"
+  json=$("$DASH" show "$id" --json)
+  [ "$(printf '%s' "$json" | jq -r '.plan_approval_stale')" = "false" ] \
+    || fail "re-writing the identical plan invalidated an approval that still covers it"
+
+  # And the safety direction is untouched: genuinely different wording is
+  # still stale, and approving text the card no longer carries is still 409.
+  "$DASH" plan "$id" "Keep the vendor and re-run the checks." >/dev/null \
+    || fail "could not edit the plan"
+  [ "$(printf '%s' "$("$DASH" show "$id" --json)" | jq -r '.plan_approval_stale')" = "true" ] \
+    || fail "an approval drifted onto genuinely different wording"
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/$id/approve-plan" -H 'Content-Type: application/json' \
+    -d "$(jq -n --arg p "$plan" '{plan:$p}')")
+  [ "$code" = "409" ] || fail "approving wording the card no longer carries was not refused (got HTTP $code)"
+
+  pass "a plan is stored under one normalization, so approving it exactly as displayed binds cleanly while different wording still reads stale"
+}
+
+# An unquoted multi-word plan would otherwise be recorded as its first word
+# alone, and his approval would bind perfectly to that fragment.
+test_plan_refuses_unquoted_extra_arguments_rather_than_truncating() {
+  local id out rc
+  id=$("$DASH" add --title "Quoting guard" --captain firstmate --prompt "x" \
+        --status needs-review --plan "Order the replacement switch." | awk '{print $1}')
+  out=$("$DASH" plan "$id" swap the vendor 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "an unquoted multi-word plan was accepted and silently truncated"
+  assert_contains "$out" "quote" "the refusal did not point at quoting the plan text"
+  [ "$(printf '%s' "$("$DASH" show "$id" --json)" | jq -r '.review_plan')" = "Order the replacement switch." ] \
+    || fail "a refused plan call changed the card's plan anyway"
+
+  pass "plan refuses an unquoted multi-word plan instead of recording its first word"
+}
+
+# The plan and the approval deliberately outlive the needs_review status,
+# unlike the two reason columns. Work happens AFTER he approves, so the fleet
+# has to still be able to read what he authorised while it is acting on it.
+test_the_plan_and_its_approval_survive_leaving_needs_review() {
+  local id json
+  id=$("$DASH" add --title "Approval survives" --captain firstmate --prompt "x" \
+        --status needs-review --plan "Print the six tags face down." | awk '{print $1}')
+  curl -sS -o /dev/null -X POST "http://127.0.0.1:$PORT/api/tasks/$id/approve-plan" \
+    -H 'Content-Type: application/json' -d '{"plan":"Print the six tags face down."}'
+
+  "$DASH" status "$id" working >/dev/null || fail "could not advance the approved card"
+  json=$("$DASH" show "$id" --json)
+  [ "$(printf '%s' "$json" | jq -r '.review_plan')" = "Print the six tags face down." ] \
+    || fail "the plan was destroyed when the card advanced - the fleet can no longer read what it is acting on"
+  [ "$(printf '%s' "$json" | jq -r '.plan_approved')" = "true" ] \
+    || fail "his approval was destroyed the moment work started under it"
+  [ "$(printf '%s' "$json" | jq -r '.plan_approval_stale')" = "false" ] \
+    || fail "an untouched plan was reported as no longer approved"
+
+  pass "a card's recommended plan and his approval of it survive the status change, so the fleet can still read its authority while acting"
+}
+
+# The mirror of add's own refusal. needs-review is the only status that renders
+# an approval box, so a plan written onto any other one is a recommendation he
+# is shown with no way to accept it - `show` would print "recommended plan:" on
+# a working card he was never asked about. Two commands that do the same thing
+# have to refuse the same thing.
+test_status_refuses_a_plan_for_any_status_but_needs_review() {
+  local id out rc
+  id=$("$DASH" add --title "Plan on the wrong status" --captain firstmate --prompt "x" | awk '{print $1}')
+
+  out=$("$DASH" status "$id" working --plan "Swap the vendor and re-run the checks." 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "status working --plan was accepted, so a plan was written where nothing can approve it"
+  assert_contains "$out" "only accepted with needs-review" \
+    "status's refusal did not explain that a plan belongs to needs-review"
+  assert_contains "$out" "working" "status's refusal did not name the status that was given"
+  assert_not_contains "$("$DASH" show "$id")" "recommended plan:" \
+    "a refused plan reached the card anyway"
+
+  # The same refusal on the deprecated input alias, which means needs-action.
+  out=$("$DASH" status "$id" needs-attention --reason "sign the contractor agreement" \
+    --plan "Swap the vendor." 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "status needs-attention --plan was accepted"
+
+  # And the status that owns a plan still takes one.
+  "$DASH" status "$id" needs-review --plan "Swap the vendor and re-run the checks." >/dev/null \
+    || fail "needs-review refused the plan it owns"
+  assert_contains "$("$DASH" show "$id")" "recommended plan: Swap the vendor and re-run the checks." \
+    "the plan needs-review accepted did not reach the card"
+
+  pass "status refuses a --plan for every status but needs-review, exactly as add does"
+}
+
+# The refusal that actually holds the invariant, because it is the server's
+# and not one CLI command's: a plan is only ever CREATED by the path that also
+# puts the approval box in front of him. Correcting a plan on a card that has
+# already been through that door is housekeeping and stays allowed, which is
+# why the test is history and not the card's current status.
+test_a_plan_can_only_be_created_on_the_path_that_shows_him_the_box() {
+  local id out rc code json approved_id
+  id=$("$DASH" add --title "Never asked for review" --captain firstmate --prompt "x" | awk '{print $1}')
+  [ -n "$id" ] || fail "could not add the card"
+
+  out=$("$DASH" plan "$id" "Swap the vendor and re-run the checks." 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "plan wrote a recommendation onto a card that has never been needs-review"
+  assert_contains "$out" "never been needs_review" \
+    "the refusal did not say why the plan was rejected"
+  assert_not_contains "$("$DASH" show "$id")" "recommended plan:" \
+    "a refused plan reached the card anyway"
+
+  # The same refusal on the raw API, since the CLI is not the only writer.
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X PUT \
+    "http://127.0.0.1:$PORT/api/tasks/$id/plan" -H 'Content-Type: application/json' \
+    -d '{"plan":"Swap the vendor and re-run the checks."}')
+  [ "$code" = "400" ] || fail "the API wrote a plan onto a card that has never been needs-review (got HTTP $code)"
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/$id/status" -H 'Content-Type: application/json' \
+    -d '{"status":"working","plan":"Swap the vendor and re-run the checks."}')
+  [ "$code" = "400" ] || fail "the status API wrote a plan onto a non-needs-review card (got HTTP $code)"
+  [ "$("$DASH" show "$id" --json | jq -r '.review_plan // "none"')" = "none" ] \
+    || fail "a plan reached a card that was never asked for review"
+
+  # The create route answers the same way rather than accepting the payload
+  # and silently dropping the plan, which is the quieter version of the same
+  # hole: a caller that gets a 201 has no way to learn its plan went nowhere.
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks" -H 'Content-Type: application/json' \
+    -d '{"title":"Created with a stray plan","captain":"firstmate","initial_prompt":"x","status":"working","plan":"Swap the vendor."}')
+  [ "$code" = "400" ] || fail "the create route accepted a plan on a non-needs-review card and dropped it (got HTTP $code)"
+  assert_not_contains "$("$DASH" list)" "Created with a stray plan" \
+    "a card refused for a stray plan was created anyway"
+
+  # And the permitted case: a card that reached needs-review and has since
+  # moved on still accepts a correction to the wording the fleet is acting on.
+  approved_id=$("$DASH" add --title "Corrected after moving on" --captain firstmate --prompt "x" \
+        --status needs-review --plan "Print the six tags face down." | awk '{print $1}')
+  "$DASH" status "$approved_id" working >/dev/null || fail "could not advance the card off needs-review"
+  "$DASH" plan "$approved_id" "Print the six tags face down, two per sheet." >/dev/null \
+    || fail "a card that has been through needs-review refused a plan correction"
+  json=$("$DASH" show "$approved_id" --json)
+  [ "$(printf '%s' "$json" | jq -r '.review_plan')" = "Print the six tags face down, two per sheet." ] \
+    || fail "the correction did not reach a card that has legitimately left needs-review"
+
+  pass "a plan can only be created by the path that shows him the approval box, while a card already through it still accepts a correction"
+}
+
+# The two accepted behaviours have to compose: correcting the plan on a card
+# that has moved past needs-review must still break the binding. A typo
+# correction is still a text change, and the binding does not get to judge
+# which changes are innocent.
+test_correcting_a_plan_after_the_card_moves_on_still_breaks_the_binding() {
+  local id json out
+  id=$("$DASH" add --title "Approved then corrected" --captain firstmate --prompt "x" \
+        --status needs-review --plan "Reserve fixed addresses for the six lights." | awk '{print $1}')
+  [ -n "$id" ] || fail "could not add the needs-review card"
+  curl -sS -o /dev/null -X POST "http://127.0.0.1:$PORT/api/tasks/$id/approve-plan" \
+    -H 'Content-Type: application/json' \
+    -d '{"plan":"Reserve fixed addresses for the six lights."}' \
+    || fail "could not record his approval"
+  "$DASH" status "$id" working >/dev/null || fail "could not advance the approved card"
+  "$DASH" plan "$id" "Reserve fixed addresses for the six lamps." >/dev/null \
+    || fail "the card refused the correction it is allowed to take"
+
+  json=$("$DASH" show "$id" --json)
+  [ "$(printf '%s' "$json" | jq -r '.plan_approved')" = "true" ] \
+    || fail "his approval was destroyed by a plan correction instead of kept as the record of his word"
+  [ "$(printf '%s' "$json" | jq -r '.plan_approval_stale')" = "true" ] \
+    || fail "an approval for the OLD wording still reads as covering the corrected plan"
+  [ "$(printf '%s' "$json" | jq -r '.plan_approved_text')" = "Reserve fixed addresses for the six lights." ] \
+    || fail "the wording he actually approved was overwritten by the correction"
+  [ "$(printf '%s' "$json" | jq -r '.review_plan')" = "Reserve fixed addresses for the six lamps." ] \
+    || fail "the corrected plan did not reach the card"
+
+  out=$("$DASH" show "$id")
+  assert_contains "$out" "recommended plan: Reserve fixed addresses for the six lamps." \
+    "show does not display the plan the card now carries"
+  assert_contains "$out" "covers the OLD wording only" \
+    "show does not say the approval no longer covers the plan on the card"
+  assert_contains "$out" "approved wording: Reserve fixed addresses for the six lights." \
+    "show does not display the wording he actually approved"
+
+  pass "correcting a plan on a card that has left needs-review still breaks the binding and keeps both texts readable"
+}
+
+# Regression: needs_action and needs_review are both louder than everything
+# else, and needs_action leads because it is the one he cannot clear from his
+# phone in a second.
+test_both_blocking_statuses_sort_above_the_rest_with_needs_action_first() {
+  local review_id action_id working_id order
+  working_id=$("$DASH" add --title "ZZZ sorting working" --captain firstmate --prompt "x" --status working | awk '{print $1}')
+  review_id=$("$DASH" add --title "ZZZ sorting review" --captain firstmate --prompt "x" \
+        --status needs-review --plan "Approve the vendor swap." | awk '{print $1}')
+  action_id=$("$DASH" add --title "ZZZ sorting action" --captain firstmate --prompt "x" \
+        --status needs-action --reason "sign the updated contractor agreement" | awk '{print $1}')
+
+  order=$("$DASH" list --sort status | awk '{print $1}')
+  local first second
+  first=$(printf '%s\n' "$order" | grep -nE "^($action_id|$review_id|$working_id)$" | head -1 | cut -d: -f2-)
+  second=$(printf '%s\n' "$order" | grep -nE "^($action_id|$review_id|$working_id)$" | sed -n 2p | cut -d: -f2-)
+  [ "$first" = "$action_id" ] \
+    || fail "needs-action did not sort first (got $first)"
+  [ "$second" = "$review_id" ] \
+    || fail "needs-review did not sort second, above ordinary work (got $second)"
+
+  pass "needs-action sorts above needs-review, and both sort above ordinary work"
+}
+
+
+# The needs-action/needs-review split has to move his live board without
+# losing a card, a reason, or a history entry. Proved against a database in
+# the real PRE-SPLIT shape - the old column name included - because that is
+# what the migration actually meets, and a fresh schema would prove nothing.
+test_the_needs_attention_split_migrates_every_card_losing_nothing() {
+  local mig_home mig_db mig_port mig_url out
+  # Under $FM_HOME so the suite's own cleanup takes it, exactly like the
+  # testing/review migration case above.
+  mig_home="$FM_HOME/split-migration-case"
+  mkdir -p "$mig_home/data" "$mig_home/state"
+  mig_db="$mig_home/data/dashboard.db"
+
+  python3 - "$mig_db" <<'SPLIT_SEED'
+import sqlite3, sys
+
+# The exact pre-split schema: status needs_attention, ask parked in a column
+# called needs_attention_reason.
+conn = sqlite3.connect(sys.argv[1])
+conn.executescript("""
+CREATE TABLE tasks (
+  id TEXT PRIMARY KEY, title TEXT NOT NULL, agent TEXT NOT NULL DEFAULT '',
+  captain TEXT NOT NULL, status TEXT NOT NULL, waiting_on_id TEXT, waiting_reason TEXT,
+  needs_attention_reason TEXT, starred INTEGER NOT NULL DEFAULT 0, backlog_ref TEXT,
+  initial_prompt TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL REFERENCES tasks(id),
+  tab TEXT NOT NULL, author TEXT NOT NULL, text TEXT NOT NULL DEFAULT '', link_url TEXT,
+  link_label TEXT, created_at TEXT NOT NULL);
+CREATE TABLE status_history (id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id TEXT NOT NULL REFERENCES tasks(id), from_status TEXT, to_status TEXT NOT NULL,
+  changed_at TEXT NOT NULL, note TEXT);
+CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+""")
+ts = "2020-01-02T03:04:05Z"
+for tid, status, reason in (
+    ("presplit-blocked-1", "needs_attention", "pick red or blue for the trim"),
+    ("presplit-blocked-2", "needs_attention", "sign the updated contractor agreement"),
+    ("presplit-done-1", "review", None),
+):
+    conn.execute(
+        """INSERT INTO tasks (id, title, agent, captain, status, needs_attention_reason,
+           initial_prompt, created_at, updated_at) VALUES (?, ?, '', 'firstmate', ?, ?, 'seed prompt', ?, ?)""",
+        (tid, "Pre-split " + tid, status, reason, ts, ts))
+    conn.execute("INSERT INTO status_history (task_id, from_status, to_status, changed_at, note)"
+                 " VALUES (?, NULL, 'not_started', ?, 'created')", (tid, ts))
+    conn.execute("INSERT INTO status_history (task_id, from_status, to_status, changed_at, note)"
+                 " VALUES (?, 'not_started', ?, ?, ?)", (tid, status, ts, reason))
+conn.execute("INSERT INTO notes (task_id, tab, author, text, created_at)"
+             " VALUES ('presplit-blocked-1', 'communication', 'admiral', 'a note that must survive', ?)", (ts,))
+conn.commit()
+conn.close()
+SPLIT_SEED
+
+  mig_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()') \
+    || fail "could not allocate a port for the split migration case"
+  mig_url="http://127.0.0.1:$mig_port"
+
+  FM_HOME="$mig_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$mig_port" FM_DASHBOARD_DB="$mig_db" \
+    "$DASH" start >"$mig_home/start.out" 2>&1 \
+    || { cat "$mig_home/start.out" >&2; fail "split-migration server did not start"; }
+  MIGRATION_SERVER_PID=$(cat "$mig_home/state/dashboard.pid" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after split-migration server start"
+
+  # Card for card: the count is unchanged and nothing landed anywhere but
+  # needs_action. Nothing may reach needs_review - no pre-split card has a
+  # plan, and inventing one would be fabricating a recommendation.
+  [ "$(FM_DASHBOARD_URL="$mig_url" "$DASH" list --json | jq -r '.tasks | length')" = "3" ] \
+    || fail "the split migration changed the number of cards on the board"
+  [ "$(FM_DASHBOARD_URL="$mig_url" "$DASH" list --status needs-action --json | jq -r '.tasks | length')" = "2" ] \
+    || fail "both pre-split needs_attention cards did not land in needs_action"
+  [ "$(FM_DASHBOARD_URL="$mig_url" "$DASH" list --status needs-review --json | jq -r '.tasks | length')" = "0" ] \
+    || fail "the migration invented a recommended plan and routed a card to needs_review"
+  assert_contains "$(FM_DASHBOARD_URL="$mig_url" "$DASH" show presplit-done-1)" "status:   review" \
+    "the migration touched a card that was never needs_attention"
+
+  # Every reason survives, under the renamed column.
+  out=$(FM_DASHBOARD_URL="$mig_url" "$DASH" show presplit-blocked-1)
+  assert_contains "$out" "needs action: pick red or blue for the trim" \
+    "a migrated card lost the ask it was carrying"
+  assert_contains "$(FM_DASHBOARD_URL="$mig_url" "$DASH" show presplit-blocked-2)" \
+    "needs action: sign the updated contractor agreement" "a migrated card lost the ask it was carrying"
+
+  # History and notes are untouched. The old spelling STAYS in status_history:
+  # the board really did say needs_attention then, and rewriting or appending
+  # would reset the card's blocked-age, which is what the auditor reads.
+  FM_DASHBOARD_URL="$mig_url" "$DASH" show presplit-blocked-1 --json \
+    | jq -e '[.status_history[]] | length == 2' >/dev/null \
+    || fail "the split migration added or removed status history entries"
+  FM_DASHBOARD_URL="$mig_url" "$DASH" show presplit-blocked-1 --json \
+    | jq -e '[.status_history[] | select(.to_status == "needs_attention" and .changed_at == "2020-01-02T03:04:05Z")] | length == 1' >/dev/null \
+    || fail "the migration rewrote or reset the history row the card's blocked-age is read from"
+  FM_DASHBOARD_URL="$mig_url" "$DASH" show presplit-blocked-1 --json \
+    | jq -e '[.notes[]] | length == 1' >/dev/null || fail "the split migration lost a note"
+
+  # A mechanical relabel is not his work changing.
+  [ "$(FM_DASHBOARD_URL="$mig_url" "$DASH" show presplit-blocked-1 --json | jq -r '.updated_at')" = "2020-01-02T03:04:05Z" ] \
+    || fail "the split migration bumped updated_at and would reorder his default board view"
+
+  # It says what it did rather than running silently.
+  out=$(cat "$mig_home/state/dashboard.log")
+  assert_contains "$out" "migrated 2 card(s) from needs_attention to needs_action" \
+    "the server did not report the split migration it performed"
+  assert_contains "$out" "presplit-blocked-1" "the startup report does not name the cards it moved"
+
+  stop_dashboard_server "$MIGRATION_SERVER_PID"
+  MIGRATION_SERVER_PID=""
+
+  # A second start must not report again, and must leave everything alone.
+  FM_HOME="$mig_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$mig_port" FM_DASHBOARD_DB="$mig_db" \
+    "$DASH" start >"$mig_home/restart.out" 2>&1 \
+    || { cat "$mig_home/restart.out" >&2; fail "split-migration server did not restart"; }
+  MIGRATION_SERVER_PID=$(cat "$mig_home/state/dashboard.pid" 2>/dev/null)
+  assert_not_contains "$(cat "$mig_home/state/dashboard.log")" "migrated 2 card(s) from needs_attention" \
+    "a later start re-ran the split migration over an already-migrated database"
+  [ "$(FM_DASHBOARD_URL="$mig_url" "$DASH" list --status needs-action --json | jq -r '.tasks | length')" = "2" ] \
+    || fail "a restart disturbed the migrated cards"
+
+  stop_dashboard_server "$MIGRATION_SERVER_PID"
+  MIGRATION_SERVER_PID=""
+
+  pass "the needs-attention split migrates every card to needs-action, keeping its reason, notes, history, and blocked-age, and runs once"
 }
 
 test_health_and_server_status
@@ -1073,9 +1601,20 @@ test_testing_and_review_are_distinct_statuses
 test_waiting_status_carries_target_and_reason
 test_notes_tabs_and_empty_tab_semantics
 test_link_policy_rejects_github_and_localhost
-test_needs_attention_status_carries_reason_and_sorts_first
-test_needs_attention_requires_a_real_ask
-test_no_path_can_set_needs_attention_without_an_ask
+test_needs_action_status_carries_reason_and_sorts_first
+test_needs_action_requires_a_real_ask
+test_no_path_can_set_needs_action_without_an_ask
+test_needs_attention_is_an_accepted_input_alias_and_never_an_output
+test_needs_review_without_a_plan_is_refused_everywhere
+test_an_approval_binds_to_the_plan_text_it_was_given_for
+test_the_plan_and_its_approval_survive_leaving_needs_review
+test_status_refuses_a_plan_for_any_status_but_needs_review
+test_a_plan_can_only_be_created_on_the_path_that_shows_him_the_box
+test_correcting_a_plan_after_the_card_moves_on_still_breaks_the_binding
+test_a_plan_stored_with_surrounding_whitespace_can_still_be_approved
+test_plan_refuses_unquoted_extra_arguments_rather_than_truncating
+test_both_blocking_statuses_sort_above_the_rest_with_needs_action_first
+test_the_needs_attention_split_migrates_every_card_losing_nothing
 test_a_genuine_ask_mentioning_a_report_word_is_accepted
 test_add_refuses_a_reason_for_a_status_that_cannot_carry_one
 test_documented_guard_rates_still_hold
