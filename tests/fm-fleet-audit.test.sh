@@ -608,7 +608,7 @@ test_a_target_started_then_abandoned_is_flagged_again() {
 # while a reply is still measured against the NEWEST ask, so an answer to an
 # earlier question never silences a later one.
 test_a_re_ask_does_not_restart_his_waiting_clock() {
-  local id first_age second_age rows
+  local id second_age rows
   id=$("$DASH" add --title "Re-asked twice" --captain firstmate --prompt "re-ask clock" | awk '{print $1}')
   [ -n "$id" ] || fail "could not add the card"
   "$DASH" status "$id" needs-action --reason "pick red or blue for the trim" >/dev/null \
@@ -618,7 +618,6 @@ test_a_re_ask_does_not_restart_his_waiting_clock() {
   rows=$(discrepancy_rows_for "$id")
   [ "$(printf '%s' "$rows" | jq 'length')" -eq 1 ] \
     || fail "expected one row for the blocked card, got $(printf '%s' "$rows" | jq 'length')"
-  first_age=$(printf '%s' "$rows" | jq -r '.[0].text')
 
   # Re-ask him something new on the card he is already blocked on.
   sleep 2
