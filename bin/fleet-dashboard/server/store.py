@@ -387,18 +387,18 @@ class Store:
     # relabel pretending to be news.
     #
     # Deliberately leaves status_history alone too, which is the more
-    # load-bearing of the two. Writing a needs_attention -> needs_action row
-    # per card would reset every one of their ages to this restart, and the
-    # auditor's age check reads exactly that timestamp - a card he has been
-    # sitting on since Tuesday would read as flagged one minute ago, and the
-    # one finding that catches an ask that never reached him would go quiet
-    # across the whole board. Rewriting the old rows in place instead would
-    # falsify them: the board really did say `needs_attention` then. So the
-    # rows stay as they are, `needs_attention` keeps its meaning as a readable
-    # historical spelling, and every reader of that timestamp accepts both
-    # spellings (bin/fm-fleet-audit-sweep.sh's check 5 does). The record that
-    # this migration ran is the settings marker and the startup line naming
-    # every card it moved.
+    # load-bearing of the two. A needs_attention -> needs_action row per card
+    # would date an ask he was never actually asked, and the auditor measures
+    # his reply against the newest ask - so every card he had already answered
+    # would read as unanswered again at the next sweep. Rewriting the old rows
+    # in place instead would falsify them: the board really did say
+    # `needs_attention` then. So the rows stay as they are, `needs_attention`
+    # keeps its meaning as a readable historical spelling, and every reader of
+    # those timestamps accepts both spellings (bin/fm-fleet-audit-sweep.sh's
+    # check 5 does, which is also why its age survives a relabel between two
+    # blocking statuses). See docs/dashboard.md "How the split moved his live
+    # board" for the decision itself. The record that this migration ran is the
+    # settings marker and the startup line naming every card it moved.
     def _migrate_needs_attention_to_needs_action(self, conn: sqlite3.Connection) -> list[str]:
         """One-time move of every `needs_attention` card to `needs_action`.
 

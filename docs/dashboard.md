@@ -141,9 +141,10 @@ The migration is in `bin/fleet-dashboard/server/store.py`, gated by a settings m
 It leaves `updated_at` alone so a mechanical relabel does not float his blocked cards to the top of his default sort.
 
 It also leaves `status_history` completely alone, which matters more than it looks.
-Appending a `needs_attention` -> `needs_action` row per card would reset every card's age to the moment the server restarted, and the auditor's age check reads exactly that timestamp - a card he has been sitting on since Tuesday would read as flagged one minute ago, and the one finding that catches an ask that never reached him would go quiet across the whole board.
+Appending a `needs_attention` -> `needs_action` row per card would date an ask he was never actually asked, and the auditor measures his reply against the newest ask: every card he had already answered would read as unanswered at the next sweep, and his discrepancy log would fill with cards that are not faults at all.
+His waiting clock itself would survive such a row - the sweep ages a card from the FIRST move into a blocking status, counts `needs_attention` as one of those, and treats a move between the two blocking statuses as no boundary - but a relabel that re-opens every answered card is still the kind of write the rule below forbids: one that changes what the board says about him without him having acted.
 Rewriting the old rows in place instead would falsify them, because the board really did say `needs_attention` at the time.
-So the rows stay exactly as they are, and every reader of that timestamp accepts both spellings instead.
+So the rows stay exactly as they are, and every reader of those timestamps accepts both spellings instead.
 
 `needs_attention` therefore survives in two places on purpose.
 It is still accepted as an INPUT spelling everywhere a status is read - the CLI, the list filter, and both writing endpoints - and always resolves to `needs_action`, so an older script or an agent working from an older copy of the doctrine keeps working rather than failing on a rename.
