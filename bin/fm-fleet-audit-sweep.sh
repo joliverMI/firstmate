@@ -278,7 +278,7 @@ case "$STALE_MINUTES" in ''|*[!0-9]*) STALE_MINUTES=60 ;; esac
 # explicitly rather than derived from each other at a distance.
 check_blocked_on_him() {  # <status-flag> <stored-status> <label> <key-prefix>
   local status_flag=$1 stored=$2 label=$3 key_prefix=$4
-  local json id detail_json block_at ask_at changed_at changed_epoch age_min replied approved_at approval_stale
+  local json id detail_json block_at ask_at plan_at changed_at changed_epoch age_min replied approved_at approval_stale
   json=$("$DASH" list --status "$status_flag" --json) \
     || fail_sweep "sweep failed listing $status_flag cards: dashboard unreachable mid-sweep"
   while IFS= read -r id; do
@@ -305,7 +305,13 @@ check_blocked_on_him() {  # <status-flag> <stored-status> <label> <key-prefix>
     #
     # ASK_AT - the newest ask, and what a reply is measured against, so an
     # answer he gave to an earlier question never silences a later one. Every
-    # row landing on a blocking status counts here, re-asks included.
+    # row landing on a blocking status counts here, re-asks included, and on
+    # a needs_review card so does the date the plan itself was last changed:
+    # editing the plan is how the ask is re-worded there, exactly as a
+    # re-`status` re-words a needs_action one, and it writes no history row
+    # of its own. Without it a reply he gave about plan A would go on
+    # answering plan B forever. The test is whether he has answered THIS ask,
+    # not whether he has ever replied to this card.
     #
     # He sees the current question; the sweep sees the true wait.
     #
@@ -329,6 +335,12 @@ check_blocked_on_him() {  # <status-flag> <stored-status> <label> <key-prefix>
     # stay quiet rather than invent a clock.
     [ -n "$block_at" ] || continue
     [ -n "$ask_at" ] || ask_at=$block_at
+    if [ "$stored" = needs_review ]; then
+      plan_at=$(printf '%s' "$detail_json" | jq -r '.review_plan_updated_at // empty')
+      if [ -n "$plan_at" ] && [ "$ask_at" \< "$plan_at" ]; then
+        ask_at=$plan_at
+      fi
+    fi
     changed_at=$block_at
     changed_epoch=$(iso_to_epoch "$block_at") || continue
     [ -n "$changed_epoch" ] || continue

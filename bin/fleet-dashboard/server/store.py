@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   review_plan TEXT,
   plan_approved_at TEXT,
   plan_approved_text TEXT,
+  review_plan_updated_at TEXT,
   starred INTEGER NOT NULL DEFAULT 0,
   backlog_ref TEXT,
   initial_prompt TEXT NOT NULL,
@@ -188,11 +189,18 @@ DEFAULT_AUDIT_INTERVAL_MINUTES = 15
 # EXACT plan text that was on the card when he gave it - two columns, not one
 # flag, because an approval is only worth anything against the wording he
 # actually read (see approve_plan).
+# review_plan_updated_at dates the wording itself: when the plan he is being
+# asked about last CHANGED, which is when the question changed. It is what
+# lets a reader tell a new ask from a card that has merely been touched, and
+# `updated_at` cannot do that job - a note, a title edit, or an approval moves
+# `updated_at` without changing anything he is being asked (see set_review_plan
+# and the auditor's newest-ask timestamp in bin/fm-fleet-audit-sweep.sh).
 _TASK_COLUMN_MIGRATIONS = (
     ("needs_action_reason", "TEXT"),
     ("review_plan", "TEXT"),
     ("plan_approved_at", "TEXT"),
     ("plan_approved_text", "TEXT"),
+    ("review_plan_updated_at", "TEXT"),
 )
 
 _AUDIT_RUN_COLUMN_MIGRATIONS = (
@@ -492,10 +500,11 @@ class Store:
                 """INSERT INTO tasks
                    (id, title, agent, captain, status, waiting_on_id, waiting_reason,
                     needs_action_reason, review_plan, plan_approved_at, plan_approved_text,
-                    starred, backlog_ref, initial_prompt, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, NULL, 0, ?, ?, ?, ?)""",
+                    review_plan_updated_at, starred, backlog_ref, initial_prompt,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, NULL, ?, 0, ?, ?, ?, ?)""",
                 (task_id, title, agent, captain, status, needs_action_reason, review_plan,
-                 backlog_ref, initial_prompt, ts, ts),
+                 ts if review_plan else None, backlog_ref, initial_prompt, ts, ts),
             )
             cur.execute(
                 """INSERT INTO status_history (task_id, from_status, to_status, changed_at, note)
@@ -619,12 +628,20 @@ class Store:
         # edited, _with_approval_state marks the approval stale rather than
         # letting it drift onto text he never read.
         ts = now_iso()
+        # A status write that changes the plan changes the question, so it
+        # dates the wording too; one that leaves the plan alone must not, or
+        # every unrelated status change would read as a fresh ask.
+        plan_changed_at = (
+            ts if next_plan != current.get("review_plan")
+            else current.get("review_plan_updated_at")
+        )
         with self._cursor(write=True) as cur:
             cur.execute(
                 """UPDATE tasks SET status = ?, waiting_on_id = ?, waiting_reason = ?,
-                   needs_action_reason = ?, review_plan = ?, updated_at = ? WHERE id = ?""",
+                   needs_action_reason = ?, review_plan = ?, review_plan_updated_at = ?,
+                   updated_at = ? WHERE id = ?""",
                 (status, waiting_on_id, waiting_reason, needs_action_reason, next_plan,
-                 ts, task_id),
+                 plan_changed_at, ts, task_id),
             )
             cur.execute(
                 """INSERT INTO status_history (task_id, from_status, to_status, changed_at, note)
@@ -642,6 +659,14 @@ class Store:
         _with_approval_state then reports the card as approved AND stale, the
         card shows both texts, and the approve button comes back. Nothing
         here decides that: it falls out of the two columns disagreeing.
+
+        Replacing the wording also dates it in `review_plan_updated_at`, which
+        is the durable mark that says the ask itself changed here. Without it
+        the only trace of a plan edit is `updated_at`, and the auditor reading
+        that could not tell a new question from a note being added - so a
+        reply he gave to the OLD plan would go on silencing a card that now
+        asks him something he has never seen. Re-writing the same text is not
+        a new question and deliberately leaves the date where it was.
         """
         plan = normalized_plan(plan)
         if plan is None:
@@ -650,10 +675,15 @@ class Store:
         if current is None:
             raise KeyError(task_id)
         ts = now_iso()
+        plan_changed_at = (
+            ts if plan != current.get("review_plan")
+            else current.get("review_plan_updated_at")
+        )
         with self._cursor(write=True) as cur:
             cur.execute(
-                "UPDATE tasks SET review_plan = ?, updated_at = ? WHERE id = ?",
-                (plan, ts, task_id),
+                "UPDATE tasks SET review_plan = ?, review_plan_updated_at = ?, updated_at = ? "
+                "WHERE id = ?",
+                (plan, plan_changed_at, ts, task_id),
             )
         return self.get_task(task_id)
 

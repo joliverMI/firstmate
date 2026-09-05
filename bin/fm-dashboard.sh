@@ -51,7 +51,10 @@
 #       --plan or already on the card from an earlier `plan` call; the
 #       server refuses the status change when neither exists, because an
 #       approval box with nothing in it is the failure that status exists
-#       to prevent.
+#       to prevent. --plan is REFUSED for every other status, exactly as
+#       `add` refuses it: needs-review is the only status that puts an
+#       approval box in front of him, so a plan written anywhere else is a
+#       recommendation he has no way to accept.
 #   fm-dashboard.sh plan <id> <recommended plan text>
 #       Set or correct the recommended plan a needs-review card asks him to
 #       approve. If he had already approved the previous wording, that
@@ -459,6 +462,14 @@ cmd_status() {
   # holds the card. Sending it and letting the server refuse is what makes
   # "he already has a plan on this card" work without a second round-trip
   # here to go and look.
+  # The other direction IS checked here, exactly as `add` checks it: a plan
+  # only means anything on the status that renders the approval box, so
+  # writing one anywhere else would put a recommendation in front of him with
+  # no way to accept it - `show` would print "recommended plan:" on a working
+  # card he was never actually asked about.
+  if [ "$status" != needs_review ] && [ -n "$plan" ]; then
+    die "status: --plan is only accepted with needs-review (got status '$status'); a recommended plan is what a needs-review card's approval box shows him"
+  fi
   local body
   body=$(jq -n --arg s "$status" --arg w "$waiting_on" --arg r "$reason" --arg pl "$plan" \
     '{status:$s}

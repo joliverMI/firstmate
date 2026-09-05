@@ -760,6 +760,50 @@ test_an_approval_quiets_the_sweep_but_a_stale_one_does_not() {
   pass "a current approval closes the sweep's age finding, and an approval left stale by an edited plan does not"
 }
 
+# The other half of "he has answered THIS ask": editing the plan is how a
+# needs_review ask is re-worded, and it writes no status-history row of its
+# own. Without the plan's own edit date the sweep would keep measuring his
+# reply against the ORIGINAL ask, so a note he left about plan A would go on
+# answering plan B forever - on a card carrying no approval, nothing else
+# would ever rescue it.
+test_editing_the_plan_re_opens_the_question_his_old_reply_answered() {
+  local id rows block_at
+  id=$("$DASH" add --title "Plan swapped under his reply" --captain firstmate \
+        --prompt "a changed plan is a new question" \
+        --status needs-review --plan "Swap the vendor and re-run the checks." | awk '{print $1}')
+  [ -n "$id" ] || fail "could not add the needs-review card"
+
+  sleep 1
+  "$DASH" note "$id" --tab communication --author admiral --text "the vendor swap sounds fine to me" >/dev/null \
+    || fail "could not record his reply"
+  FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES=0 "$SWEEP" --forced || fail "post-reply sweep exited non-zero"
+  rows=$(discrepancy_rows_for "$id")
+  [ "$(printf '%s' "$rows" | jq 'length')" -eq 0 ] \
+    || fail "a card he had already answered was flagged, so this test could not tell a re-opened question from ordinary noise"
+
+  # Now replace the plan. His reply was about the old wording, and the card
+  # asks him something he has never been shown.
+  sleep 2
+  "$DASH" plan "$id" "Keep the vendor and change the software to match instead." >/dev/null \
+    || fail "could not replace the plan"
+  assert_contains "$("$DASH" show "$id")" "recommended plan: Keep the vendor" \
+    "the plan edit did not reach the card, so this test proves nothing"
+
+  FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES=0 "$SWEEP" --forced || fail "post-edit sweep exited non-zero"
+  rows=$(discrepancy_rows_for "$id")
+  [ "$(printf '%s' "$rows" | jq 'length')" -ge 1 ] \
+    || fail "his reply to the OLD plan silenced a card whose plan has since changed - he is treated as having answered a question he was never shown"
+
+  # Only the newest-ask timestamp moved. The age still runs from when he first
+  # became blocked, which is the timestamp the row's collapse key names.
+  block_at=$("$DASH" show "$id" --json \
+    | jq -r '[.status_history[] | select(.to_status=="needs_review")] | last | .changed_at')
+  [ "$(printf '%s' "$rows" | jq -r '.[0].key')" = "needs-review-stale:$block_at" ] \
+    || fail "the plan edit moved the timestamp his age is measured from (row key $(printf '%s' "$rows" | jq -r '.[0].key'), block start $block_at)"
+
+  pass "editing the plan re-opens the question, so a reply he gave about the old plan never stands as an answer to the new one"
+}
+
 # The plan and its approval deliberately survive a status change, so a card
 # can sit in needs_action carrying an approval that answered an entirely
 # different question. An approval is the reply a needs_review card asks for
@@ -958,6 +1002,7 @@ test_sweep_flags_stale_unreplied_needs_attention_but_not_a_reply
 test_a_needs_attention_card_that_cycles_back_in_gets_a_fresh_row
 test_sweep_flags_a_stale_needs_review_card_the_same_way
 test_an_approval_quiets_the_sweep_but_a_stale_one_does_not
+test_editing_the_plan_re_opens_the_question_his_old_reply_answered
 test_a_re_ask_does_not_restart_his_waiting_clock
 test_an_old_reply_does_not_answer_a_later_re_ask
 test_an_approval_never_quiets_a_needs_action_card

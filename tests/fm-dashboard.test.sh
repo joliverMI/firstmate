@@ -1326,6 +1326,37 @@ test_the_plan_and_its_approval_survive_leaving_needs_review() {
   pass "a card's recommended plan and his approval of it survive the status change, so the fleet can still read its authority while acting"
 }
 
+# The mirror of add's own refusal. needs-review is the only status that renders
+# an approval box, so a plan written onto any other one is a recommendation he
+# is shown with no way to accept it - `show` would print "recommended plan:" on
+# a working card he was never asked about. Two commands that do the same thing
+# have to refuse the same thing.
+test_status_refuses_a_plan_for_any_status_but_needs_review() {
+  local id out rc
+  id=$("$DASH" add --title "Plan on the wrong status" --captain firstmate --prompt "x" | awk '{print $1}')
+
+  out=$("$DASH" status "$id" working --plan "Swap the vendor and re-run the checks." 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "status working --plan was accepted, so a plan was written where nothing can approve it"
+  assert_contains "$out" "only accepted with needs-review" \
+    "status's refusal did not explain that a plan belongs to needs-review"
+  assert_contains "$out" "working" "status's refusal did not name the status that was given"
+  assert_not_contains "$("$DASH" show "$id")" "recommended plan:" \
+    "a refused plan reached the card anyway"
+
+  # The same refusal on the deprecated input alias, which means needs-action.
+  out=$("$DASH" status "$id" needs-attention --reason "sign the contractor agreement" \
+    --plan "Swap the vendor." 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "status needs-attention --plan was accepted"
+
+  # And the status that owns a plan still takes one.
+  "$DASH" status "$id" needs-review --plan "Swap the vendor and re-run the checks." >/dev/null \
+    || fail "needs-review refused the plan it owns"
+  assert_contains "$("$DASH" show "$id")" "recommended plan: Swap the vendor and re-run the checks." \
+    "the plan needs-review accepted did not reach the card"
+
+  pass "status refuses a --plan for every status but needs-review, exactly as add does"
+}
+
 # Regression: needs_action and needs_review are both louder than everything
 # else, and needs_action leads because it is the one he cannot clear from his
 # phone in a second.
@@ -1486,6 +1517,7 @@ test_needs_attention_is_an_accepted_input_alias_and_never_an_output
 test_needs_review_without_a_plan_is_refused_everywhere
 test_an_approval_binds_to_the_plan_text_it_was_given_for
 test_the_plan_and_its_approval_survive_leaving_needs_review
+test_status_refuses_a_plan_for_any_status_but_needs_review
 test_a_plan_stored_with_surrounding_whitespace_can_still_be_approved
 test_plan_refuses_unquoted_extra_arguments_rather_than_truncating
 test_both_blocking_statuses_sort_above_the_rest_with_needs_action_first
