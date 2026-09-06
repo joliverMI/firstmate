@@ -371,27 +371,50 @@ test_ship_project_memory_wording() {
   pass "fm-brief.sh: ship project-memory wording carries the AGENTS.md authoring bar"
 }
 
+test_dod_rule_pointer_resolves_to_the_escalation_rule() {
+  local home id brief num rule
+  home="$TMP_ROOT/dod-pointer-home"
+  mkdir -p "$home/data"
+  id="brief-dod-pointer-f1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "brief was not scaffolded"
+  num=$(sed -n 's/.*escalate to firstmate (rule \([0-9][0-9]*\)) and stop.*/\1/p' "$brief")
+  [ -n "$num" ] || fail "no-mistakes DOD lost its numbered escalation-rule pointer"
+  rule=$(sed -n "/^$num\. /,/^[0-9][0-9]*\. /p" "$brief")
+  case "$rule" in
+    *needs-decision:*) : ;;
+    *) fail "DOD cites rule $num, which is not the needs-decision escalation rule: $rule" ;;
+  esac
+  pass "fm-brief.sh: the no-mistakes DOD's rule pointer resolves to the needs-decision rule"
+}
+
 test_physical_action_contract_covers_ship_and_scout() {
-  local home ship_id ship_brief scout_id scout_brief
+  local home ship_id ship_brief scout_id scout_brief foreign_root
   home="$TMP_ROOT/physical-action-home"
+  foreign_root="$TMP_ROOT/firstmate contract root"
   mkdir -p "$home/data"
   ship_id="brief-physical-ship-e1"
   scout_id="brief-physical-scout-e1"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$ship_id" some-proj --mode no-mistakes >/dev/null 2>&1
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$scout_id" some-proj --scout >/dev/null 2>&1
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$foreign_root" "$ROOT/bin/fm-brief.sh" "$ship_id" some-proj --mode no-mistakes >/dev/null 2>&1
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$foreign_root" "$ROOT/bin/fm-brief.sh" "$scout_id" some-proj --scout >/dev/null 2>&1
   ship_brief="$home/data/$ship_id/brief.md"
   scout_brief="$home/data/$scout_id/brief.md"
   assert_present "$ship_brief" "ship brief was not scaffolded"
   assert_present "$scout_brief" "scout brief was not scaffolded"
   for brief in "$ship_brief" "$scout_brief"; do
-    assert_grep "you owe firstmate the BEFORE/START/END/RELEASE announcement contract in AGENTS.md section 9" "$brief" \
-      "$brief: missing the physical-action announcement obligation"
+    assert_grep "you owe firstmate the BEFORE/START/END/RELEASE announcement contract in section 9 of \`$foreign_root/AGENTS.md\`" "$brief" \
+      "$brief: missing the physical-action announcement obligation, or it names a worktree-relative AGENTS.md"
     assert_grep "An abort is an END, reported as promptly as a completion, never as silence." "$brief" \
       "$brief: missing the abort-is-an-end rule"
+    assert_grep "immediately before the ask (section 9 of \`$foreign_root/AGENTS.md\`)" "$brief" \
+      "$brief: precondition rule names a worktree-relative AGENTS.md instead of the Firstmate-owned one"
     assert_grep "re-check the most recent thing that failed at its effect, not its configuration" "$brief" \
       "$brief: missing the precondition-recheck obligation"
     assert_grep "this catches recurrence only, so say so plainly if the failure that actually blocks you is a first-time one this check would not have caught" "$brief" \
       "$brief: precondition rule lost its honest first-time-failure limitation"
+    assert_no_grep "AGENTS.md section 9" "$brief" \
+      "$brief: physical-action contract must not point at a worktree-relative AGENTS.md"
   done
   pass "fm-brief.sh: ship and scout briefs carry the physical-action announcement and precondition-verification contract"
 }
@@ -1005,6 +1028,7 @@ test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording
+test_dod_rule_pointer_resolves_to_the_escalation_rule
 test_physical_action_contract_covers_ship_and_scout
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path

@@ -327,10 +327,10 @@ The report is the only thing that survives, so anything worth keeping must be in
    known external wait you expect to clear on its own (an upstream release, a rate-limit reset):
    firstmate then leaves your idle pane alone and rechecks it on a long cadence instead of
    treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
-5. If this task changes or takes control of anything in the captain's physical space (lights, audio, doors, machines), you owe firstmate the BEFORE/START/END/RELEASE announcement contract in AGENTS.md section 9 as its own status line at each event.
+5. If this task changes or takes control of anything in the captain's physical space (lights, audio, doors, machines), you owe firstmate the BEFORE/START/END/RELEASE announcement contract in section 9 of \`$FM_ROOT/AGENTS.md\` as its own status line at each event.
    An abort is an END, reported as promptly as a completion, never as silence.
    During an announced physical action, break any extended silence with a \`working:\` line saying what is currently happening, even "still working"; never fold these events into your next routine line.
-   Before any status line that asks the captain for his time, presence, or consent, re-check the most recent thing that failed at its effect, not its configuration, immediately before the ask (AGENTS.md section 9); this catches recurrence only, so say so plainly if the failure that actually blocks you is a first-time one this check would not have caught.
+   Before any status line that asks the captain for his time, presence, or consent, re-check the most recent thing that failed at its effect, not its configuration, immediately before the ask (section 9 of \`$FM_ROOT/AGENTS.md\`); this catches recurrence only, so say so plainly if the failure that actually blocks you is a first-time one this check would not have caught.
 6. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 7. If a decision belongs to a human (product choices, destructive actions),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
@@ -405,7 +405,7 @@ When starting no-mistakes, make \`--intent\` preserve all relevant content from 
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
 
 Two firstmate-specific rules layer on top of that guidance:
-- ask-user findings are never yours to answer: escalate to firstmate (rule 6) and stop.
+- ask-user findings are never yours to answer: escalate to firstmate (rule 7) and stop.
   Firstmate applies the authority contract in its \`AGENTS.md\` and obtains any required captain decision.
   When the decision comes back, feed it to the gate with \`no-mistakes axi respond\` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
 - Avoid \`--yes\`: it would silently bypass firstmate's authority check and any required captain escalation.
@@ -454,10 +454,10 @@ $RULE1
    known external wait you expect to clear on its own (an upstream release, a rate-limit reset,
    a scheduled window): firstmate then leaves your idle pane alone and rechecks it on a long
    cadence instead of treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
-5. If this task changes or takes control of anything in the captain's physical space (lights, audio, doors, machines), you owe firstmate the BEFORE/START/END/RELEASE announcement contract in AGENTS.md section 9 as its own status line at each event.
+5. If this task changes or takes control of anything in the captain's physical space (lights, audio, doors, machines), you owe firstmate the BEFORE/START/END/RELEASE announcement contract in section 9 of \`$FM_ROOT/AGENTS.md\` as its own status line at each event.
    An abort is an END, reported as promptly as a completion, never as silence.
    During an announced physical action, break any extended silence with a \`working:\` line saying what is currently happening, even "still working"; never fold these events into your next routine line.
-   Before any status line that asks the captain for his time, presence, or consent, re-check the most recent thing that failed at its effect, not its configuration, immediately before the ask (AGENTS.md section 9); this catches recurrence only, so say so plainly if the failure that actually blocks you is a first-time one this check would not have caught.
+   Before any status line that asks the captain for his time, presence, or consent, re-check the most recent thing that failed at its effect, not its configuration, immediately before the ask (section 9 of \`$FM_ROOT/AGENTS.md\`); this catches recurrence only, so say so plainly if the failure that actually blocks you is a first-time one this check would not have caught.
 6. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 7. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will apply the configured authority and reply with the decision.
