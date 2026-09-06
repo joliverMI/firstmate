@@ -723,6 +723,23 @@ cmd_server_start() {
   fi
   local host="${FM_DASHBOARD_HOST:-$(dashboard_default_host)}" port="${FM_DASHBOARD_PORT:-8420}"
   local db="${FM_DASHBOARD_DB:-$FM_HOME/data/dashboard.db}"
+  local health="http://$host:$port/api/health" code=""
+  local connect_timeout max_time attempt_max budget_whole deadline
+  connect_timeout=$(dash_timeout_seconds FM_DASHBOARD_CONNECT_TIMEOUT "${FM_DASHBOARD_CONNECT_TIMEOUT:-}" 5)
+  max_time=$(dash_timeout_seconds FM_DASHBOARD_MAX_TIME "${FM_DASHBOARD_MAX_TIME:-}" 20)
+  # Each attempt is capped short so a socket that accepts but never answers
+  # (a port the previous owner still holds) cannot eat the whole budget
+  # before the loop notices the process has already died on it.
+  attempt_max=$(awk -v m="$max_time" 'BEGIN { print (m < 2) ? m : 2 }')
+  # Anything already answering on the address would answer the post-start
+  # probe too, before the new interpreter has even reached its bind - and
+  # that bind is going to fail. Refuse up front rather than report a healthy
+  # start for a process that is dying on EADDRINUSE behind a stranger.
+  code=$(curl -sS -o /dev/null -w '%{http_code}' \
+    --connect-timeout "$connect_timeout" --max-time "$attempt_max" "$health" 2>/dev/null) || code=""
+  if [ -n "$code" ]; then
+    die "something already answers at $health (HTTP $code) that this pidfile does not track - refusing to start a second server on that address. See: fm-dashboard.sh server-status"
+  fi
   mkdir -p "$(dirname "$pf")"
   nohup python3 "$DASHBOARD_DIR/server/main.py" --host "$host" --port "$port" --db "$db" \
     > "$FM_HOME/state/dashboard.log" 2>&1 &
@@ -735,16 +752,8 @@ cmd_server_start() {
   # second to reach the bind, so keep asking for the whole max-time budget
   # (giving up early only once the process itself is gone) before deciding
   # the address is unreachable.
-  local health="http://$host:$port/api/health" code=""
-  local connect_timeout max_time attempt_max budget_whole deadline
-  connect_timeout=$(dash_timeout_seconds FM_DASHBOARD_CONNECT_TIMEOUT "${FM_DASHBOARD_CONNECT_TIMEOUT:-}" 5)
-  max_time=$(dash_timeout_seconds FM_DASHBOARD_MAX_TIME "${FM_DASHBOARD_MAX_TIME:-}" 20)
-  # Each attempt is capped short so a socket that accepts but never answers
-  # (a port the previous owner still holds) cannot eat the whole budget
-  # before the loop notices the process has already died on it.
-  attempt_max=$(awk -v m="$max_time" 'BEGIN { print (m < 2) ? m : 2 }')
   budget_whole=${max_time%%.*}
-  deadline=$((SECONDS + ${budget_whole:-0} + 1))
+  deadline=$((SECONDS + 10#${budget_whole:-0} + 1))
   while kill -0 "$pid" 2>/dev/null; do
     code=$(curl -sS -o /dev/null -w '%{http_code}' \
       --connect-timeout "$connect_timeout" --max-time "$attempt_max" "$health" 2>/dev/null) || code=""

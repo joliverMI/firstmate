@@ -1693,6 +1693,47 @@ FAKE_PY
   pass "start keeps waiting for a slow but healthy bind instead of killing it"
 }
 
+# A stranger already answering on the address would answer the post-start
+# probe too, before the new server has even tried its bind - which is going
+# to fail. `start` must refuse up front, leave the stranger alone, and leave
+# no pidfile, rather than report a healthy start for a process dying on
+# EADDRINUSE behind it.
+test_start_refuses_an_address_something_else_already_answers_on() {
+  local frn_home frn_port frn_db waited out
+
+  frn_home="$FM_HOME/foreign-listener-case"
+  mkdir -p "$frn_home/state" "$frn_home/data" "$frn_home/www"
+  frn_db="$frn_home/data/dashboard.db"
+  frn_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()') \
+    || fail "could not allocate a port for the foreign-listener case"
+
+  python3 -m http.server --bind 127.0.0.1 --directory "$frn_home/www" "$frn_port" >/dev/null 2>&1 &
+  PORT_HOLDER_PID=$!
+  waited=0
+  until curl -sS -o /dev/null --connect-timeout 1 "http://127.0.0.1:$frn_port/" 2>/dev/null; do
+    waited=$((waited + 1))
+    [ "$waited" -gt 100 ] && fail "the foreign listener never came up"
+    sleep 0.05
+  done
+
+  if FM_HOME="$frn_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$frn_port" FM_DASHBOARD_DB="$frn_db" \
+      "$DASH" start >"$frn_home/start.out" 2>&1; then
+    fail "start reported success on an address something else was already answering on"
+  fi
+  out=$(cat "$frn_home/start.out")
+  assert_contains "$out" "already answers" \
+    "start's refusal did not say the address was already answered by something else"
+  [ -f "$frn_home/state/dashboard.pid" ] && fail "start left a pidfile pointing at a server it never got to bind"
+  kill -0 "$PORT_HOLDER_PID" 2>/dev/null || fail "start killed the foreign listener it does not own"
+  assert_contains "$(FM_HOME="$frn_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$frn_port" "$DASH" server-status 2>&1)" \
+    "process: not running" "server-status believes a board it never started is running"
+
+  kill "$PORT_HOLDER_PID" 2>/dev/null
+  wait "$PORT_HOLDER_PID" 2>/dev/null || true
+  PORT_HOLDER_PID=""
+  pass "start refuses an address something else already answers on, leaving it alone and no pidfile behind"
+}
+
 # A process can come up while never actually serving - the reachability check
 # exists so that case fails loudly instead of reporting a healthy start his
 # phone cannot reach.
@@ -1785,4 +1826,5 @@ test_star_and_delete
 test_the_captain_set_agrees_across_every_surface
 test_start_defaults_the_bind_host_from_config_dashboard_url
 test_start_waits_for_a_slow_but_healthy_bind
+test_start_refuses_an_address_something_else_already_answers_on
 test_start_fails_loudly_when_the_api_never_answers
