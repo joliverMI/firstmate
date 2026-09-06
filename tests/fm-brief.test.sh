@@ -416,6 +416,30 @@ test_physical_action_rule_exempts_the_sparse_reporting_rule() {
   pass "fm-brief.sh: the physical-action rule exempts its events from the sparse-reporting rule it names"
 }
 
+test_physical_action_contract_covers_secondmate_charter() {
+  local home brief foreign_root
+  home="$TMP_ROOT/physical-action-secondmate-home"
+  foreign_root="$TMP_ROOT/parent firstmate root"
+  mkdir -p "$home/data"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$foreign_root" FM_SECONDMATE_CHARTER='Handle routed domain work.' \
+    "$ROOT/bin/fm-brief.sh" brief-physical-secondmate-g1 --secondmate --no-projects >/dev/null 2>&1
+  brief="$home/data/brief-physical-secondmate-g1/brief.md"
+  assert_present "$brief" "secondmate charter was not scaffolded"
+  assert_grep "append the BEFORE, START, END, and RELEASE announcements in section 9 of your local \`AGENTS.md\` as their own status lines" "$brief" \
+    "secondmate charter is missing the physical-action announcement obligation"
+  assert_grep "An abort is an END, reported as promptly as a completion, never as silence" "$brief" \
+    "secondmate charter is missing the abort-is-an-end rule"
+  assert_grep "Append these even though they are the receipts and start acknowledgements those two lines otherwise forbid" "$brief" \
+    "secondmate charter does not override its no-start-acknowledgement default for physical work"
+  assert_grep "those two lines still govern every ordinary non-physical routed request" "$brief" \
+    "secondmate charter must keep the no-receipt default accurate for ordinary routed work"
+  assert_grep 'does not require a separate receipt or start acknowledgement' "$brief" \
+    "secondmate charter lost the ordinary-work no-receipt default the override is scoped against"
+  assert_no_grep "$foreign_root/AGENTS.md" "$brief" \
+    "secondmate charter must point at its own local AGENTS.md, never the parent home's"
+  pass "fm-brief.sh: the secondmate charter carries the physical-action announcement contract and overrides its no-receipt default"
+}
+
 test_physical_action_contract_covers_ship_and_scout() {
   local home ship_id ship_brief scout_id scout_brief foreign_root
   home="$TMP_ROOT/physical-action-home"
@@ -1063,6 +1087,7 @@ test_no_mistakes_dod_wording
 test_ship_project_memory_wording
 test_dod_rule_pointer_resolves_to_the_escalation_rule
 test_physical_action_contract_covers_ship_and_scout
+test_physical_action_contract_covers_secondmate_charter
 test_physical_action_rule_exempts_the_sparse_reporting_rule
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path

@@ -406,6 +406,7 @@ When Relay-linked work reaches a milestone or terminal state, load `fmx-respond`
 
 A secondmate's idle endpoint is healthy, and parent supervision relies on its routed status rather than treating a quiet pane as stale.
 Waiting on a healthy supervision cycle is silent; empty polls, elapsed time, and no-change updates are not captain-facing progress.
+Section 9's physical-action announcements are the exception: a BEFORE, START, END, RELEASE, or silence-break report is owed to the captain even when it carries no change.
 Never broadly kill watchers, especially never `pkill -f bin/fm-watch.sh`, because that can kill sibling firstmate homes.
 A forced repair must use the home-scoped owner path emitted by supervision instructions.
 
@@ -483,9 +484,12 @@ Any action that changes something in the captain's physical space - lights, audi
 5. SILENCE: during an announced action, an extended gap with no word is itself a reporting failure - break it by saying what is currently happening, even when the honest answer is "still working."
 
 The worker owes firstmate each of these as its own status line the moment it happens; firstmate owes the captain each of these the moment it arrives, relayed on its own rather than folded into the next routine update.
-This contract binds crewmates whose escalation runs through firstmate's own status and relay path; a persistent secondmate answers on the separate routed-reply contract in its charter brief, so that brief's "does not require a separate receipt or start acknowledgement" line stands unaffected.
+This contract binds every agent doing physical-action work: crewmates reporting through firstmate's own status and relay path, and persistent secondmates reporting over their existing routed status and escalation channel to the main firstmate.
+For a secondmate these announcements override its charter's "does not require a separate receipt or start acknowledgement" default, which continues to govern all of its ordinary non-physical routed work.
 The always-on watcher does not currently treat a `working:` status line as captain-relevant on its own, so the wake queue alone will not deliver BEFORE, START, or a silence-break while an announced physical action is under way.
-Firstmate therefore reads the crew's live status file and pane directly for the duration of such an action, the same active supervision it already owes for ordinary progress lines, rather than waiting to be woken.
+On every wake of any kind that arrives while an announced physical action is open, firstmate reads that agent's status file and pane before trusting the wake reason, the same active supervision it already owes for ordinary progress lines.
+That duty runs inside section 8's single live supervision cycle and never authorizes a second cycle or a poll loop of its own.
+A trust-registered custom check is the one existing way to add a between-wake cadence here, and its sweep interval makes it a partial backstop rather than an immediate relay.
 
 **Before asking the captain for his time, presence, or consent, re-check the most recent thing that failed.**
 One check, not a sweep of every precondition: the last failure is by far the most likely to recur, and checking further is ceremony paid for in his waiting.
