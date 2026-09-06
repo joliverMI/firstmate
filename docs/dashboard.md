@@ -15,7 +15,6 @@ It serves both the API and the built page from the same port - there is no separ
 That synchrony is what stops `restart` from ever running two servers against the same database at once, which is what the one-time migration below depends on (see "Why `testing` split into `testing` and `review`").
 Before acting on a recorded pid, `start`, `stop`, and `server-status` all check that the process behind it is still a dashboard server and not a number the host has since recycled: `start` and `server-status` read such a pid as no board running, and `stop` drops the stale pidfile instead of signalling whatever unrelated process inherited that pid.
 `restart` brings the board up even when its stop half had nothing to stop or refused - a crashed board recovers with one command - and a stop that genuinely refused says why on stderr instead of failing silently.
-The process is not currently registered with a supervisor (systemd, cron `@reboot`, or equivalent) - that registration is a deliberate follow-up for whoever deploys this, done once on the host that will run it continuously, not part of this change. Until it is, the board does not survive a host reboot even though its *data* does (see "Persistence" below).
 
 Reachable from the Admiral's phone the same way Lavish already is: bind to the host's tailnet address rather than `127.0.0.1`.
 
@@ -28,6 +27,18 @@ Once `config/dashboard-url` records that address (see "Server URL resolution" in
 For the same reason it refuses up front, leaving no pidfile, when something its pidfile does not track already answers on that address: the new server's bind would fail behind that stranger, and the probe would otherwise vouch for the wrong process.
 
 There is no login and no per-request auth - the same trust model the existing Lavish pages already use, appropriate for a tailnet-only surface with a single operator. If the board is ever exposed beyond the tailnet, that assumption needs revisiting before deploy, not after.
+
+### Surviving a host reboot
+
+`bin/fm-dashboard.sh install-boot` registers the board with the host's systemd **user** manager, once, on the host that runs it continuously.
+It writes and enables `~/.config/systemd/user/fm-dashboard.service`, a `WantedBy=default.target` unit that runs `bin/fm-dashboard.sh serve-foreground` - the same server in the foreground, resolving host, port and database through the same code `start` does - and restarts it on failure.
+It also runs `loginctl enable-linger`, without which a user unit waits for that user to log in rather than coming up with the host; if that needs privileges the command does not have, it still installs and enables the unit and prints the exact command to run by hand.
+`uninstall-boot` stops, disables and removes the unit, and deliberately leaves lingering alone, since other user units on the host depend on it.
+The unit is pinned to `$FM_HOME`'s own checkout and records the home it manages, so it can be installed from anywhere without ever pointing at a disposable task copy, and a secondmate home that shares a host with the primary's unit is unaffected by it.
+
+Once that unit manages a home, it owns that home's lifecycle: `start`, `stop` and `restart` act on the unit through `systemctl --user` rather than the pidfile, `start` refuses instead of racing a board the unit already has running, and `server-status` reports the unit's state and whether lingering is on instead of "no pid recorded".
+A board hand-started before the unit existed is still tracked by its pidfile and still holds the address the unit needs: `server-status` says so, and `restart` retires it and hands that address to the unit, so installing and handing over is `install-boot` then `restart`.
+Every one of those commands behaves exactly as described above on a home with no unit installed.
 
 ## Persistence
 
