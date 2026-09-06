@@ -1,0 +1,10 @@
+### bin/fm-test-run.sh with LC_ALL=C removed from comm (pre-fix bug reintroduced)
+not ok - --check-coverage under LC_ALL=en_US.utf8 exited 1
+--- output ---
+comm: file 2 is not in sorted order
+comm: input is not in sorted order
+exit=1
+
+### bin/fm-test-run.sh restored (fix present on main)
+ok - coverage guard verdict is locale-independent (checked under LC_ALL=en_US.utf8)
+exit=0

@@ -1,0 +1,12 @@
+### mutation A: document.instructions renamed to document.prompt (text kept in a comment)
+document.instructions is not a string
+not ok - .no-mistakes.yaml does not carry a string document.instructions
+exit=1
+### mutation B: instructions point at the wrong inventory file
+not ok - Document instructions do not point to the audience inventory (missing: 'docs/documentation-audiences.json')
+--- output ---
+Read docs/documentation-audiences.md and its machine-consumed docs/documentation-audiences.txt inventory before changing documentation. Apply the knowledge-placement policy in .agents/skills/firstmate-coding-guidelines/SKILL.md. For changed prose, verify audience, authoritative owner, current relevance, evidence destination, and unique safety facts, then review the complete branch diff again after every documentation or lint fix.
+exit=1
+### .no-mistakes.yaml restored
+ok - no-mistakes uses the supported trusted document.instructions schema
+exit=0
