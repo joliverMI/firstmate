@@ -1,0 +1,38 @@
+$ bin/fm-dashboard.sh --help | grep -n -A2 "install-boot\|uninstall-boot\|serve-foreground" (first hits)
+113:  fm-dashboard.sh install-boot                       (start at host boot)
+114:  fm-dashboard.sh uninstall-boot
+115:  fm-dashboard.sh serve-foreground                   (what the boot unit runs)
+118:Surviving a host reboot: `install-boot` writes and enables a systemd USER
+120:with $FM_DASHBOARD_UNIT_DIR), that runs `serve-foreground` - the same server
+132:that needs privileges it does not have. `uninstall-boot` stops, disables and
+
+$ bin/fm-dashboard.sh --help | sed -n "/Surviving a host reboot/,/^# The audit-tick/p"
+Surviving a host reboot: `install-boot` writes and enables a systemd USER
+unit, $HOME/.config/systemd/user/fm-dashboard.service (override the directory
+with $FM_DASHBOARD_UNIT_DIR), that runs `serve-foreground` - the same server
+in the foreground, resolving host, port and database exactly the way `start`
+does. It pins ExecStart to $FM_HOME/bin/fm-dashboard.sh, the tracked root of
+the home being installed, never to whatever checkout the command was run
+from, and records the resolved FM_HOME, host, port and database as unit
+`Environment=` lines so the unit binds the address that was reachable at
+install time. It refuses when that $FM_HOME is itself a linked git worktree
+(its .git is a pointer file rather than the repository), since a unit pinned
+to a task worktree dies with it, and names the primary checkout to pass as
+FM_HOME instead; a home that is not a git checkout is unaffected. It also
+runs `loginctl enable-linger` so the unit comes up at
+boot with nobody logged in, and prints the exact command to run by hand when
+that needs privileges it does not have. `uninstall-boot` stops, disables and
+removes the unit; it deliberately leaves lingering alone, since other user
+units on the host depend on it.
+
+Once that unit exists FOR THIS $FM_HOME, it owns the lifecycle: `start`,
+`stop` and `restart` act on the unit through `systemctl --user` instead of
+the pidfile, `start` refuses rather than racing a server the unit already has
+running, and `server-status` reports the unit's state instead of "no pid
+recorded". A server hand-started before the unit existed is still tracked by
+its pidfile: `server-status` says so, and `stop` and `restart` retire it as
+well, so `restart` is the whole handover. Every one of those commands behaves
+exactly as it always did on a home with no unit installed, or when the
+installed unit names a different FM_HOME.
+
+The audit-tick/audit-claim/audit-release/audit-status quartet is the fleet

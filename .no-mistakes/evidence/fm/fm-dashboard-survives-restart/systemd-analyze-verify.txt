@@ -1,0 +1,5 @@
+$ systemd-analyze --user verify /tmp/fm-boot-evidence/units/fm-dashboard.service   (real systemd 255, read-only)
+[exit 0]
+
+$ systemd-analyze --user verify --recursive-errors=no ...
+[exit 0]

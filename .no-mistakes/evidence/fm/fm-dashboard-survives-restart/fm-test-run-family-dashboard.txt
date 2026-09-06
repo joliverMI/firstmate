@@ -1,0 +1,4 @@
+tests/fm-dashboard-boot.test.sh
+tests/fm-dashboard-card-link.test.sh
+tests/fm-dashboard.test.sh
+tests/fm-fleet-audit.test.sh

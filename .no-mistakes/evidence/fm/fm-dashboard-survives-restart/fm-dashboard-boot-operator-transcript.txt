@@ -1,0 +1,167 @@
+# Operator transcript: fake systemctl/loginctl on PATH, unit dir /tmp/fm-boot-evidence/units, FM_HOME=/tmp/fm-boot-evidence/firstmate-home
+# config/dashboard-url = http://127.0.0.1:35683
+
+## 1. Today's situation: a board hand-started by an operator, tracked only by its pidfile
+
+$ fm-dashboard.sh start
+fleet dashboard started (pid 2129924) - http://127.0.0.1:35683/  api reachable at http://127.0.0.1:35683/api/health  log: /tmp/fm-boot-evidence/firstmate-home/state/dashboard.log
+[exit 0]
+
+$ fm-dashboard.sh server-status
+process: running (pid 2129924)
+api:     reachable at http://127.0.0.1:35683
+[exit 0]
+
+## 2. install-boot: write + enable the unit, enable lingering; the unit is deliberately not started
+
+$ fm-dashboard.sh install-boot
+installed fm-dashboard.service -> /tmp/fm-boot-evidence/units/fm-dashboard.service
+binds http://127.0.0.1:35683/  db /tmp/fm-boot-evidence/firstmate-home/data/dashboard.db  home /tmp/fm-boot-evidence/firstmate-home
+lingering enabled for joliv
+a hand-started board (pid 2129924) still holds that address - hand it over with: fm-dashboard.sh restart
+[exit 0]
+
+--- generated /tmp/fm-boot-evidence/units/fm-dashboard.service ---
+[Unit]
+Description=Admiral's Fleet Dashboard (firstmate)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment="FM_HOME=/tmp/fm-boot-evidence/firstmate-home"
+Environment="FM_DASHBOARD_HOST=127.0.0.1"
+Environment="FM_DASHBOARD_PORT=35683"
+Environment="FM_DASHBOARD_DB=/tmp/fm-boot-evidence/firstmate-home/data/dashboard.db"
+ExecStart="/tmp/fm-boot-evidence/firstmate-home/bin/fm-dashboard.sh" serve-foreground
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+--- end unit ---
+
+$ fm-dashboard.sh server-status
+process: unit-managed by fm-dashboard.service (inactive, enabled)
+boot:    lingering on for joliv - the unit comes up with the host
+process: ALSO running from a pidfile (pid 2129924), hand-started before the unit - hand it over with: fm-dashboard.sh restart
+api:     reachable at http://127.0.0.1:35683
+[exit 0]
+
+## 3. start must not race the hand-started board that still holds the port
+
+$ fm-dashboard.sh start
+fm-dashboard.sh: something already answers at http://127.0.0.1:35683/api/health (HTTP 200) that fm-dashboard.service does not manage - refusing to start a second server on that address. See: fm-dashboard.sh server-status
+[exit 1]
+
+## 4. restart is the whole handover: retire the hand-started board, bring the unit up, prove the API answers
+
+$ fm-dashboard.sh restart
+stopped (pid 2129924)
+fleet dashboard started by fm-dashboard.service - http://127.0.0.1:35683/  api reachable at http://127.0.0.1:35683/api/health
+[exit 0]
+hand-started pid 2129924 alive? no; pidfile present? no
+unit main pid: 2130758 -> python3 /tmp/fm-boot-evidence/firstmate-home/bin/fleet-dashboard/server/main.py --host 127.0.0.1 --port 35683 --db /tmp/fm-boot-evidence/firstmate-home/data/dashboard.db
+
+$ fm-dashboard.sh server-status
+process: unit-managed by fm-dashboard.service (active, enabled)
+boot:    lingering on for joliv - the unit comes up with the host
+api:     reachable at http://127.0.0.1:35683
+[exit 0]
+
+## 5. a second start refuses instead of double-starting the unit-managed board
+
+$ fm-dashboard.sh start
+fm-dashboard.sh: already running under the systemd user unit fm-dashboard.service - see: fm-dashboard.sh server-status
+[exit 1]
+
+## 6. simulated host reboot: the host goes dark (server killed), then the user manager boots default.target
+after host-off: health HTTP 000health: no answer
+fake boot: started fm-dashboard.service (enabled, WantedBy=default.target)
+after boot, no operator involved: health HTTP 200
+
+$ fm-dashboard.sh server-status
+process: unit-managed by fm-dashboard.service (active, enabled)
+boot:    lingering on for joliv - the unit comes up with the host
+api:     reachable at http://127.0.0.1:35683
+[exit 0]
+
+## 7. stop goes through systemctl --user; server-status still speaks for the unit
+
+$ fm-dashboard.sh stop
+stopped (systemd user unit fm-dashboard.service)
+[exit 0]
+
+$ fm-dashboard.sh server-status
+process: unit-managed by fm-dashboard.service (inactive, enabled)
+boot:    lingering on for joliv - the unit comes up with the host
+api:     UNREACHABLE at http://127.0.0.1:35683
+[exit 0]
+
+## 8. uninstall-boot returns the home to the pidfile lifecycle and leaves lingering alone
+
+$ fm-dashboard.sh uninstall-boot
+removed fm-dashboard.service (/tmp/fm-boot-evidence/units/fm-dashboard.service) - the board no longer starts at boot, and start/stop/restart go back to the pidfile
+lingering left as it is: other user units on this host depend on it
+[exit 0]
+
+$ fm-dashboard.sh server-status
+process: not running (no active pid recorded by this script)
+api:     UNREACHABLE at http://127.0.0.1:35683
+[exit 0]
+unit file still present? no; linger still on? yes
+
+## 9. when enable-linger needs privileges it cannot get: unit still installed+enabled, exact command printed
+
+$ fm-dashboard.sh install-boot
+installed fm-dashboard.service -> /tmp/fm-boot-evidence/units/fm-dashboard.service
+binds http://127.0.0.1:35683/  db /tmp/fm-boot-evidence/firstmate-home/data/dashboard.db  home /tmp/fm-boot-evidence/firstmate-home
+lingering NOT enabled - the board will wait for a login instead of coming up with the host. Run this yourself: sudo loginctl enable-linger joliv
+bring it up now with: fm-dashboard.sh start
+[exit 0]
+unit enabled? yes
+
+$ fm-dashboard.sh uninstall-boot
+removed fm-dashboard.service (/tmp/fm-boot-evidence/units/fm-dashboard.service) - the board no longer starts at boot, and start/stop/restart go back to the pidfile
+lingering left as it is: other user units on this host depend on it
+[exit 0]
+
+## 10. install-boot run with FM_HOME pointing at THIS disposable task worktree refuses
+fm-dashboard.sh: FM_HOME=/home/joliv/.no-mistakes/worktrees/4cc5c0885385/01M1VEWW8WKJR2XJ2MW9WJ74B2 is a linked git worktree (/home/joliv/.no-mistakes/worktrees/4cc5c0885385/01M1VEWW8WKJR2XJ2MW9WJ74B2/.git is a pointer file, not the repository) - a unit pinned there dies with the worktree. Install from the tracked root instead: FM_HOME=<primary checkout> fm-dashboard.sh install-boot
+[exit 1]
+
+## every systemctl/loginctl call the script made:
+systemctl --user daemon-reload
+systemctl --user enable fm-dashboard.service
+loginctl show-user joliv --property=Linger
+loginctl enable-linger joliv
+systemctl --user is-active fm-dashboard.service
+systemctl --user is-enabled fm-dashboard.service
+loginctl show-user joliv --property=Linger
+systemctl --user is-active fm-dashboard.service
+systemctl --user is-active fm-dashboard.service
+systemctl --user is-active fm-dashboard.service
+systemctl --user start fm-dashboard.service
+systemctl --user is-active fm-dashboard.service
+systemctl --user is-enabled fm-dashboard.service
+loginctl show-user joliv --property=Linger
+systemctl --user is-active fm-dashboard.service
+systemctl --user fake-boot
+systemctl --user is-active fm-dashboard.service
+systemctl --user is-enabled fm-dashboard.service
+loginctl show-user joliv --property=Linger
+systemctl --user is-active fm-dashboard.service
+systemctl --user stop fm-dashboard.service
+systemctl --user is-active fm-dashboard.service
+systemctl --user is-enabled fm-dashboard.service
+loginctl show-user joliv --property=Linger
+systemctl --user is-active fm-dashboard.service
+systemctl --user disable fm-dashboard.service
+systemctl --user daemon-reload
+systemctl --user daemon-reload
+systemctl --user enable fm-dashboard.service
+loginctl show-user joliv --property=Linger
+loginctl enable-linger joliv
+systemctl --user is-active fm-dashboard.service
+systemctl --user disable fm-dashboard.service
+systemctl --user daemon-reload

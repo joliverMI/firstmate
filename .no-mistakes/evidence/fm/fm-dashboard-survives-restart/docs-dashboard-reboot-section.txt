@@ -1,0 +1,17 @@
+$ grep -c "not currently registered with a supervisor" docs/dashboard.md
+0
+$ sed -n "/### Surviving a host reboot/,/^## Persistence/p" docs/dashboard.md
+### Surviving a host reboot
+
+`bin/fm-dashboard.sh install-boot` registers the board with the host's systemd **user** manager, once, on the host that runs it continuously.
+It writes and enables `~/.config/systemd/user/fm-dashboard.service`, a `WantedBy=default.target` unit that runs `bin/fm-dashboard.sh serve-foreground` - the same server in the foreground, resolving host, port and database through the same code `start` does - and restarts it on failure.
+It also runs `loginctl enable-linger`, without which a user unit waits for that user to log in rather than coming up with the host; if that needs privileges the command does not have, it still installs and enables the unit and prints the exact command to run by hand.
+`uninstall-boot` stops, disables and removes the unit, and deliberately leaves lingering alone, since other user units on the host depend on it.
+The unit is pinned to `$FM_HOME`'s own checkout and records the home it manages, so it can be installed from anywhere without ever pointing at a disposable task copy, and a secondmate home that shares a host with the primary's unit is unaffected by it.
+`install-boot` refuses outright when `$FM_HOME` is itself a linked git worktree, naming the primary checkout to pass instead, so a unit can never be pinned to a task copy that is later deleted.
+
+Once that unit manages a home, it owns that home's lifecycle: `start`, `stop` and `restart` act on the unit through `systemctl --user` rather than the pidfile, `start` refuses instead of racing a board the unit already has running, and `server-status` reports the unit's state and whether lingering is on instead of "no pid recorded".
+A board hand-started before the unit existed is still tracked by its pidfile and still holds the address the unit needs: `server-status` says so, and `restart` retires it and hands that address to the unit, so installing and handing over is `install-boot` then `restart`.
+Every one of those commands behaves exactly as described above on a home with no unit installed.
+
+## Persistence

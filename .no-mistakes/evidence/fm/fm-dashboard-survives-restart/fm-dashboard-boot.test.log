@@ -1,0 +1,8 @@
+ok - install-boot writes a foreground unit pinned to the home's own script, enables it, and turns lingering on
+ok - install-boot refuses a linked worktree home and names the primary checkout to pass, leaving real checkouts and plain homes alone
+ok - a trailing slash, a symlink, a space or a percent sign in the home never splits it from its own unit
+ok - a refused enable-linger still installs and enables the unit, and names the command to run by hand
+ok - once the unit manages the home, start, stop, restart and server-status all speak for the unit
+ok - restart retires the hand-started board and hands its address to the unit, losing nothing
+ok - a unit that names another home leaves this home's pidfile lifecycle exactly as it was
+ok - uninstall-boot stops, disables and removes the unit, and the home goes back to the pidfile lifecycle
