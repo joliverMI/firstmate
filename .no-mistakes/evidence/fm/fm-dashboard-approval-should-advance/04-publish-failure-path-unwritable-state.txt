@@ -1,0 +1,44 @@
+### Failure path: state/ made unwritable before the approval, so firstmate's queue writer cannot take its lock
+POST /api/tasks/unwritable-queue-still-records-his-word-js3i/approve-plan ->
+{"status":"not_started","plan_approved":true,"plan_approval_stale":false}
+approve request wall time: 5.039888174s (publish bound is 5s)
+
+### The card still moved, approval preserved:
+{
+  "status": "not_started",
+  "plan_approved": true,
+  "plan_approved_text": "Retire the spare NAS.",
+  "history": [
+    {
+      "from_status": null,
+      "to_status": "needs_review",
+      "note": "created"
+    },
+    {
+      "from_status": "needs_review",
+      "to_status": "not_started",
+      "note": "approved by the Admiral; awaiting dispatch"
+    }
+  ]
+}
+
+### Wake queue unchanged - no half-written record (md5 before=44b33a90bb28542c3fba917a3e37cb71):
+44b33a90bb28542c3fba917a3e37cb71  /tmp/fm-dash-approval-demo/state/.wake-queue
+1 /tmp/fm-dash-approval-demo/state/.wake-queue
+
+### Server log - loud:
+fleet dashboard listening on http://127.0.0.1:53675  (db: /tmp/fm-dash-approval-demo/data/dashboard.db)
+dashboard: APPROVAL NOT ANNOUNCED for unwritable-queue-still-records-his-word-js3i - the card moved to not_started but firstmate was not woken: firstmate's wake-queue writer did not finish within 5s. Dispatch it by hand.
+
+### Board's discrepancy log (sqlite):
+audit_log ['id', 'task_id', 'kind', 'text', 'key', 'occurrences', 'created_at', 'last_seen_at']
+   (1, 'unwritable-queue-still-records-his-word-js3i', 'error', "approved and moved to not_started, but firstmate could not be notified (firstmate's wake-queue writer did not finish within 5s) - this card needs dispatching by hand", 'approval-wake-unpublished', 1, '2026-09-06T15:07:33Z', '2026-09-06T15:07:33Z')
+### state/ after the timed-out publish (no leftover lock expected):
+-rw-rw-r-- 1 joliv joliv  205 Sep  6 11:06 .wake-queue
+-rw-rw-r-- 1 joliv joliv    2 Sep  6 11:06 .wake-queue.seq
+
+### Next approval once state/ is writable again:
+{"status":"not_started","plan_approved":true}
+wake queue now:
+1788707191	1	check	dashboard-approval:replace-the-failed-rack-switch-6732	check: dashboard-approval replace-the-failed-rack-switch-6732 - he approved the plan; card moved to not_started, awaiting dispatch
+1788707269	2	check	dashboard-approval:queue-recovers-after-the-outage-wzy1	check: dashboard-approval queue-recovers-after-the-outage-wzy1 - he approved the plan; card moved to not_started, awaiting dispatch

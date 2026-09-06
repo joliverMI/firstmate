@@ -1,0 +1,43 @@
+### Card after the Admiral clicked 'Approve this plan' (bin/fm-dashboard.sh show replace-the-failed-rack-switch-6732 --json)
+{
+  "id": "replace-the-failed-rack-switch-6732",
+  "status": "not_started",
+  "review_plan": "Order the replacement switch and swap it during Thursday's window.",
+  "plan_approved": true,
+  "plan_approval_stale": false,
+  "plan_approved_text": "Order the replacement switch and swap it during Thursday's window.",
+  "plan_approved_at": "2026-09-06T15:06:31Z",
+  "waiting_on_id": null,
+  "waiting_reason": null,
+  "needs_action_reason": null,
+  "status_history": [
+    {
+      "id": 1,
+      "task_id": "replace-the-failed-rack-switch-6732",
+      "from_status": null,
+      "to_status": "needs_review",
+      "changed_at": "2026-09-06T15:05:25Z",
+      "note": "created"
+    },
+    {
+      "id": 2,
+      "task_id": "replace-the-failed-rack-switch-6732",
+      "from_status": "needs_review",
+      "to_status": "not_started",
+      "changed_at": "2026-09-06T15:06:31Z",
+      "note": "approved by the Admiral; awaiting dispatch"
+    }
+  ]
+}
+
+### Wake queue firstmate's writer appended (/tmp/fm-dash-approval-demo/state/.wake-queue, tab-separated: epoch seq kind key payload)
+1788707191 <TAB> 1 <TAB> check <TAB> dashboard-approval:replace-the-failed-rack-switch-6732 <TAB> check: dashboard-approval replace-the-failed-rack-switch-6732 - he approved the plan; card moved to not_started, awaiting dispatch$
+seq file: 1
+
+### firstmate's own reader: bin/fm-wake-drain.sh against a copy of that state
+1788707191	1	check	dashboard-approval:replace-the-failed-rack-switch-6732	check: dashboard-approval replace-the-failed-rack-switch-6732 - he approved the plan; card moved to not_started, awaiting dispatch
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 2420980.1788707207.pfx9Ds
+drain exit=0
+
+### Server log (/tmp/fm-dash-approval-demo/state/dashboard.log)
+fleet dashboard listening on http://127.0.0.1:53675  (db: /tmp/fm-dash-approval-demo/data/dashboard.db)

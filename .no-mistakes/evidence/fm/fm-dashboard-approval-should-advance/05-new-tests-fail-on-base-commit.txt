@@ -1,0 +1,6 @@
+### tests/fm-dashboard.test.sh from 4fb4b0b run against the BASE tree (d6a461b): the suite stops at the first approval-advance assertion
+ok - no path - either spelling, a blank reason, or PATCH - can put a card in needs-action without a real ask
+ok - needs-attention is accepted as an input alias for needs-action, enforced the same way, and never emitted
+ok - needs-review refuses a missing, blank, or absent plan on every writer, and accepts one the card already holds
+not ok - approving a plan left the card in needs_review - a status he has answered but nobody moved him out of (missing: 'status:   not_started')
+exit=1
