@@ -104,10 +104,13 @@
 #       `start`'s bind host defaults to $FM_DASHBOARD_HOST when set, else the
 #       host already recorded in config/dashboard-url, else 127.0.0.1 - so a
 #       plain restart keeps whatever address was reachable before rather than
-#       reverting to localhost-only. `start` then refuses to report success
-#       until the API actually answers on that address (polling for up to
-#       $FM_DASHBOARD_MAX_TIME seconds, default 20), stopping the process
-#       and dying loudly instead of leaving a pane he cannot reach.
+#       reverting to localhost-only (the port still comes from
+#       $FM_DASHBOARD_PORT, default 8420). `start` refuses up front, leaving
+#       no pidfile, when something the pidfile does not track already answers
+#       at http://<host>:<port>/api/health; otherwise it refuses to report
+#       success until the API actually answers on that address (polling for
+#       up to $FM_DASHBOARD_MAX_TIME seconds, default 20), stopping the
+#       process and dying loudly instead of leaving a pane he cannot reach.
 #   fm-dashboard.sh --help
 #
 # The audit-tick/audit-claim/audit-release/audit-status quartet is the fleet
