@@ -70,6 +70,9 @@ printf '%s\n' "${args[*]}" >>"$FAKE_SYSTEMD_LOG"
 verb=${args[0]:-}
 unit_file=${FM_DASHBOARD_UNIT_DIR:-$HOME/.config/systemd/user}/fm-dashboard.service
 running() { [ -f "$state/main.pid" ] && kill -0 "$(cat "$state/main.pid")" 2>/dev/null; }
+# A unit-file word the way systemd reads it: surrounding double quotes dropped,
+# and %% the only spelling of a literal percent sign.
+unquote() { local v=$1; v=${v#\"}; v=${v%\"}; printf '%s' "${v//%%/%}"; }
 case "$verb" in
   daemon-reload) ;;
   enable) [ -f "$unit_file" ] || exit 1; : >"$state/enabled" ;;
@@ -84,10 +87,14 @@ case "$verb" in
     [ -f "$unit_file" ] || exit 1
     running && exit 0
     exec_line=$(sed -n 's/^ExecStart=//p' "$unit_file" | head -n1)
+    case "$exec_line" in
+      \"*) rest=${exec_line#\"}; exec_path=$(unquote "\"${rest%%\"*}\""); exec_args=${rest#*\"} ;;
+      *) exec_path=${exec_line%% *}; exec_args=${exec_line#* } ;;
+    esac
     env_args=()
-    while IFS= read -r line; do env_args+=("$line"); done < <(sed -n 's/^Environment=//p' "$unit_file")
+    while IFS= read -r line; do env_args+=("$(unquote "$line")"); done < <(sed -n 's/^Environment=//p' "$unit_file")
     # shellcheck disable=SC2086
-    nohup env "${env_args[@]}" $exec_line >"$state/unit.log" 2>&1 &
+    nohup env "${env_args[@]}" "$exec_path" $exec_args >"$state/unit.log" 2>&1 &
     echo $! >"$state/main.pid" ;;
   stop)
     if running; then
@@ -134,11 +141,11 @@ free_port() {
 # A home laid out the way a real one is: $FM_HOME/bin is the tracked root's bin,
 # which is what `install-boot` must pin ExecStart to - not the checkout this
 # test happens to run the script from.
-make_home() {  # <name> -> echoes the home path
+make_home() {  # <name> -> echoes the home's physical path
   local home="$TMP_ROOT/$1"
   mkdir -p "$home/state" "$home/data" "$home/config"
   ln -s "$ROOT/bin" "$home/bin"
-  printf '%s\n' "$home"
+  (cd "$home" && pwd -P)
 }
 
 # The unit is not running yet at this point in any case that calls this.
@@ -161,13 +168,13 @@ test_install_boot_writes_and_enables_the_unit() {
     || { printf '%s\n' "$out" >&2; fail "install-boot failed"; }
 
   assert_present "$UNIT" "install-boot did not write the unit file"
-  assert_grep_line "ExecStart=$home/bin/fm-dashboard.sh serve-foreground" "$UNIT" \
+  assert_grep_line "ExecStart=\"$home/bin/fm-dashboard.sh\" serve-foreground" "$UNIT" \
     "the unit does not run the home's own script in the foreground"
-  assert_grep_line "Environment=FM_HOME=$home" "$UNIT" "the unit does not record the home it manages"
-  assert_grep_line "Environment=FM_DASHBOARD_HOST=127.0.0.1" "$UNIT" \
+  assert_grep_line "Environment=\"FM_HOME=$home\"" "$UNIT" "the unit does not record the home it manages"
+  assert_grep_line "Environment=\"FM_DASHBOARD_HOST=127.0.0.1\"" "$UNIT" \
     "the unit does not bind the host start would have defaulted to from config/dashboard-url"
-  assert_grep_line "Environment=FM_DASHBOARD_PORT=$port" "$UNIT" "the unit does not record the resolved port"
-  assert_grep_line "Environment=FM_DASHBOARD_DB=$home/data/dashboard.db" "$UNIT" \
+  assert_grep_line "Environment=\"FM_DASHBOARD_PORT=$port\"" "$UNIT" "the unit does not record the resolved port"
+  assert_grep_line "Environment=\"FM_DASHBOARD_DB=$home/data/dashboard.db\"" "$UNIT" \
     "the unit does not record the resolved database"
   assert_grep_line "WantedBy=default.target" "$UNIT" "the unit is not wanted by default.target, so it never starts at boot"
   assert_grep_line "Restart=on-failure" "$UNIT" "the unit does not restart on failure"
@@ -227,8 +234,8 @@ test_unit_managed_lifecycle_is_coherent() {
 
   out=$(env -u FM_DASHBOARD_HOST -u FM_DASHBOARD_DB FM_DASHBOARD_PORT="$port" \
     FM_HOME="$home" "$DASH" server-status 2>&1)
-  assert_contains "$out" "unit-managed by fm-dashboard.service" "server-status did not report the board as unit-managed"
-  assert_contains "$out" "active" "server-status did not report the unit's own state"
+  assert_contains "$out" "process: unit-managed by fm-dashboard.service (active, enabled)" \
+    "server-status did not report the board as unit-managed with the unit's own state"
   assert_not_contains "$out" "no active pid recorded" \
     "server-status still reports a running unit-managed board as no pid recorded"
   assert_contains "$out" "api:     reachable at $url" "server-status did not report API reachability"
@@ -254,9 +261,8 @@ test_unit_managed_lifecycle_is_coherent() {
 
   out=$(env -u FM_DASHBOARD_HOST -u FM_DASHBOARD_DB FM_DASHBOARD_PORT="$port" \
     FM_HOME="$home" "$DASH" server-status 2>&1)
-  assert_contains "$out" "unit-managed by fm-dashboard.service" \
-    "a stopped unit-managed board stopped reporting as unit-managed"
-  assert_contains "$out" "inactive" "server-status did not report the stopped unit's state"
+  assert_contains "$out" "process: unit-managed by fm-dashboard.service (inactive, enabled)" \
+    "server-status did not report the stopped unit-managed board with the unit's own state"
 
   pass "once the unit manages the home, start, stop, restart and server-status all speak for the unit"
 }
@@ -388,7 +394,81 @@ test_uninstall_boot_returns_the_home_to_the_pidfile_lifecycle() {
   pass "uninstall-boot stops, disables and removes the unit, and the home goes back to the pidfile lifecycle"
 }
 
+test_install_boot_refuses_a_linked_worktree_home() {
+  local worktree primary checkout out
+  worktree=$(make_home task-worktree)
+  primary="$TMP_ROOT/primary-checkout"
+  printf 'gitdir: %s/.git/worktrees/task-worktree\n' "$primary" >"$worktree/.git"
+  reset_fake_systemd
+  rm -f "$UNIT"
+
+  out=$(env -u FM_DASHBOARD_HOST -u FM_DASHBOARD_DB FM_DASHBOARD_PORT=8420 \
+    FM_HOME="$worktree" "$DASH" install-boot 2>&1) \
+    && fail "install-boot pinned the unit to a linked worktree that will be deleted out from under it"
+  assert_contains "$out" "$worktree" "the refusal did not name the worktree home it resolved"
+  assert_contains "$out" "FM_HOME=$primary fm-dashboard.sh install-boot" \
+    "the refusal did not name the primary checkout to pass as FM_HOME"
+  assert_absent "$UNIT" "install-boot wrote a unit file before refusing"
+  assert_no_grep "enable fm-dashboard.service" "$FAKE_SYSTEMD_LOG" "install-boot enabled a unit it refused to install"
+
+  # A primary checkout's .git is a directory, and a home that is no git checkout
+  # at all has none: both install.
+  checkout=$(make_home primary-style)
+  mkdir -p "$checkout/.git"
+  out=$(env -u FM_DASHBOARD_HOST -u FM_DASHBOARD_DB FM_DASHBOARD_PORT=8420 \
+    FM_HOME="$checkout" "$DASH" install-boot 2>&1) \
+    || { printf '%s\n' "$out" >&2; fail "install-boot refused a primary checkout whose .git is a directory"; }
+  assert_grep_line "Environment=\"FM_HOME=$checkout\"" "$UNIT" "the unit does not record the primary checkout"
+
+  pass "install-boot refuses a linked worktree home and names the primary checkout to pass, leaving real checkouts and plain homes alone"
+}
+
+test_one_home_under_two_spellings_is_still_the_units_home() {
+  local home alias port url out
+  home=$(make_home "odd home %d")
+  alias="$TMP_ROOT/alias-home"
+  ln -s "$home" "$alias"
+  port=$(free_port) || fail "could not allocate a port"
+  url="http://127.0.0.1:$port"
+  printf '%s\n' "$url" >"$home/config/dashboard-url"
+  reset_fake_systemd
+  rm -f "$UNIT"
+
+  env -u FM_DASHBOARD_HOST -u FM_DASHBOARD_DB FM_DASHBOARD_PORT="$port" \
+    FM_HOME="$home/" "$DASH" install-boot >"$home/install.out" 2>&1 \
+    || { cat "$home/install.out" >&2; fail "install-boot failed for a home spelled with a trailing slash"; }
+  assert_grep_line "Environment=\"FM_HOME=${home//%/%%}\"" "$UNIT" \
+    "the unit did not record the home's one physical path as a systemd-quoted word"
+
+  out=$(env -u FM_DASHBOARD_HOST -u FM_DASHBOARD_DB FM_DASHBOARD_PORT="$port" \
+    FM_HOME="$alias" "$DASH" start 2>&1) \
+    || { printf '%s\n' "$out" >&2; cat "$FAKE_SYSTEMD_STATE/unit.log" 2>/dev/null >&2; fail "start through a symlinked spelling of the unit's home failed"; }
+  STARTED_PIDS+=("$(cat "$FAKE_SYSTEMD_STATE/main.pid" 2>/dev/null)")
+  assert_contains "$out" "started by fm-dashboard.service" \
+    "start through another spelling of the home launched a pidfile server beside the unit"
+  assert_absent "$home/state/dashboard.pid" "a second spelling of the unit's home got its own pidfile"
+  assert_contains "$out" "api reachable at $url/api/health" \
+    "the unit-managed board did not answer on the address recorded for a home with a space and a percent sign"
+
+  out=$(env -u FM_DASHBOARD_HOST -u FM_DASHBOARD_DB FM_DASHBOARD_PORT="$port" \
+    FM_HOME="$alias/" "$DASH" server-status 2>&1)
+  assert_contains "$out" "process: unit-managed by fm-dashboard.service (active, enabled)" \
+    "server-status under another spelling of the home did not see the unit"
+  assert_present "$home/data/dashboard.db" "the unit-managed server did not open the database recorded for the home"
+
+  env -u FM_DASHBOARD_HOST -u FM_DASHBOARD_DB FM_DASHBOARD_PORT="$port" \
+    FM_HOME="$alias" "$DASH" stop >/dev/null 2>&1 || fail "could not stop the unit-managed board through the alias spelling"
+  env -u FM_DASHBOARD_HOST -u FM_DASHBOARD_DB FM_DASHBOARD_PORT="$port" \
+    FM_HOME="$alias" "$DASH" uninstall-boot >/dev/null 2>&1 \
+    || fail "uninstall-boot through another spelling of the unit's home refused"
+  assert_absent "$UNIT" "uninstall-boot left the unit behind"
+
+  pass "a trailing slash, a symlink, a space or a percent sign in the home never splits it from its own unit"
+}
+
 test_install_boot_writes_and_enables_the_unit
+test_install_boot_refuses_a_linked_worktree_home
+test_one_home_under_two_spellings_is_still_the_units_home
 test_install_boot_prints_the_command_when_lingering_needs_privileges
 test_unit_managed_lifecycle_is_coherent
 test_restart_hands_a_hand_started_board_over_to_the_unit

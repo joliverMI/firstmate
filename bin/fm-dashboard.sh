@@ -124,7 +124,11 @@
 # the home being installed, never to whatever checkout the command was run
 # from, and records the resolved FM_HOME, host, port and database as unit
 # `Environment=` lines so the unit binds the address that was reachable at
-# install time. It also runs `loginctl enable-linger` so the unit comes up at
+# install time. It refuses when that $FM_HOME is itself a linked git worktree
+# (its .git is a pointer file rather than the repository), since a unit pinned
+# to a task worktree dies with it, and names the primary checkout to pass as
+# FM_HOME instead; a home that is not a git checkout is unaffected. It also
+# runs `loginctl enable-linger` so the unit comes up at
 # boot with nobody logged in, and prints the exact command to run by hand when
 # that needs privileges it does not have. `uninstall-boot` stops, disables and
 # removes the unit; it deliberately leaves lingering alone, since other user
@@ -749,16 +753,54 @@ DASHBOARD_UNIT=fm-dashboard.service
 dashboard_unit_dir() { printf '%s' "${FM_DASHBOARD_UNIT_DIR:-${HOME:-/nonexistent}/.config/systemd/user}"; }
 dashboard_unit_path() { printf '%s/%s' "$(dashboard_unit_dir)" "$DASHBOARD_UNIT"; }
 
+dashboard_unit_quote() {  # <value> -> the value as a double-quoted unit-file word
+  local v=$1
+  v=${v//\\/\\\\}
+  v=${v//\"/\\\"}
+  v=${v//%/%%}
+  printf '"%s"' "$v"
+}
+
+dashboard_unit_unquote() {  # <quoted word> -> the value dashboard_unit_quote was given
+  local v=$1
+  v=${v#\"}; v=${v%\"}
+  v=${v//%%/%}
+  v=${v//\\\"/\"}
+  v=${v//\\\\/\\}
+  printf '%s' "$v"
+}
+
 dashboard_unit_home() {
-  local path; path=$(dashboard_unit_path)
+  local path raw; path=$(dashboard_unit_path)
   [ -f "$path" ] || return 1
-  sed -n 's/^Environment=FM_HOME=//p' "$path" | head -n1
+  raw=$(sed -n 's/^Environment="FM_HOME=\(.*\)"$/\1/p' "$path" | head -n1)
+  [ -n "$raw" ] || return 0
+  dashboard_unit_unquote "\"$raw\""
+}
+
+dashboard_home_key() {  # <dir> -> its physical path, or the spelling given when it cannot be entered
+  (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"
+}
+
+dashboard_same_home() {  # <a> <b>
+  [ -n "$1" ] && [ -n "$2" ] && [ "$(dashboard_home_key "$1")" = "$(dashboard_home_key "$2")" ]
 }
 
 dashboard_unit_manages_this_home() {
   command -v systemctl >/dev/null 2>&1 || return 1
   local home; home=$(dashboard_unit_home) || return 1
-  [ -n "$home" ] && [ "$home" = "$FM_HOME" ]
+  dashboard_same_home "$home" "$FM_HOME"
+}
+
+dashboard_primary_checkout() {  # <linked worktree> -> the checkout whose .git it links into
+  local gitdir; gitdir=$(sed -n 's/^gitdir: //p' "$1/.git" | head -n1)
+  [ -n "$gitdir" ] || return 1
+  case "$gitdir" in /*) ;; *) gitdir="$1/$gitdir" ;; esac
+  gitdir=${gitdir%/worktrees/*}
+  case "$gitdir" in
+    */.git) printf '%s' "${gitdir%/.git}" ;;
+    *) return 1 ;;
+  esac
 }
 
 dashboard_unit_active() { systemctl --user is-active --quiet "$DASHBOARD_UNIT" 2>/dev/null; }
@@ -1034,6 +1076,12 @@ cmd_serve_foreground() {
 cmd_install_boot() {
   command -v systemctl >/dev/null 2>&1 \
     || die "requires 'systemctl' on PATH - without a systemd user manager there is no unit to install"
+  FM_HOME=$(dashboard_home_key "$FM_HOME")
+  if [ -f "$FM_HOME/.git" ]; then
+    local primary
+    primary=$(dashboard_primary_checkout "$FM_HOME") || primary='<primary checkout>'
+    die "FM_HOME=$FM_HOME is a linked git worktree ($FM_HOME/.git is a pointer file, not the repository) - a unit pinned there dies with the worktree. Install from the tracked root instead: FM_HOME=$primary fm-dashboard.sh install-boot"
+  fi
   local exec_path="$FM_HOME/bin/fm-dashboard.sh"
   [ -x "$exec_path" ] \
     || die "no runnable dashboard script at $exec_path - the unit is pinned to \$FM_HOME's own checkout, never to the copy this command was run from"
@@ -1043,7 +1091,7 @@ cmd_install_boot() {
     if [ -z "$existing" ]; then
       die "$path already exists and records no FM_HOME - remove it by hand, then run install-boot again"
     fi
-    [ "$existing" = "$FM_HOME" ] \
+    dashboard_same_home "$existing" "$FM_HOME" \
       || die "$path already manages FM_HOME=$existing - run uninstall-boot from that home before installing this one"
   fi
   local host port db dir
@@ -1058,11 +1106,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-Environment=FM_HOME=$FM_HOME
-Environment=FM_DASHBOARD_HOST=$host
-Environment=FM_DASHBOARD_PORT=$port
-Environment=FM_DASHBOARD_DB=$db
-ExecStart=$exec_path serve-foreground
+Environment=$(dashboard_unit_quote "FM_HOME=$FM_HOME")
+Environment=$(dashboard_unit_quote "FM_DASHBOARD_HOST=$host")
+Environment=$(dashboard_unit_quote "FM_DASHBOARD_PORT=$port")
+Environment=$(dashboard_unit_quote "FM_DASHBOARD_DB=$db")
+ExecStart=$(dashboard_unit_quote "$exec_path") serve-foreground
 Restart=on-failure
 RestartSec=5
 
@@ -1096,7 +1144,7 @@ cmd_uninstall_boot() {
   local path; path=$(dashboard_unit_path)
   [ -f "$path" ] || die "no unit installed at $path"
   local existing; existing=$(dashboard_unit_home)
-  [ "$existing" = "$FM_HOME" ] \
+  dashboard_same_home "$existing" "$FM_HOME" \
     || die "$path manages FM_HOME=${existing:-<none recorded>}, not $FM_HOME - run uninstall-boot from that home"
   if dashboard_unit_active; then
     systemctl --user stop "$DASHBOARD_UNIT" \
