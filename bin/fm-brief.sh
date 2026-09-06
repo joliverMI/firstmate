@@ -27,6 +27,12 @@
 #   The flag must be explicit because {TASK} is filled after scaffolding and the
 #   caller-supplied repo string cannot reliably identify this repo. Briefs made
 #   without it carry a loud declaration so an omitted contract cannot be silent.
+# Every scaffold (ship, scout, and secondmate charter) carries AGENTS.md section 9's
+# physical-action announcement contract unconditionally, and ship and scout briefs
+# also carry its precondition re-check rule. There is no flag for it: unlike Herdr
+# work, nothing the caller passes can reliably identify a task that will change the
+# captain's physical space, so the obligation is always present and dormant until
+# the task actually touches lights, audio, doors, or machines.
 # For ship tasks, --mode is REQUIRED and shapes the definition of done. Firstmate
 # resolves it per task at intake (AGENTS.md section 7); data/projects.md holds the
 # captain's standing posture as context, and this script never reads it:

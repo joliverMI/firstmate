@@ -531,7 +531,7 @@ The generated Herdr contract must use a named non-`default` isolated lab and its
 Every generated ship and scout brief already carries section 9's physical-action announcement and precondition-verification obligations; do not restate that contract in the task-specific text.
 
 Load `secondmate-provisioning` before creating or using a charter brief and preserve its idle-by-default and marked-return-channel contracts.
-Status appends are sparse supervisor-actionable events, not routine progress; `bin/fm-classify-lib.sh` owns keyed open and resolved semantics.
+Status appends are sparse supervisor-actionable events, not routine progress, with section 9's physical-action announcements as the generated charter's one exception; `bin/fm-classify-lib.sh` owns keyed open and resolved semantics.
 The scaffold is a safety contract, not a suggestion.
 
 ## 12. Self-update
