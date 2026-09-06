@@ -1238,11 +1238,161 @@ test_an_approval_binds_to_the_plan_text_it_was_given_for() {
     -d '{"plan":"anything"}')
   [ "$code" = "400" ] || fail "approving a card with no plan at all did not answer 400 (got HTTP $code)"
 
-  # And the approval is consent, not execution: the card has not moved.
-  assert_contains "$out" "status:   needs_review" \
-    "approving a plan moved the card by itself - it must record consent and nothing else"
+  # And the approval answered the question: the card left the status that
+  # means he is the blocker, and nothing about the binding changed with it.
+  assert_contains "$out" "status:   not_started" \
+    "approving a plan left the card in needs_review - a status he has answered but nobody moved him out of"
 
   pass "an approval binds to the verbatim plan it was given for, is refused against any other text, and never drifts onto an edited plan"
+}
+
+# The defect this pair of tests exists for: he approved three needs_review
+# cards in under half a minute and all three were still sitting in
+# needs_review ten minutes later, with his approval recorded on each. A
+# status entered by a tool action and left only by someone remembering rots
+# by construction, so the approval itself has to move the card.
+test_his_approval_moves_the_card_out_of_needs_review_and_records_why() {
+  local id json code hist
+  id=$("$DASH" add --title "Approval advances the card" --captain firstmate --prompt "x" \
+        --status needs-review --plan "Order the replacement switch." | awk '{print $1}')
+  [ "$(printf '%s' "$("$DASH" show "$id" --json)" | jq -r '.status')" = "needs_review" ] \
+    || fail "the card did not start in needs_review"
+
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/$id/approve-plan" -H 'Content-Type: application/json' \
+    -d '{"plan":"Order the replacement switch."}')
+  [ "$code" = "200" ] || fail "approving the displayed plan failed (got HTTP $code)"
+
+  json=$("$DASH" show "$id" --json)
+  [ "$(printf '%s' "$json" | jq -r '.status')" = "not_started" ] \
+    || fail "an approved card stayed in a status that means he is still the blocker: $(printf '%s' "$json" | jq -r '.status')"
+
+  # The move is a real transition with its own reason on it, not a silent
+  # relabel: the board's own history has to say who moved it and why.
+  hist=$(printf '%s' "$json" | jq -r '[.status_history[] | select(.to_status=="not_started")] | last')
+  [ "$(printf '%s' "$hist" | jq -r '.from_status')" = "needs_review" ] \
+    || fail "the advance was not recorded as leaving needs_review"
+  [ "$(printf '%s' "$hist" | jq -r '.note')" = "approved by the Admiral; awaiting dispatch" ] \
+    || fail "the advance recorded no reason: $(printf '%s' "$hist" | jq -r '.note')"
+
+  # Everything the fleet acts under is preserved exactly, because work happens
+  # after the approval and has to be able to read its own authority.
+  [ "$(printf '%s' "$json" | jq -r '.review_plan')" = "Order the replacement switch." ] \
+    || fail "the advance destroyed the plan the fleet is acting on"
+  [ "$(printf '%s' "$json" | jq -r '.plan_approved')" = "true" ] \
+    || fail "the advance destroyed the record that he approved"
+  [ "$(printf '%s' "$json" | jq -r '.plan_approval_stale')" = "false" ] \
+    || fail "the advance left his approval reading as covering different wording"
+  [ "$(printf '%s' "$json" | jq -r '.plan_approved_text')" = "Order the replacement switch." ] \
+    || fail "the advance changed the wording his approval is bound to"
+  [ -n "$(printf '%s' "$json" | jq -r '.plan_approved_at // empty')" ] \
+    || fail "the advance lost the time he approved"
+
+  # Approving the same card again is not a second move. The transition is
+  # decided by the database's own view of the card's status inside the write,
+  # not by what the request thought it saw, so a repeat tap - or two taps
+  # arriving together - advances it once and announces it once.
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/$id/approve-plan" -H 'Content-Type: application/json' \
+    -d '{"plan":"Order the replacement switch."}')
+  [ "$code" = "200" ] || fail "approving the same plan again failed (got HTTP $code)"
+  json=$("$DASH" show "$id" --json)
+  [ "$(printf '%s' "$json" | jq -r '.status')" = "not_started" ] \
+    || fail "a repeated approval moved the card somewhere else"
+  [ "$(printf '%s' "$json" | jq '[.status_history[] | select(.to_status=="not_started")] | length')" -eq 1 ] \
+    || fail "a repeated approval wrote a second transition onto the card's history"
+
+  # And it advances the card ONLY - it does not start, merge, or run anything,
+  # which is what not_started says out loud.
+  echo "$id" > "$FM_HOME/approved-id"
+  pass "his approval takes the card out of needs_review to not_started, with the transition and its reason on the card's own history"
+}
+
+# The other half of the same rule: only a CURRENT approval is an answer. A
+# stale one is evidence he was asked a different question, so it must leave
+# the card exactly where it is - still asking him.
+test_an_approval_that_is_refused_or_stale_moves_nothing() {
+  local id code json queued
+  id=$("$DASH" add --title "Stale approval moves nothing" --captain firstmate --prompt "x" \
+        --status needs-review --plan "Reserve the dock for Thursday." | awk '{print $1}')
+
+  # Wording the card no longer carries: refused, and the card does not budge.
+  "$DASH" plan "$id" "Reserve the dock for Friday." >/dev/null || fail "could not edit the plan"
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/$id/approve-plan" -H 'Content-Type: application/json' \
+    -d '{"plan":"Reserve the dock for Thursday."}')
+  [ "$code" = "409" ] || fail "approving wording the card no longer carries was not refused (got HTTP $code)"
+  json=$("$DASH" show "$id" --json)
+  [ "$(printf '%s' "$json" | jq -r '.status')" = "needs_review" ] \
+    || fail "a refused approval moved the card off the only status he can answer it from"
+  [ "$(printf '%s' "$json" | jq -r '.plan_approved')" = "false" ] \
+    || fail "a refused approval was recorded anyway"
+  queued=$(grep -c "dashboard-approval:$id" "$FM_HOME/state/.wake-queue" 2>/dev/null || true)
+  [ "${queued:-0}" -eq 0 ] || fail "a refused approval woke firstmate about a card nothing happened to"
+
+  # An approval recorded against a card that has already moved on is consent
+  # to the wording and nothing more: it must not drag a card the fleet is
+  # already working backwards into the queue.
+  "$DASH" status "$id" working >/dev/null || fail "could not move the card to working"
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/$id/approve-plan" -H 'Content-Type: application/json' \
+    -d '{"plan":"Reserve the dock for Friday."}')
+  [ "$code" = "200" ] || fail "approving the displayed plan on a moved-on card failed (got HTTP $code)"
+  json=$("$DASH" show "$id" --json)
+  [ "$(printf '%s' "$json" | jq -r '.status')" = "working" ] \
+    || fail "approving a card that had already moved on changed its status: $(printf '%s' "$json" | jq -r '.status')"
+  [ "$(printf '%s' "$json" | jq -r '.plan_approved')" = "true" ] \
+    || fail "the approval on a moved-on card was not recorded"
+  queued=$(grep -c "dashboard-approval:$id" "$FM_HOME/state/.wake-queue" 2>/dev/null || true)
+  [ "${queued:-0}" -eq 0 ] \
+    || fail "an approval that moved no card still woke firstmate about a transition that never happened"
+
+  pass "a refused or stale approval moves nothing and wakes nobody, and an approval on a card that has moved on records consent without dragging it back"
+}
+
+# Moving the card is only half the fix. Nothing on the board reaches firstmate
+# unless a session happens to look, so the approval also has to put a durable
+# record in firstmate's own wake queue - through firstmate's own writer, in the
+# shape its reader already understands.
+test_an_approval_leaves_firstmate_a_wake_record_its_own_reader_can_read() {
+  local id line drain_home out
+  id=$(cat "$FM_HOME/approved-id" 2>/dev/null) \
+    || fail "the approved card id was not recorded by the advance test"
+  [ -n "$id" ] || fail "the approved card id was empty"
+
+  [ -f "$FM_HOME/state/.wake-queue" ] || fail "his approval left no wake queue at all"
+  line=$(grep "dashboard-approval:$id" "$FM_HOME/state/.wake-queue" | tail -n1)
+  [ -n "$line" ] || fail "his approval published no wake record for the card it moved"
+  [ "$(grep -c "dashboard-approval:$id" "$FM_HOME/state/.wake-queue")" -eq 1 ] \
+    || fail "one approval published more than one wake record"
+
+  # Shaped like every other check record: five tab-separated fields, kind
+  # `check`, a key that names the card so two approvals never collapse into
+  # one, and a payload firstmate reads as a `check:` line.
+  [ "$(printf '%s' "$line" | awk -F '\t' '{print NF}')" = "5" ] \
+    || fail "the wake record is not the five-field record the queue's reader parses: [$line]"
+  [ "$(printf '%s' "$line" | cut -f3)" = "check" ] \
+    || fail "the wake record is not a check record: [$line]"
+  assert_contains "$(printf '%s' "$line" | cut -f5)" "check: dashboard-approval $id" \
+    "the wake payload does not name the approval and the card it is about"
+
+  # And firstmate's own reader presents it. Drained against a copy in its own
+  # home so this proves the record parses without consuming the queue the rest
+  # of this suite is asserting against.
+  drain_home="$FM_HOME/wake-drain-case"
+  mkdir -p "$drain_home/state"
+  cp "$FM_HOME/state/.wake-queue" "$drain_home/state/.wake-queue" \
+    || fail "could not copy the wake queue for the drain"
+  # Both streams: the drain presents records on stdout and prints the
+  # acknowledgement command it requires on stderr.
+  out=$(FM_HOME="$drain_home" "$ROOT/bin/fm-wake-drain.sh" 2>&1) \
+    || fail "firstmate's wake drain could not read the record the board wrote"
+  assert_contains "$out" "check: dashboard-approval $id" \
+    "firstmate's own wake drain did not present the approval as a wake to handle"
+  assert_contains "$out" "WAKE_ACK_REQUIRED" \
+    "the drained approval was not presented as a record that has to be acknowledged"
+
+  pass "an approval publishes one durable check record through firstmate's own writer, and firstmate's own drain reads it back"
 }
 
 # Regression: the CLI and the raw API do not trim a plan, so a plan could be
@@ -1801,6 +1951,9 @@ test_no_path_can_set_needs_action_without_an_ask
 test_needs_attention_is_an_accepted_input_alias_and_never_an_output
 test_needs_review_without_a_plan_is_refused_everywhere
 test_an_approval_binds_to_the_plan_text_it_was_given_for
+test_his_approval_moves_the_card_out_of_needs_review_and_records_why
+test_an_approval_that_is_refused_or_stale_moves_nothing
+test_an_approval_leaves_firstmate_a_wake_record_its_own_reader_can_read
 test_the_plan_and_its_approval_survive_leaving_needs_review
 test_status_refuses_a_plan_for_any_status_but_needs_review
 test_a_plan_can_only_be_created_on_the_path_that_shows_him_the_box

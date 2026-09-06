@@ -159,9 +159,13 @@ function Toast({ toast }) {
 // never sits elsewhere on the card where it could read as approving the card,
 // the title, or whatever else is nearby.
 //
-// The button records his consent and nothing else. It does not merge, deploy,
-// delete, or start anything; the fleet acts afterwards under the boundaries
-// it already had. Do not wire an action onto this.
+// The button records his consent. It does not merge, deploy, delete, or start
+// anything; the fleet acts afterwards under the boundaries it already had. Do
+// not wire an action onto this. What the server does beyond recording his word
+// is close the question - the card leaves needs_review for not_started and
+// firstmate is woken once - which is the ask being answered, not the plan
+// being carried out. Nothing here sends or needs to know that; see
+// docs/dashboard.md "What an approval does mechanically".
 //
 // The approval is sent with the exact plan string this box rendered, and the
 // server refuses it if the card's plan has changed since - so an approval can

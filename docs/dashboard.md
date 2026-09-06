@@ -179,10 +179,39 @@ Setting `needs_review` with no plan is refused server-side on both the create an
 The mirror of that is refused server-side too, on all three write paths: a plan can only ever be CREATED by the move to `needs-review`, since that is the path that also puts the approval box in front of him, and a plan written anywhere else would be a recommendation he is never shown and has no way to accept.
 That is a rule about creation and not about where a plan may live - `bin/fm-dashboard.sh plan` still corrects the wording on a card that has legitimately moved on, which is what the paragraph below about the plan surviving a status change depends on.
 
-**The button records consent. It does not execute anything.**
-Approving does not merge, deploy, delete, spend, or start the work; it writes down that he said yes.
+**The button records consent. It does not carry the plan out.**
+Approving does not merge, deploy, delete, spend, or start the work; it writes down that he said yes, and hands the question back.
 Agents act afterwards, under exactly the boundaries they already had.
-Nothing should ever be wired onto this endpoint, and an approval must never be read as authority for anything wider than the plan text itself.
+No action that carries out a plan may ever be wired onto this endpoint, and an approval must never be read as authority for anything wider than the plan text itself.
+The two things it does beyond recording his word are both about the ask rather than the work, and the next section states them in full.
+
+**What an approval does mechanically.**
+Recording his word is not the whole of answering the question, and the two parts it leaves are the two that used to be left to someone remembering.
+So a current approval - one whose text still matches the plan the card displays - does three things in total, and no more:
+
+1. It records that he approved, when, and the verbatim plan he was looking at, exactly as described below.
+2. It moves the card out of `needs-review` to `not_started`, in the same database transaction, with the status-history note "approved by the Admiral; awaiting dispatch".
+   `needs-review` means "he is the blocker"; once he has answered, the card is no longer that, and `not_started` is the honest statement of what it now is - authorised, and waiting on the fleet.
+3. It publishes one durable wake record to firstmate's own queue, in the shape firstmate already reads (`check: dashboard-approval <card-id> ...`), through firstmate's own writer.
+
+The plan, `plan_approved_at`, `plan_approved_text`, and the derived `plan_approved`/`plan_approval_stale` flags are written and preserved exactly as they were before, because the approval outlives the status by design (see the paragraph on that below).
+
+**None of that starts the work.** The approval still does not merge, deploy, delete, spend, or run anything, and firstmate still owes exactly what it owed before: dispatching the work, under exactly the boundaries it already had, at whatever rigor that project's delivery mode requires.
+The move and the wake are the *ask* being answered, not the *plan* being carried out - a card leaving the status that means he is blocking, and firstmate being told so without anyone having to notice.
+
+**What is deliberately narrow about it.**
+Only a card actually in `needs-review` moves, and only a move publishes a wake.
+An approval refused as stale changes nothing at all, exactly as before.
+An approval recorded against a card that has already moved on - its plan corrected later and re-approved - records consent to the wording and nothing more; dragging a `working` card backwards into the queue would be the endpoint deciding something about the work rather than recording something about him.
+
+**A wake that cannot be published never becomes a half-written record.**
+The wake goes out after the transaction commits, so it can never claim a move that was rolled back, and a queue firstmate's writer cannot append to costs him nothing: the approval and the move stand, and the failure is written where a person looks - the server log, and the board's own discrepancy log, where it reads as a card that was authorised with nobody told.
+Refusing to record his consent because a queue file was unwritable would be the worse of those two failures by a wide margin.
+The mechanics - the writer, the record shape, the bounded wait - are owned by `bin/fleet-dashboard/server/wake.py`.
+
+Why this is in the code rather than in an agent's instructions: a status that a tool action puts a card INTO, and that only someone remembering takes it back OUT of, rots by construction.
+He approved three `needs-review` cards in under half a minute; ten minutes later all three still sat in `needs-review` with his approval recorded on each, and they moved only because the fleet auditor happened to notice.
+That is the same family as the six bugs below - an outstanding ask left somewhere nobody acts on it - and the fix has to be mechanical for the same reason they did.
 
 **An approval is bound to the wording it was given for.**
 The board stores three things when he approves: that he approved, when, and the verbatim plan as displayed at that moment (`plan_approved_at`, `plan_approved_text`).

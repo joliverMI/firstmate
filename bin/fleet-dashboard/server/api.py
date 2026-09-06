@@ -36,6 +36,7 @@ from validation import (
     validate_review_link,
     validate_review_plan,
 )
+from wake import resolve_fm_home
 
 
 FLEET_DASHBOARD_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -276,10 +277,13 @@ def approve_plan(store: Store, match, query, body):
     the plan changed between what he read and what he tapped, so there is no
     honest way to say what he approved.
 
-    Approving does not merge, deploy, delete, or advance anything - not here,
-    and not as a side effect anywhere else. It writes his word down. Whatever
-    acts next does so under the boundaries it already had. Do not wire an
-    action onto this endpoint.
+    Approving does not merge, deploy, delete, spend, or start any work - not
+    here, and not as a side effect anywhere else. Do not wire an action onto
+    this endpoint. What it does beyond writing his word down is close the
+    question: a `needs_review` card leaves that status for `not_started`, and
+    firstmate is woken once, durably, so nobody has to remember to look. Both
+    are the ask being answered, not the plan being carried out; whatever acts
+    next does so under the boundaries it already had. See store.approve_plan.
     """
     task_id = match["id"]
     plan = body.get("plan")
@@ -540,15 +544,11 @@ def make_handler(store: Store):
 
 def serve(host: str, port: int, db_path: str) -> ThreadingHTTPServer:
     global FM_HOME_FOR_SUBPROCESS, SELF_URL
-    # FM_HOME is normally inherited from the environment `fm-dashboard.sh
-    # start` was launched in; when it is not (a bare `python3 main.py`), fall
-    # back to db_path's grandparent, since every caller passes --db as
-    # <FM_HOME>/data/dashboard.db (fm-dashboard.sh's cmd_server_start does,
-    # and so does the test suite). This is what the Force Audit button's
-    # detached sweep subprocess uses to find the right state/ and config/.
-    FM_HOME_FOR_SUBPROCESS = os.environ.get(
-        "FM_HOME", os.path.dirname(os.path.dirname(os.path.abspath(db_path)))
-    )
+    # Which firstmate home this board belongs to - the state/ and config/ the
+    # Force Audit button's detached sweep subprocess must find. wake.py owns
+    # that rule, because the approval wake has to resolve the same home this
+    # does; see resolve_fm_home for why there is only one copy of it.
+    FM_HOME_FOR_SUBPROCESS = resolve_fm_home(db_path)
     # A bind-all host (0.0.0.0 or ::) is not itself a reachable address for
     # the loopback call the sweep subprocess makes back into this same
     # server - use 127.0.0.1 in that case instead of the bind address.
