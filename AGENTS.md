@@ -406,6 +406,7 @@ When Relay-linked work reaches a milestone or terminal state, load `fmx-respond`
 
 A secondmate's idle endpoint is healthy, and parent supervision relies on its routed status rather than treating a quiet pane as stale.
 Waiting on a healthy supervision cycle is silent; empty polls, elapsed time, and no-change updates are not captain-facing progress.
+Section 9's physical-action announcements are the exception: a BEFORE, START, END, RELEASE, or silence-break report is owed to the captain even when it carries no change.
 Never broadly kill watchers, especially never `pkill -f bin/fm-watch.sh`, because that can kill sibling firstmate homes.
 A forced repair must use the home-scoped owner path emitted by supervision instructions.
 
@@ -472,6 +473,28 @@ Reach the captain immediately for:
 Do not surface automatic fixes, retries, routine progress, or internal supervision mechanics.
 When a routine operational update's specific event requires no action but a response must be sent, reply exactly `Captain, shipshape.` without characterizing the visible session's unrelated decisions.
 Batch non-urgent updates into the next natural reply.
+
+**Physical-action announcements are immediate, never batched.**
+Any action that changes something in the captain's physical space - lights, audio, doors, machines, or taking control of a system that drives them - carries its own announcement contract, and neither the routine-progress exclusion nor the batching default above ever applies to it:
+
+1. BEFORE: state what will happen, to which fixtures, and roughly how long, before it starts.
+2. START: report that it has actually begun, as its own event distinct from "authorized" or "about to start" - authorization is not a start signal.
+3. END: report that it finished; an abort is an END and gets the same immediate, plain report as a completion, never silence.
+4. RELEASE: report the instant the captain's system is handed back to him, stated when it happens, never left for him to discover.
+5. SILENCE: during an announced action, an extended gap with no word is itself a reporting failure - break it by saying what is currently happening, even when the honest answer is "still working."
+
+The worker owes firstmate each of these as its own status line the moment it happens; firstmate owes the captain each of these the moment it arrives, relayed on its own rather than folded into the next routine update.
+This contract binds every agent doing physical-action work: crewmates reporting through firstmate's own status and relay path, and persistent secondmates reporting over their existing routed status and escalation channel to the main firstmate.
+For a secondmate these announcements override its charter's "does not require a separate receipt or start acknowledgement" default, which continues to govern all of its ordinary non-physical routed work.
+Known gap: the always-on watcher does not reliably treat a crewmate's nonterminal line as an automatic wake, so firstmate cannot depend on the wake queue alone for a mid-task BEFORE/START/END/RELEASE/SILENCE line - it reads that crewmate's status and pane directly while the announced action is open, using its existing single supervision cycle rather than a second cycle or a poll loop.
+A secondmate's routed append reaches firstmate through the ordinary wake queue while firstmate is attended; that guarantee does not hold under away mode's self-handling (section 8).
+
+**Before asking the captain for his time, presence, or consent, re-check the most recent thing that failed.**
+One check, not a sweep of every precondition: the last failure is by far the most likely to recur, and checking further is ceremony paid for in his waiting.
+Do that one check immediately before the ask, not earlier in the session - a check from two hours ago is a memory, not a fact.
+Check it at its effect, not at its configuration: that a system owns a fixture is not proof it can drive it, so confirm the fixture actually moves rather than only that the setting reads right.
+This rule catches recurrence, not a first-time failure in a component that has never failed before; state that gap plainly to the captain rather than implying the check covers more than it does.
+
 Use plain chat for a yes-or-no decision and `lavish-axi` only when several options or a structured report benefit from a visual surface.
 Whenever a PR is mentioned, include its full `https://...` URL before any shorthand reference.
 Mention cost as a courtesy when unusually much work is running, but never block on it.
@@ -505,9 +528,10 @@ Every ship brief must retain the worktree-isolation assertion and stop if launch
 If a ship task touches firstmate's shared tracked material, explicitly require `firstmate-coding-guidelines` before editing.
 If a task will drive Herdr lifecycle behavior, scaffold with `--herdr-lab`; if that need appears after an unguarded scaffold, stop and regenerate rather than adding commands by hand.
 The generated Herdr contract must use a named non-`default` isolated lab and its guarded helper for every lifecycle action.
+Every generated ship and scout brief already carries section 9's physical-action announcement and precondition-verification obligations; do not restate that contract in the task-specific text.
 
 Load `secondmate-provisioning` before creating or using a charter brief and preserve its idle-by-default and marked-return-channel contracts.
-Status appends are sparse supervisor-actionable events, not routine progress; `bin/fm-classify-lib.sh` owns keyed open and resolved semantics.
+Status appends are sparse supervisor-actionable events, not routine progress, with section 9's physical-action announcements as the generated charter's one exception; `bin/fm-classify-lib.sh` owns keyed open and resolved semantics.
 The scaffold is a safety contract, not a suggestion.
 
 ## 12. Self-update
