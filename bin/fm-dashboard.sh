@@ -101,6 +101,16 @@
 #   fm-dashboard.sh audit-claim [--forced] [--json]
 #   fm-dashboard.sh audit-release
 #   fm-dashboard.sh start|stop|restart|server-status   (server process lifecycle)
+#       `start`'s bind host defaults to $FM_DASHBOARD_HOST when set, else the
+#       host already recorded in config/dashboard-url, else 127.0.0.1 - so a
+#       plain restart keeps whatever address was reachable before rather than
+#       reverting to localhost-only (the port still comes from
+#       $FM_DASHBOARD_PORT, default 8420). `start` refuses up front, leaving
+#       no pidfile, when something the pidfile does not track already answers
+#       at http://<host>:<port>/api/health; otherwise it refuses to report
+#       success until the API actually answers on that address (polling for
+#       up to $FM_DASHBOARD_MAX_TIME seconds, default 20), stopping the
+#       process and dying loudly instead of leaving a pane he cannot reach.
 #   fm-dashboard.sh --help
 #
 # The audit-tick/audit-claim/audit-release/audit-status quartet is the fleet
@@ -156,6 +166,24 @@ dash_url() {
     return 0
   fi
   printf '%s\n' "http://127.0.0.1:8420"
+}
+
+# `start`'s bind-host default. A plain restart with no env vars used to bind
+# 127.0.0.1 unconditionally, which is exactly the address his phone cannot
+# reach (see docs/dashboard.md "What has to be running") - so when
+# $FM_DASHBOARD_HOST is unset, keep listening on the host already recorded in
+# config/dashboard-url, the same file `dash_url` above falls back to for API
+# calls, instead of reverting to localhost-only.
+dashboard_default_host() {
+  local recorded
+  if [ -f "$CONFIG/dashboard-url" ]; then
+    recorded=$(head -n1 "$CONFIG/dashboard-url")
+    recorded=${recorded#*://}
+    recorded=${recorded%%/*}
+    recorded=${recorded%%:*}
+    [ -n "$recorded" ] && { printf '%s' "$recorded"; return 0; }
+  fi
+  printf '127.0.0.1'
 }
 
 die() { printf 'fm-dashboard.sh: %s\n' "$1" >&2; exit 1; }
@@ -691,24 +719,86 @@ dashboard_server_running() {  # <pid>
 }
 
 cmd_server_start() {
+  need_tool curl
   local pf; pf=$(pidfile)
   if [ -f "$pf" ] && dashboard_server_running "$(cat "$pf")"; then
     die "already running (pid $(cat "$pf")) - see: fm-dashboard.sh server-status"
   fi
-  local host="${FM_DASHBOARD_HOST:-127.0.0.1}" port="${FM_DASHBOARD_PORT:-8420}"
+  local host="${FM_DASHBOARD_HOST:-$(dashboard_default_host)}" port="${FM_DASHBOARD_PORT:-8420}"
   local db="${FM_DASHBOARD_DB:-$FM_HOME/data/dashboard.db}"
+  local health="http://$host:$port/api/health" code=""
+  local connect_timeout max_time attempt_max budget_whole deadline
+  connect_timeout=$(dash_timeout_seconds FM_DASHBOARD_CONNECT_TIMEOUT "${FM_DASHBOARD_CONNECT_TIMEOUT:-}" 5)
+  max_time=$(dash_timeout_seconds FM_DASHBOARD_MAX_TIME "${FM_DASHBOARD_MAX_TIME:-}" 20)
+  # Each attempt is capped short so a socket that accepts but never answers
+  # (a port the previous owner still holds) cannot eat the whole budget
+  # before the loop notices the process has already died on it.
+  attempt_max=$(awk -v m="$max_time" 'BEGIN { print (m < 2) ? m : 2 }')
+  # Anything already answering on the address would answer the post-start
+  # probe too, before the new interpreter has even reached its bind - and
+  # that bind is going to fail. Refuse up front rather than report a healthy
+  # start for a process that is dying on EADDRINUSE behind a stranger.
+  code=$(curl -sS -o /dev/null -w '%{http_code}' \
+    --connect-timeout "$connect_timeout" --max-time "$attempt_max" "$health" 2>/dev/null) || code=""
+  if [ -n "$code" ]; then
+    die "something already answers at $health (HTTP $code) that this pidfile does not track - refusing to start a second server on that address. See: fm-dashboard.sh server-status"
+  fi
   mkdir -p "$(dirname "$pf")"
   nohup python3 "$DASHBOARD_DIR/server/main.py" --host "$host" --port "$port" --db "$db" \
     > "$FM_HOME/state/dashboard.log" 2>&1 &
-  echo $! > "$pf"
-  sleep 1
-  if kill -0 "$(cat "$pf")" 2>/dev/null; then
-    printf 'fleet dashboard started (pid %s) - http://%s:%s/  log: %s/state/dashboard.log\n' \
-      "$(cat "$pf")" "$host" "$port" "$FM_HOME"
-  else
+  local pid=$!
+  echo "$pid" > "$pf"
+  # A live process is not the same thing as an address his phone can reach:
+  # prove the API actually answers on the address just bound rather than
+  # reporting a healthy start he later finds unreachable. A refused
+  # connection returns instantly, and a loaded host can take longer than a
+  # second to reach the bind, so keep asking for the whole max-time budget
+  # (giving up early only once the process itself is gone) before deciding
+  # the address is unreachable.
+  budget_whole=${max_time%%.*}
+  deadline=$((SECONDS + 10#${budget_whole:-0} + 1))
+  while kill -0 "$pid" 2>/dev/null; do
+    code=$(curl -sS -o /dev/null -w '%{http_code}' \
+      --connect-timeout "$connect_timeout" --max-time "$attempt_max" "$health" 2>/dev/null) || code=""
+    case "$code" in 2??) break ;; esac
+    [ "$SECONDS" -ge "$deadline" ] && break
+    sleep 0.25
+  done
+  if ! kill -0 "$pid" 2>/dev/null; then
     rm -f "$pf"
     die "failed to start - see $FM_HOME/state/dashboard.log"
   fi
+  case "$code" in
+    2??) ;;
+    *)
+      local rc=0 left=""
+      dashboard_server_terminate "$pid" || rc=$?
+      if [ "$rc" -eq 1 ]; then
+        left=" It also ignored SIGTERM and SIGKILL, so the pidfile is left for: fm-dashboard.sh stop."
+      else
+        rm -f "$pf"
+      fi
+      die "started (pid $pid) but $health did not answer within ${max_time}s - his phone could not have reached it; stopped it rather than reporting a healthy start.${left} See $FM_HOME/state/dashboard.log"
+      ;;
+  esac
+  printf 'fleet dashboard started (pid %s) - http://%s:%s/  api reachable at %s  log: %s/state/dashboard.log\n' \
+    "$pid" "$host" "$port" "$health" "$FM_HOME"
+}
+
+# SIGTERM, then SIGKILL after ~10s of being ignored. Returns 0 when it exited
+# on SIGTERM, 2 when SIGKILL was needed, 1 when it is still alive after ~15s
+# and the port must be assumed held. Prints nothing; callers own the wording.
+dashboard_server_terminate() {  # <pid>
+  local pid=$1 waited=0 forced=false
+  kill "$pid" 2>/dev/null
+  while kill -0 "$pid" 2>/dev/null; do
+    waited=$((waited + 1))
+    if [ "$waited" -eq 200 ]; then kill -9 "$pid" 2>/dev/null; forced=true; fi
+    [ "$waited" -gt 300 ] && return 1
+    sleep 0.05
+  done
+  if $forced; then return 2; fi
+  return 0
 }
 
 # `--if-running` is what `restart` passes: having nothing to stop is not a
@@ -734,18 +824,14 @@ cmd_server_stop() {
     if $lenient; then printf 'fm-dashboard.sh: %s\n' "$not_ours" >&2; return 0; fi
     die "$not_ours"
   fi
-  kill "$pid"
-  local waited=0 forced=false
-  while kill -0 "$pid" 2>/dev/null; do
-    waited=$((waited + 1))
-    if [ "$waited" -eq 200 ]; then kill -9 "$pid" 2>/dev/null; forced=true; fi
-    if [ "$waited" -gt 300 ]; then
-      local wedged="pid $pid did not exit - port still held, refusing to leave a stale pidfile"
-      if $lenient; then printf 'fm-dashboard.sh: %s\n' "$wedged" >&2; return 1; fi
-      die "$wedged"
-    fi
-    sleep 0.05
-  done
+  local rc=0 forced=false
+  dashboard_server_terminate "$pid" || rc=$?
+  if [ "$rc" -eq 1 ]; then
+    local wedged="pid $pid did not exit - port still held, refusing to leave a stale pidfile"
+    if $lenient; then printf 'fm-dashboard.sh: %s\n' "$wedged" >&2; return 1; fi
+    die "$wedged"
+  fi
+  [ "$rc" -eq 2 ] && forced=true
   rm -f "$pf"
   if $forced; then
     printf 'stopped (pid %s - forced with SIGKILL after it ignored SIGTERM)\n' "$pid"

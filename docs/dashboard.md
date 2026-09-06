@@ -23,6 +23,10 @@ Reachable from the Admiral's phone the same way Lavish already is: bind to the h
 FM_DASHBOARD_HOST=<tailnet-ip> FM_DASHBOARD_PORT=8420 bin/fm-dashboard.sh start
 ```
 
+Once `config/dashboard-url` records that address (see "Server URL resolution" in `bin/fm-dashboard.sh --help`), a later plain `bin/fm-dashboard.sh start` or `restart` with no env vars keeps binding to that host instead of reverting to `127.0.0.1`; an explicit `$FM_DASHBOARD_HOST` still overrides it, and the port still comes from `$FM_DASHBOARD_PORT` (default 8420), not from the recorded URL.
+`start` also refuses to report success until the API actually answers on the address it just bound - stopping the process it launched when it never does - so a restart that quietly lost his phone's address fails loudly instead of looking healthy.
+For the same reason it refuses up front, leaving no pidfile, when something its pidfile does not track already answers on that address: the new server's bind would fail behind that stranger, and the probe would otherwise vouch for the wrong process.
+
 There is no login and no per-request auth - the same trust model the existing Lavish pages already use, appropriate for a tailnet-only surface with a single operator. If the board is ever exposed beyond the tailnet, that assumption needs revisiting before deploy, not after.
 
 ## Persistence
