@@ -444,6 +444,10 @@ test_physical_action_contract_covers_ship_and_scout() {
       "$brief: physical-action contract must not point at a worktree-relative AGENTS.md"
     assert_grep "are never the step-by-step FYI progress lines rule" "$brief" \
       "$brief: physical-action events are not exempted from the sparse-reporting default"
+    assert_grep "does not reliably wake firstmate on its own" "$brief" \
+      "$brief: physical-action rule must disclose that a working line is not a guaranteed wake"
+    assert_grep "you still append every one of these events when it happens" "$brief" \
+      "$brief: the wake caveat must not soften the unconditional announcement obligation"
   done
   pass "fm-brief.sh: ship and scout briefs carry the physical-action announcement and precondition-verification contract"
 }

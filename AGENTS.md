@@ -484,6 +484,8 @@ Any action that changes something in the captain's physical space - lights, audi
 
 The worker owes firstmate each of these as its own status line the moment it happens; firstmate owes the captain each of these the moment it arrives, relayed on its own rather than folded into the next routine update.
 This contract binds crewmates whose escalation runs through firstmate's own status and relay path; a persistent secondmate answers on the separate routed-reply contract in its charter brief, so that brief's "does not require a separate receipt or start acknowledgement" line stands unaffected.
+The always-on watcher does not currently treat a `working:` status line as captain-relevant on its own, so the wake queue alone will not deliver BEFORE, START, or a silence-break while an announced physical action is under way.
+Firstmate therefore reads the crew's live status file and pane directly for the duration of such an action, the same active supervision it already owes for ordinary progress lines, rather than waiting to be woken.
 
 **Before asking the captain for his time, presence, or consent, re-check the most recent thing that failed.**
 One check, not a sweep of every precondition: the last failure is by far the most likely to recur, and checking further is ceremony paid for in his waiting.

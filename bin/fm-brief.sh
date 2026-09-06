@@ -328,7 +328,8 @@ The report is the only thing that survives, so anything worth keeping must be in
    firstmate then leaves your idle pane alone and rechecks it on a long cadence instead of
    treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
 5. If this task changes or takes control of anything in the captain's physical space (lights, audio, doors, machines), you owe firstmate the BEFORE/START/END/RELEASE announcement contract in section 9 of \`$FM_ROOT/AGENTS.md\` as its own status line at each event.
-   These events are exempt from rule 4's sparse-reporting default and are never the step-by-step FYI progress lines rule 4 forbids; report each one as it happens even though every append wakes firstmate.
+   These events are exempt from rule 4's sparse-reporting default and are never the step-by-step FYI progress lines rule 4 forbids; report each one as it happens.
+   A \`working:\` line does not reliably wake firstmate on its own, so firstmate watches your pane during an announced physical action; that changes nothing for you, and you still append every one of these events when it happens.
    An abort is an END, reported as promptly as a completion, never as silence.
    During an announced physical action, break any extended silence with a \`working:\` line saying what is currently happening, even "still working"; never fold these events into your next routine line.
    Before any status line that asks the captain for his time, presence, or consent, re-check the most recent thing that failed at its effect, not its configuration, immediately before the ask (section 9 of \`$FM_ROOT/AGENTS.md\`); this catches recurrence only, so say so plainly if the failure that actually blocks you is a first-time one this check would not have caught.
@@ -456,7 +457,8 @@ $RULE1
    a scheduled window): firstmate then leaves your idle pane alone and rechecks it on a long
    cadence instead of treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
 5. If this task changes or takes control of anything in the captain's physical space (lights, audio, doors, machines), you owe firstmate the BEFORE/START/END/RELEASE announcement contract in section 9 of \`$FM_ROOT/AGENTS.md\` as its own status line at each event.
-   These events are exempt from rule 4's sparse-reporting default and are never the step-by-step FYI progress lines rule 4 forbids; report each one as it happens even though every append wakes firstmate.
+   These events are exempt from rule 4's sparse-reporting default and are never the step-by-step FYI progress lines rule 4 forbids; report each one as it happens.
+   A \`working:\` line does not reliably wake firstmate on its own, so firstmate watches your pane during an announced physical action; that changes nothing for you, and you still append every one of these events when it happens.
    An abort is an END, reported as promptly as a completion, never as silence.
    During an announced physical action, break any extended silence with a \`working:\` line saying what is currently happening, even "still working"; never fold these events into your next routine line.
    Before any status line that asks the captain for his time, presence, or consent, re-check the most recent thing that failed at its effect, not its configuration, immediately before the ask (section 9 of \`$FM_ROOT/AGENTS.md\`); this catches recurrence only, so say so plainly if the failure that actually blocks you is a first-time one this check would not have caught.
