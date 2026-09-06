@@ -179,16 +179,48 @@ Setting `needs_review` with no plan is refused server-side on both the create an
 The mirror of that is refused server-side too, on all three write paths: a plan can only ever be CREATED by the move to `needs-review`, since that is the path that also puts the approval box in front of him, and a plan written anywhere else would be a recommendation he is never shown and has no way to accept.
 That is a rule about creation and not about where a plan may live - `bin/fm-dashboard.sh plan` still corrects the wording on a card that has legitimately moved on, which is what the paragraph below about the plan surviving a status change depends on.
 
-**The button records consent. It does not execute anything.**
-Approving does not merge, deploy, delete, spend, or start the work; it writes down that he said yes.
+**The button records consent. It does not carry the plan out.**
+Approving does not merge, deploy, delete, spend, or start the work; it writes down that he said yes, and hands the question back.
 Agents act afterwards, under exactly the boundaries they already had.
-Nothing should ever be wired onto this endpoint, and an approval must never be read as authority for anything wider than the plan text itself.
+No action that carries out a plan may ever be wired onto this endpoint, and an approval must never be read as authority for anything wider than the plan text itself.
+The two things it does beyond recording his word are both about the ask rather than the work, and the next section states them in full.
+
+**What an approval does mechanically.**
+Recording his word is not the whole of answering the question, and the two parts it leaves are the two that used to be left to someone remembering.
+So a current approval - one whose text still matches the plan the card displays - does three things in total, and no more:
+
+1. It records that he approved, when, and the verbatim plan he was looking at, exactly as described below.
+2. It moves the card out of `needs-review` to `not_started`, in the same database transaction, with the status-history note "approved by the Admiral; awaiting dispatch".
+   `needs-review` means "he is the blocker"; once he has answered, the card is no longer that, and `not_started` is the honest statement of what it now is - authorised, and waiting on the fleet.
+3. It publishes one durable wake record to firstmate's own queue, in the shape firstmate already reads (`check: dashboard-approval <card-id> ...`), through firstmate's own writer.
+
+The plan, `plan_approved_at`, `plan_approved_text`, and the derived `plan_approved`/`plan_approval_stale` flags are written and preserved exactly as they were before, because the approval outlives the status by design (see the paragraph on that below).
+
+**None of that starts the work.**
+The approval still does not merge, deploy, delete, spend, or run anything, and firstmate still owes exactly what it owed before: dispatching the work, under exactly the boundaries it already had, at whatever rigor that project's delivery mode requires.
+The move and the wake are the *ask* being answered, not the *plan* being carried out - a card leaving the status that means he is blocking, and firstmate being told so without anyone having to notice.
+
+**What is deliberately narrow about it.**
+Only a card actually in `needs-review` moves, and only a move publishes a wake.
+An approval refused as stale changes nothing at all, exactly as before.
+An approval recorded against a card that has already moved on - its plan corrected later and re-approved - records consent to the wording and nothing more; dragging a `working` card backwards into the queue would be the endpoint deciding something about the work rather than recording something about him.
+
+**A wake that cannot be published never becomes a half-written record.**
+The wake goes out after the transaction commits, so it can never claim a move that was rolled back, and a queue firstmate's writer cannot append to costs him nothing: the approval and the move stand, and the failure is written where a person looks - the server log, and the board's own discrepancy log, where it reads as a card that was authorised with nobody told.
+Refusing to record his consent because a queue file was unwritable would be the worse of those two failures by a wide margin.
+The mechanics - the writer, the record shape, the bounded wait - are owned by `bin/fleet-dashboard/server/wake.py`.
+
+Why this is in the code rather than in an agent's instructions: a status that a tool action puts a card INTO, and that only someone remembering takes it back OUT of, rots by construction.
+He approved three `needs-review` cards in under half a minute; ten minutes later all three still sat in `needs-review` with his approval recorded on each, and they moved only because the fleet auditor happened to notice.
+That is the same family as the six bugs below - an outstanding ask left somewhere nobody acts on it - and the fix has to be mechanical for the same reason they did.
 
 **An approval is bound to the wording it was given for.**
 The board stores three things when he approves: that he approved, when, and the verbatim plan as displayed at that moment (`plan_approved_at`, `plan_approved_text`).
 The approve call must name the plan text the surface it came from had rendered, and the server refuses it with `409` if that no longer matches the card - so a plan edited between his last page refresh and his tap cannot silently collect consent for the new wording.
 If the plan is edited *after* an approval, the approval is deliberately NOT carried over.
-The record of his word survives - it is never destroyed, because it is the authority the fleet may already have acted under - but the card, `show`, and `--json` all report it as covering the old wording only, render both texts side by side, and put the approve button back.
+The record of his word survives - it is never destroyed, because it is the authority the fleet may already have acted under - but the card, `show`, and `--json` all report it as covering the old wording only and render both texts side by side.
+Editing the plan does not by itself put the question back in front of him: an approved card has already left `needs-review`, and the approve button exists only there.
+To ask him again, move the card back with `bin/fm-dashboard.sh status <id> needs-review --plan <new text>`, which is the existing re-ask path and the only one that renders the button.
 The derived `plan_approval_stale` flag is what says so, and any reader deciding whether it has permission must read it alongside `plan_approved` rather than trusting `plan_approved` alone.
 A stale approval is not weak permission; it is evidence he was asked a different question.
 
@@ -291,7 +323,7 @@ The mechanical subset of its per-cycle procedure - the checks that can be made a
 
 Three page-visible outcomes matter for how the Admiral reads this surface:
 
-- **The discrepancy log** (bottom of the page) shows something a sweep actually confirmed was wrong, timestamped, with a button to jump straight to the named card (clearing whatever filter would have hidden it, and saying so) when that card still exists. Two row shapes are the exception and are worth knowing by sight: the scripted sweep's `needs-action` and `needs-review` age rows never read the card's reason, so it can stand against a card that is not a fault at all (the skill's sweep, point 5, states when it fires, what stops it, and how to read it). An empty log and a log that has never run are shown differently on purpose (see the next point) - an absence of findings is not the same claim as an absence of *checking*. A finding that legitimately persists across sweeps rather than being a board bug to correct collapses into its one existing row - last-seen time and a seen-count, both visible on the entry - instead of being restated every cycle until it buries every other entry, so the discrepancy count in the last-check indicator can exceed the entries a given sweep added: the scripted sweep's count says what still stands by its own reckoning rather than what that sweep just said, and a collapsed row never reads as resolved. The general collapse mechanism is owned by `record_audit_finding` in `bin/fleet-dashboard/server/store.py`; which checks use it, and the not_started check's own narrower time-boundary rule, are `bin/fm-fleet-audit-sweep.sh`'s header comment and the [`fleet-dashboard`](../.agents/skills/fleet-dashboard/SKILL.md) skill's fleet auditor's sweep, point 6.
+- **The discrepancy log** (bottom of the page) shows something a sweep actually confirmed was wrong, timestamped, with a button to jump straight to the named card (clearing whatever filter would have hidden it, and saying so) when that card still exists. A few rows come from a write path rather than a sweep - a card link that failed at spawn or teardown, or an approval whose wake to firstmate could not be published - and each is described above, beside the write that records it. Two row shapes are the exception and are worth knowing by sight: the scripted sweep's `needs-action` and `needs-review` age rows never read the card's reason, so it can stand against a card that is not a fault at all (the skill's sweep, point 5, states when it fires, what stops it, and how to read it). An empty log and a log that has never run are shown differently on purpose (see the next point) - an absence of findings is not the same claim as an absence of *checking*. A finding that legitimately persists across sweeps rather than being a board bug to correct collapses into its one existing row - last-seen time and a seen-count, both visible on the entry - instead of being restated every cycle until it buries every other entry, so the discrepancy count in the last-check indicator can exceed the entries a given sweep added: the scripted sweep's count says what still stands by its own reckoning rather than what that sweep just said, and a collapsed row never reads as resolved. The general collapse mechanism is owned by `record_audit_finding` in `bin/fleet-dashboard/server/store.py`; which checks use it, and the not_started check's own narrower time-boundary rule, are `bin/fm-fleet-audit-sweep.sh`'s header comment and the [`fleet-dashboard`](../.agents/skills/fleet-dashboard/SKILL.md) skill's fleet auditor's sweep, point 6.
 - **The last-check indicator** shows when the last full sweep completed, how long it took, how many tasks it covered, and whether it was scheduled or forced, sourced from `bin/fm-dashboard.sh audit-run`. A sweep that never completes (crashes, hangs, or is simply never run) shows as "never run" rather than silently reusing the last good timestamp - this is the same "loud, not a quiet omission" principle applied to the auditor's own liveness, not just to its findings. What it reports for the sweep's result is a count rather than a verdict, and the scripted sweep counts the `needs-action` and `needs-review` age rows above on terms of its own, so a non-clean tile does not by itself mean something is wrong - the [`fleet-dashboard`](../.agents/skills/fleet-dashboard/SKILL.md) skill's sweep, point 5, states when that row fires and what stops it.
 - **The timer indicator** shows when the timer itself last ticked, separately from when a sweep last completed - see "The timer" below for why the two can legitimately disagree, and why only the heartbeat catches a timer that has silently stopped.
 

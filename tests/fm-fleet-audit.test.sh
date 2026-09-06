@@ -715,10 +715,13 @@ test_sweep_flags_a_stale_needs_review_card_the_same_way() {
 }
 
 # His approval IS the reply a needs_review card asks for - one tap, no note -
-# so it has to close the age finding the way a written reply does. And the
-# hole that would open if it closed it unconditionally: an approval for
-# wording the plan no longer carries has NOT answered the plan on the card,
-# so that card must keep flagging.
+# so it has to close the age finding the way a written reply does. It closes
+# it twice over now that the approval also moves the card out of needs_review,
+# and BOTH have to hold: the sweep must not flag a card he has answered, by
+# either route. And the hole that would open if a stale approval closed it: an
+# approval for wording the plan no longer carries has NOT answered the plan on
+# the card, so a card asking him again must keep flagging even though his
+# earlier approval is still recorded on it.
 test_an_approval_quiets_the_sweep_but_a_stale_one_does_not() {
   local id before after
   id=$("$DASH" add --title "Approve to quiet" --captain firstmate --prompt "approval closes the finding" \
@@ -744,19 +747,36 @@ test_an_approval_quiets_the_sweep_but_a_stale_one_does_not() {
   [ "$(printf '%s' "$after" | jq -r '.[0].last_seen_at')" = "$(printf '%s' "$before" | jq -r '.[0].last_seen_at')" ] \
     || fail "an approved needs-review card's row had its last-seen time advanced, so it was re-flagged"
 
-  # Now edit the plan. His approval stands as a record, but it no longer
-  # covers what the card displays, so the card is genuinely waiting on him
-  # again and the sweep must say so.
+  # The approval also took the card out of needs_review, which is the other
+  # reason the sweep is quiet - assert it, so a change that stopped moving the
+  # card cannot pass this test on the approval check alone.
+  [ "$(printf '%s' "$("$DASH" show "$id" --json)" | jq -r '.status')" = "not_started" ] \
+    || fail "the approval did not take the card out of needs-review"
+
+  # Now the fleet asks him again: new wording, and the card back in the only
+  # status that renders an approve button. His earlier approval stands as a
+  # record but does not cover what the card now displays, so the card is
+  # genuinely waiting on him again and the sweep must say so.
   sleep 1
-  "$DASH" plan "$id" "Change the software to find devices by hardware ID." >/dev/null \
-    || fail "could not edit the plan"
+  "$DASH" status "$id" needs-review --plan "Change the software to find devices by hardware ID." >/dev/null \
+    || fail "could not re-ask him with new wording"
+  [ "$(printf '%s' "$("$DASH" show "$id" --json)" | jq -r '.plan_approval_stale')" = "true" ] \
+    || fail "the re-ask left his old approval reading as an answer to the new plan"
   FM_AUDIT_STALE_NEEDS_ATTENTION_MINUTES=0 "$SWEEP" --forced || fail "post-edit sweep exited non-zero"
+  # A new blocked period is a new finding, not an update to the row his
+  # approval already closed - the sweep keys these on when the block started -
+  # so what proves the card is flagging again is a row the earlier sweeps did
+  # not have.
   local edited
   edited=$(discrepancy_rows_for "$id")
-  [ "$(printf '%s' "$edited" | jq -r '.[0].occurrences')" -gt "$(printf '%s' "$after" | jq -r '.[0].occurrences')" ] \
-    || fail "a card whose plan was edited after approval stayed quiet - a stale approval silenced a card genuinely waiting on him"
+  [ "$(printf '%s' "$edited" | jq 'length')" -gt "$(printf '%s' "$after" | jq 'length')" ] \
+    || fail "a card re-asked with new wording stayed quiet - a stale approval silenced a card genuinely waiting on him"
+  case "$(printf '%s' "$edited" | jq -r '.[-1].text')" in
+    needs-review*) : ;;
+    *) fail "the re-ask finding does not name the status it is about: $(printf '%s' "$edited" | jq -r '.[-1].text')" ;;
+  esac
 
-  pass "a current approval closes the sweep's age finding, and an approval left stale by an edited plan does not"
+  pass "a current approval closes the sweep's age finding - by answering it and by moving the card - while an approval left stale by a re-ask does not"
 }
 
 # The other half of "he has answered THIS ask": editing the plan is how a

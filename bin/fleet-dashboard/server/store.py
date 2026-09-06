@@ -15,9 +15,12 @@ import random
 import re
 import sqlite3
 import string
+import sys
 import threading
 import time
 from contextlib import contextmanager
+
+from wake import WakePublishError, publish_check_wake, resolve_fm_home
 
 # Sort order IS this order: the page, the API's `--sort status`, and the
 # board's own sections all read it left to right. `needs_action` leads
@@ -74,6 +77,13 @@ def normalized_plan(plan: str | None) -> str | None:
 # The two statuses that mean the Admiral himself is the next step. Both sort
 # above everything else and both are what the auditor's age check is for.
 BLOCKING_STATUSES = ("needs_action", "needs_review")
+
+# Where his approval takes a needs_review card, and what the board records
+# about the move. Not a judgement that the work is next in line - just the
+# honest statement of what the card now is: authorised, and waiting on the
+# fleet rather than on him. See approve_plan.
+APPROVED_STATUS = "not_started"
+APPROVED_HISTORY_NOTE = "approved by the Admiral; awaiting dispatch"
 
 # The captain set is NOT written here. web/captains.json is its only copy; the
 # shell wrapper and the browser read that same file, so a captain added there
@@ -280,9 +290,19 @@ class PlanChangedError(ValueError):
     """
 
 
+PLAN_CHANGED_MESSAGE = (
+    "the plan changed since it was shown - nothing was approved. "
+    "Re-read the card and approve the plan it now displays."
+)
+
+
 class Store:
     def __init__(self, db_path: str):
         self.db_path = db_path
+        # The firstmate home this board belongs to, resolved once by wake.py's
+        # single owner of that rule, so the approval wake lands in the same
+        # state/ the Force Audit button's sweep runs against.
+        self.fm_home = resolve_fm_home(db_path)
         directory = os.path.dirname(os.path.abspath(db_path))
         if directory:
             os.makedirs(directory, exist_ok=True)
@@ -687,9 +707,12 @@ class Store:
         Editing the plan does not delete an approval he already gave - that
         record is his word and is never silently thrown away - but it does
         break the binding, because the approval was for the old wording.
-        _with_approval_state then reports the card as approved AND stale, the
-        card shows both texts, and the approve button comes back. Nothing
-        here decides that: it falls out of the two columns disagreeing.
+        _with_approval_state then reports the card as approved AND stale and
+        the card shows both texts. Nothing here decides that: it falls out
+        of the two columns disagreeing. It does not put the question back in
+        front of him either: an approved card has left needs_review and the
+        approve button renders only there, so re-asking is set_status back
+        to needs_review with the new wording.
 
         Replacing the wording also dates it in `review_plan_updated_at`, which
         is the durable mark that says the ask itself changed here. Without it
@@ -720,7 +743,8 @@ class Store:
         return self.get_task(task_id)
 
     def approve_plan(self, task_id: str, plan_as_displayed: str) -> dict:
-        """Record that the Admiral approved the plan he was actually looking at.
+        """Record that the Admiral approved the plan he was actually looking at,
+        and take the card out of the status that means he is the blocker.
 
         `plan_as_displayed` is the verbatim text the surface he clicked on had
         rendered. It must equal the plan currently stored, or this refuses:
@@ -728,10 +752,31 @@ class Store:
         the page's last poll and his tap would collect an approval for wording
         he never saw, and an agent would then act on authority he did not give.
 
-        This records consent and NOTHING else. It does not merge, deploy,
-        delete, advance the card, or start any work - deliberately, and stated
-        here so a later change has to argue with this comment first. Agents act
-        afterwards, under exactly the boundaries they already had.
+        **This records consent. It still does not execute the plan** - it does
+        not merge, deploy, delete, spend, or start any work, and nothing of
+        that kind may ever be wired onto it. What it does do is finish
+        answering the question the card asked, which has two mechanical parts
+        and not one: `needs_review` means "he is the blocker", so a card he has
+        answered must stop saying that, and firstmate has to be told he
+        answered. Both used to be left to someone remembering, and both rotted
+        exactly as an unowned step does - he approved three cards in under
+        half a minute and all three were still sitting in `needs_review` ten
+        minutes later, with his approval recorded on each. So the card moves to
+        `not_started` in this same transaction, and one durable wake record
+        goes to firstmate afterwards. Dispatching the work is still firstmate's
+        own act, under exactly the boundaries it already had.
+
+        The move is scoped to a card that is actually IN `needs_review`. An
+        approval recorded against a card that has moved on (its plan corrected
+        later, then re-approved) is consent to the wording and nothing more -
+        the fleet is already acting, and dragging a `working` card backwards
+        into the queue would be this method executing a decision about the work
+        rather than recording his.
+
+        The plan text, `plan_approved_at` and `plan_approved_text` are written
+        and preserved exactly as before: they outlive the status deliberately,
+        because work happens after the approval and the fleet has to be able to
+        read the authority it is acting under (see set_status).
         """
         current = self.get_task(task_id)
         if current is None:
@@ -740,28 +785,109 @@ class Store:
         if not stored:
             raise ValueError("there is no recommended plan on this card to approve")
         if normalized_plan(plan_as_displayed) != stored:
-            raise PlanChangedError(
-                "the plan changed since it was shown - nothing was approved. "
-                "Re-read the card and approve the plan it now displays."
-            )
+            raise PlanChangedError(PLAN_CHANGED_MESSAGE)
         ts = now_iso()
         with self._cursor(write=True) as cur:
+            # The plan is matched again in the UPDATE's own WHERE clause, and
+            # not only in the check above, because that check read the card
+            # outside the write lock: a plan edit committed between the read
+            # and this write would otherwise collect his approval for wording
+            # he never saw, and - below - move the card and wake firstmate on
+            # the strength of it. Matching no row here is the same conflict
+            # the check above reports, answered the same way, and the
+            # transaction commits nothing.
             cur.execute(
                 "UPDATE tasks SET plan_approved_at = ?, plan_approved_text = ?, updated_at = ? "
-                "WHERE id = ?",
-                (ts, stored, ts, task_id),
+                "WHERE id = ? AND review_plan = ?",
+                (ts, stored, ts, task_id, stored),
             )
-            # Deliberately writes NO status_history row. plan_approved_at and
+            if cur.rowcount != 1:
+                raise PlanChangedError(PLAN_CHANGED_MESSAGE)
+            # Same transaction as the approval itself, so the two can never
+            # disagree: there is no window in which his consent is recorded on
+            # a card still claiming to be blocked on him. The status and the
+            # plan are both re-read in the UPDATE's own WHERE clause rather
+            # than trusted from the get_task above, because that read happened
+            # outside the write lock: two taps arriving together would
+            # otherwise both see needs_review and each write a transition and
+            # a wake for the one move that actually happened. `advancing` is
+            # therefore what the database says it did, not what this thread
+            # expected it to do. The reason columns are nulled to hold
+            # set_status's invariant that no status carries another status's
+            # reason.
+            cur.execute(
+                """UPDATE tasks SET status = ?, waiting_on_id = NULL,
+                   waiting_reason = NULL, needs_action_reason = NULL
+                   WHERE id = ? AND status = 'needs_review' AND review_plan = ?""",
+                (APPROVED_STATUS, task_id, stored),
+            )
+            advancing = cur.rowcount == 1
+            if advancing:
+                cur.execute(
+                    """INSERT INTO status_history (task_id, from_status, to_status, changed_at, note)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (task_id, "needs_review", APPROVED_STATUS, ts, APPROVED_HISTORY_NOTE),
+                )
+            # An approval that does NOT move the card deliberately writes no
+            # status_history row at all. plan_approved_at and
             # plan_approved_text are already the durable, readable record of
-            # his word, so a history row would add nothing - and it would cost
-            # something real: it is a same-status row, indistinguishable in
-            # shape from the re-ask rows set_status writes, and the auditor
-            # has to tell those apart to know how long he has been blocked.
-            # An earlier version of this wrote one, and it silently reset the
-            # blocked-age of every card he approved - making the cards he had
+            # his word, and a same-status row is indistinguishable in shape
+            # from the re-ask rows set_status writes - which the auditor has
+            # to tell apart to know how long he has been blocked. An earlier
+            # version wrote one unconditionally and silently reset the
+            # blocked-age of every card he approved, making the cards he had
             # answered look freshly flagged to the very sweep that exists to
-            # catch cards he has been left waiting on.
-        return self.get_task(task_id)
+            # catch cards he has been left waiting on. The row written above
+            # is safe from that because it is a real transition, to a
+            # different status, which is exactly what the sweep reads.
+        task = self.get_task(task_id)
+        if advancing:
+            self._publish_approval_wake(task_id)
+        return task
+
+    def _publish_approval_wake(self, task_id: str) -> None:
+        """Tell firstmate, durably, that a card just left `needs_review`.
+
+        The wake is what makes the approval mechanical rather than something
+        someone has to notice. It is published AFTER the transaction commits,
+        so a wake never claims a move that was rolled back, and a failure to
+        publish never costs him the approval he just gave - a refusal to
+        record his consent because a queue file was unwritable would be the
+        worse of the two failures by a wide margin.
+
+        A failure therefore writes nothing at all (wake.py appends through
+        firstmate's own writer or not at all, never partially) and says so in
+        two places a person actually looks: the server log, and the board's
+        own discrepancy log, where an unwoken approval reads as what it is -
+        a card that has been authorised with nobody told.
+        """
+        try:
+            publish_check_wake(
+                self.fm_home,
+                f"dashboard-approval:{task_id}",
+                f"check: dashboard-approval {task_id} - he approved the plan; "
+                f"card moved to {APPROVED_STATUS}, awaiting dispatch",
+            )
+            return
+        except WakePublishError as exc:
+            reason = str(exc)
+        print(
+            f"dashboard: APPROVAL NOT ANNOUNCED for {task_id} - the card moved to "
+            f"{APPROVED_STATUS} but firstmate was not woken: {reason}. "
+            f"Dispatch it by hand.",
+            file=sys.stderr, flush=True,
+        )
+        try:
+            self.record_audit_finding(
+                "error",
+                f"approved and moved to {APPROVED_STATUS}, but firstmate could not "
+                f"be notified ({reason}) - this card needs dispatching by hand",
+                task_id=task_id,
+                key="approval-wake-unpublished",
+            )
+        except Exception as exc:  # noqa: BLE001 - the log must never cost the approval
+            print(f"dashboard: could not record the unannounced approval either: {exc}",
+                  file=sys.stderr, flush=True)
 
     def delete_task(self, task_id: str) -> None:
         with self._cursor(write=True) as cur:
