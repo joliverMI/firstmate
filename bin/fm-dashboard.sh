@@ -101,6 +101,12 @@
 #   fm-dashboard.sh audit-claim [--forced] [--json]
 #   fm-dashboard.sh audit-release
 #   fm-dashboard.sh start|stop|restart|server-status   (server process lifecycle)
+#       `start`'s bind host defaults to $FM_DASHBOARD_HOST when set, else the
+#       host already recorded in config/dashboard-url, else 127.0.0.1 - so a
+#       plain restart keeps whatever address was reachable before rather than
+#       reverting to localhost-only. `start` then refuses to report success
+#       until the API actually answers on that address, stopping the process
+#       and dying loudly instead of leaving a pane he cannot reach.
 #   fm-dashboard.sh --help
 #
 # The audit-tick/audit-claim/audit-release/audit-status quartet is the fleet
@@ -156,6 +162,24 @@ dash_url() {
     return 0
   fi
   printf '%s\n' "http://127.0.0.1:8420"
+}
+
+# `start`'s bind-host default. A plain restart with no env vars used to bind
+# 127.0.0.1 unconditionally, which is exactly the address his phone cannot
+# reach (see docs/dashboard.md "What has to be running") - so when
+# $FM_DASHBOARD_HOST is unset, keep listening on the host already recorded in
+# config/dashboard-url, the same file `dash_url` above falls back to for API
+# calls, instead of reverting to localhost-only.
+dashboard_default_host() {
+  local recorded
+  if [ -f "$CONFIG/dashboard-url" ]; then
+    recorded=$(head -n1 "$CONFIG/dashboard-url")
+    recorded=${recorded#*://}
+    recorded=${recorded%%/*}
+    recorded=${recorded%%:*}
+    [ -n "$recorded" ] && { printf '%s' "$recorded"; return 0; }
+  fi
+  printf '127.0.0.1'
 }
 
 die() { printf 'fm-dashboard.sh: %s\n' "$1" >&2; exit 1; }
@@ -691,24 +715,41 @@ dashboard_server_running() {  # <pid>
 }
 
 cmd_server_start() {
+  need_tool curl
   local pf; pf=$(pidfile)
   if [ -f "$pf" ] && dashboard_server_running "$(cat "$pf")"; then
     die "already running (pid $(cat "$pf")) - see: fm-dashboard.sh server-status"
   fi
-  local host="${FM_DASHBOARD_HOST:-127.0.0.1}" port="${FM_DASHBOARD_PORT:-8420}"
+  local host="${FM_DASHBOARD_HOST:-$(dashboard_default_host)}" port="${FM_DASHBOARD_PORT:-8420}"
   local db="${FM_DASHBOARD_DB:-$FM_HOME/data/dashboard.db}"
   mkdir -p "$(dirname "$pf")"
   nohup python3 "$DASHBOARD_DIR/server/main.py" --host "$host" --port "$port" --db "$db" \
     > "$FM_HOME/state/dashboard.log" 2>&1 &
   echo $! > "$pf"
   sleep 1
-  if kill -0 "$(cat "$pf")" 2>/dev/null; then
-    printf 'fleet dashboard started (pid %s) - http://%s:%s/  log: %s/state/dashboard.log\n' \
-      "$(cat "$pf")" "$host" "$port" "$FM_HOME"
-  else
+  local pid; pid=$(cat "$pf")
+  if ! kill -0 "$pid" 2>/dev/null; then
     rm -f "$pf"
     die "failed to start - see $FM_HOME/state/dashboard.log"
   fi
+  # A live process is not the same thing as an address his phone can reach:
+  # prove the API actually answers on the address just bound rather than
+  # reporting a healthy start he later finds unreachable.
+  local health="http://$host:$port/api/health" code
+  code=$(curl -sS -o /dev/null -w '%{http_code}' \
+    --connect-timeout "$(dash_timeout_seconds FM_DASHBOARD_CONNECT_TIMEOUT "${FM_DASHBOARD_CONNECT_TIMEOUT:-}" 5)" \
+    --max-time "$(dash_timeout_seconds FM_DASHBOARD_MAX_TIME "${FM_DASHBOARD_MAX_TIME:-}" 20)" \
+    "$health" 2>/dev/null) || code=""
+  case "$code" in
+    2??) ;;
+    *)
+      kill "$pid" 2>/dev/null
+      rm -f "$pf"
+      die "started (pid $pid) but $health did not answer - his phone could not have reached it; stopped it rather than reporting a healthy start. See $FM_HOME/state/dashboard.log"
+      ;;
+  esac
+  printf 'fleet dashboard started (pid %s) - http://%s:%s/  api reachable at %s  log: %s/state/dashboard.log\n' \
+    "$pid" "$host" "$port" "$health" "$FM_HOME"
 }
 
 # `--if-running` is what `restart` passes: having nothing to stop is not a

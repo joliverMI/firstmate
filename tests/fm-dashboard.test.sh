@@ -1594,6 +1594,103 @@ SPLIT_SEED
   pass "the needs-attention split migrates every card to needs-action, keeping its reason, notes, history, and blocked-age, and runs once"
 }
 
+# A restart with no env vars used to bind 127.0.0.1 unconditionally, which is
+# exactly the address his phone cannot reach - config/dashboard-url already
+# records the address that worked, so `start` must default to it instead.
+# 127.0.0.2 stands in for a genuinely different reachable address without
+# needing a real non-loopback interface in CI; some platforms (notably macOS)
+# do not auto-bind that alias, so this test skips itself when it cannot.
+test_start_defaults_the_bind_host_from_config_dashboard_url() {
+  local def_home def_port def_db def_pid out
+
+  def_home="$FM_HOME/default-host-case"
+  mkdir -p "$def_home/state" "$def_home/data" "$def_home/config"
+  def_db="$def_home/data/dashboard.db"
+
+  python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.2",0)); s.close()' >/dev/null 2>&1 \
+    || { pass "skipped - this platform does not auto-bind the 127.0.0.2 loopback alias"; return; }
+
+  def_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.2",0)); print(s.getsockname()[1]); s.close()') \
+    || fail "could not allocate a port for the default-host case"
+  printf 'http://127.0.0.2:%s\n' "$def_port" >"$def_home/config/dashboard-url"
+
+  # The scope here is the bind HOST default only, so the port is still passed
+  # explicitly (a real fleet dashboard may already be listening on the
+  # process-wide default port 8420, and this proves nothing about that).
+  env -u FM_DASHBOARD_HOST FM_HOME="$def_home" FM_DASHBOARD_PORT="$def_port" FM_DASHBOARD_DB="$def_db" \
+    "$DASH" start >"$def_home/start.out" 2>&1 \
+    || { cat "$def_home/start.out" >&2; fail "default-host-case server did not start"; }
+  def_pid=$(cat "$def_home/state/dashboard.pid" 2>/dev/null)
+  [ -n "$def_pid" ] || fail "no pid recorded after the default-host-case start"
+
+  out=$(cat "$def_home/start.out")
+  assert_contains "$out" "http://127.0.0.2:$def_port/" \
+    "with no FM_DASHBOARD_HOST/_PORT set, start did not bind the host recorded in config/dashboard-url"
+  assert_contains "$out" "api reachable" \
+    "start did not report that the API answered on the derived default address"
+
+  # An explicit override must still win over the recorded default.
+  stop_dashboard_server "$def_pid"
+
+  local ovr_port ovr_pid
+  ovr_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()') \
+    || fail "could not allocate a port for the override case"
+  FM_HOME="$def_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$ovr_port" FM_DASHBOARD_DB="$def_db" \
+    "$DASH" start >"$def_home/override.out" 2>&1 \
+    || { cat "$def_home/override.out" >&2; fail "override-case server did not start"; }
+  ovr_pid=$(cat "$def_home/state/dashboard.pid" 2>/dev/null)
+  [ -n "$ovr_pid" ] || fail "no pid recorded after the override-case start"
+  assert_contains "$(cat "$def_home/override.out")" "http://127.0.0.1:$ovr_port/" \
+    "an explicit FM_DASHBOARD_HOST did not win over the address recorded in config/dashboard-url"
+
+  stop_dashboard_server "$ovr_pid"
+  pass "start defaults its bind host to the address recorded in config/dashboard-url, and an explicit FM_DASHBOARD_HOST still wins"
+}
+
+# A process can come up while never actually serving - the reachability check
+# exists so that case fails loudly instead of reporting a healthy start his
+# phone cannot reach.
+test_start_fails_loudly_when_the_api_never_answers() {
+  local nofn_home nofn_port nofn_db fake_bin pf fake_pid out
+
+  nofn_home="$FM_HOME/api-unreachable-case"
+  mkdir -p "$nofn_home/state" "$nofn_home/data"
+  nofn_db="$nofn_home/data/dashboard.db"
+  nofn_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()') \
+    || fail "could not allocate a port for the api-unreachable case"
+  pf="$nofn_home/state/dashboard.pid"
+
+  # A stand-in "python3" that comes up and stays alive without ever opening
+  # the port - a live process that is not an address anything can reach.
+  fake_bin="$nofn_home/fakebin"
+  mkdir -p "$fake_bin"
+  cat >"$fake_bin/python3" <<'FAKE_PY'
+#!/usr/bin/env bash
+echo $$ > "$FAKE_PID_FILE"
+exec sleep 600
+FAKE_PY
+  chmod +x "$fake_bin/python3"
+
+  if PATH="$fake_bin:$PATH" FAKE_PID_FILE="$nofn_home/fake.pid" \
+      FM_HOME="$nofn_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$nofn_port" FM_DASHBOARD_DB="$nofn_db" \
+      "$DASH" start >"$nofn_home/start.out" 2>&1; then
+    fail "start reported success while the API never answered"
+  fi
+  out=$(cat "$nofn_home/start.out")
+  assert_contains "$out" "did not answer" \
+    "start's failure did not say the API never answered"
+  [ -f "$pf" ] && fail "start left a pidfile behind after reporting the API unreachable"
+
+  fake_pid=$(cat "$nofn_home/fake.pid" 2>/dev/null)
+  [ -n "$fake_pid" ] || fail "the stand-in process never recorded its own pid"
+  if kill -0 "$fake_pid" 2>/dev/null; then
+    kill -9 "$fake_pid" 2>/dev/null
+    fail "start left the unreachable process running instead of stopping it"
+  fi
+
+  pass "start stops the process and fails loudly, naming the failure, when the API never answers after it comes up"
+}
+
 test_health_and_server_status
 test_add_and_list_round_trip
 test_status_and_captain_and_title_updates
@@ -1630,3 +1727,5 @@ test_restart_recovers_from_a_crashed_or_stopped_board
 test_lifecycle_commands_refuse_a_recycled_pid
 test_star_and_delete
 test_the_captain_set_agrees_across_every_surface
+test_start_defaults_the_bind_host_from_config_dashboard_url
+test_start_fails_loudly_when_the_api_never_answers
