@@ -17,6 +17,7 @@ SERVER_PID=""
 MIGRATION_SERVER_PID=""
 PORT_HOLDER_PID=""
 RECYCLED_PID=""
+STANDIN_PID=""
 
 # bin/fm-dashboard.sh starts the server with `nohup ... &` and exits, so the
 # process is orphaned and never a child of this shell: `wait` on its pid returns
@@ -43,6 +44,7 @@ fm_dashboard_test_cleanup() {
   stop_dashboard_server "$MIGRATION_SERVER_PID"
   [ -n "$PORT_HOLDER_PID" ] && kill "$PORT_HOLDER_PID" 2>/dev/null
   [ -n "$RECYCLED_PID" ] && kill "$RECYCLED_PID" 2>/dev/null
+  [ -n "$STANDIN_PID" ] && kill -9 "$STANDIN_PID" 2>/dev/null
   fm_test_cleanup
 }
 trap fm_dashboard_test_cleanup EXIT
@@ -1601,7 +1603,7 @@ SPLIT_SEED
 # needing a real non-loopback interface in CI; some platforms (notably macOS)
 # do not auto-bind that alias, so this test skips itself when it cannot.
 test_start_defaults_the_bind_host_from_config_dashboard_url() {
-  local def_home def_port def_db def_pid out
+  local def_home def_port def_db out
 
   def_home="$FM_HOME/default-host-case"
   mkdir -p "$def_home/state" "$def_home/data" "$def_home/config"
@@ -1620,8 +1622,8 @@ test_start_defaults_the_bind_host_from_config_dashboard_url() {
   env -u FM_DASHBOARD_HOST FM_HOME="$def_home" FM_DASHBOARD_PORT="$def_port" FM_DASHBOARD_DB="$def_db" \
     "$DASH" start >"$def_home/start.out" 2>&1 \
     || { cat "$def_home/start.out" >&2; fail "default-host-case server did not start"; }
-  def_pid=$(cat "$def_home/state/dashboard.pid" 2>/dev/null)
-  [ -n "$def_pid" ] || fail "no pid recorded after the default-host-case start"
+  MIGRATION_SERVER_PID=$(cat "$def_home/state/dashboard.pid" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after the default-host-case start"
 
   out=$(cat "$def_home/start.out")
   assert_contains "$out" "http://127.0.0.2:$def_port/" \
@@ -1630,28 +1632,72 @@ test_start_defaults_the_bind_host_from_config_dashboard_url() {
     "start did not report that the API answered on the derived default address"
 
   # An explicit override must still win over the recorded default.
-  stop_dashboard_server "$def_pid"
+  stop_dashboard_server "$MIGRATION_SERVER_PID"
+  MIGRATION_SERVER_PID=""
 
-  local ovr_port ovr_pid
+  local ovr_port
   ovr_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()') \
     || fail "could not allocate a port for the override case"
   FM_HOME="$def_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$ovr_port" FM_DASHBOARD_DB="$def_db" \
     "$DASH" start >"$def_home/override.out" 2>&1 \
     || { cat "$def_home/override.out" >&2; fail "override-case server did not start"; }
-  ovr_pid=$(cat "$def_home/state/dashboard.pid" 2>/dev/null)
-  [ -n "$ovr_pid" ] || fail "no pid recorded after the override-case start"
+  MIGRATION_SERVER_PID=$(cat "$def_home/state/dashboard.pid" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after the override-case start"
   assert_contains "$(cat "$def_home/override.out")" "http://127.0.0.1:$ovr_port/" \
     "an explicit FM_DASHBOARD_HOST did not win over the address recorded in config/dashboard-url"
 
-  stop_dashboard_server "$ovr_pid"
+  stop_dashboard_server "$MIGRATION_SERVER_PID"
+  MIGRATION_SERVER_PID=""
   pass "start defaults its bind host to the address recorded in config/dashboard-url, and an explicit FM_DASHBOARD_HOST still wins"
+}
+
+# The reachability check must tolerate a start that is merely slow: on a
+# loaded fleet host the interpreter can take longer than a second to reach the
+# bind, and killing that start would take the board away exactly the way the
+# check exists to prevent.
+test_start_waits_for_a_slow_but_healthy_bind() {
+  local slow_home slow_port slow_db fake_bin real_py out
+
+  slow_home="$FM_HOME/slow-start-case"
+  mkdir -p "$slow_home/state" "$slow_home/data"
+  slow_db="$slow_home/data/dashboard.db"
+  slow_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()') \
+    || fail "could not allocate a port for the slow-start case"
+  real_py=$(command -v python3)
+
+  # A stand-in "python3" that dawdles well past the old fixed one-second wait
+  # before handing over to the real server.
+  fake_bin="$slow_home/fakebin"
+  mkdir -p "$fake_bin"
+  cat >"$fake_bin/python3" <<FAKE_PY
+#!/usr/bin/env bash
+sleep 2.5
+exec "$real_py" "\$@"
+FAKE_PY
+  chmod +x "$fake_bin/python3"
+
+  PATH="$fake_bin:$PATH" \
+    FM_HOME="$slow_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$slow_port" FM_DASHBOARD_DB="$slow_db" \
+    "$DASH" start >"$slow_home/start.out" 2>&1 \
+    || { cat "$slow_home/start.out" >&2; fail "start gave up on a server that simply took longer than a second to bind"; }
+  MIGRATION_SERVER_PID=$(cat "$slow_home/state/dashboard.pid" 2>/dev/null)
+  [ -n "$MIGRATION_SERVER_PID" ] || fail "no pid recorded after the slow-start-case start"
+  out=$(cat "$slow_home/start.out")
+  assert_contains "$out" "api reachable" \
+    "start did not report the API answering once the slow bind completed"
+  assert_contains "$(FM_HOME="$slow_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$slow_port" "$DASH" server-status)" \
+    "api:     reachable" "the slowly started server is not actually answering"
+
+  stop_dashboard_server "$MIGRATION_SERVER_PID"
+  MIGRATION_SERVER_PID=""
+  pass "start keeps waiting for a slow but healthy bind instead of killing it"
 }
 
 # A process can come up while never actually serving - the reachability check
 # exists so that case fails loudly instead of reporting a healthy start his
 # phone cannot reach.
 test_start_fails_loudly_when_the_api_never_answers() {
-  local nofn_home nofn_port nofn_db fake_bin pf fake_pid out
+  local nofn_home nofn_port nofn_db fake_bin pf out
 
   nofn_home="$FM_HOME/api-unreachable-case"
   mkdir -p "$nofn_home/state" "$nofn_home/data"
@@ -1671,9 +1717,21 @@ exec sleep 600
 FAKE_PY
   chmod +x "$fake_bin/python3"
 
-  if PATH="$fake_bin:$PATH" FAKE_PID_FILE="$nofn_home/fake.pid" \
+  # The stand-in outlives a failed assertion, so record its pid for cleanup
+  # as soon as it exists rather than only once the start has returned.
+  local started_at waited=0
+  ( PATH="$fake_bin:$PATH" FAKE_PID_FILE="$nofn_home/fake.pid" FM_DASHBOARD_MAX_TIME=2 \
       FM_HOME="$nofn_home" FM_DASHBOARD_HOST=127.0.0.1 FM_DASHBOARD_PORT="$nofn_port" FM_DASHBOARD_DB="$nofn_db" \
-      "$DASH" start >"$nofn_home/start.out" 2>&1; then
+      "$DASH" start >"$nofn_home/start.out" 2>&1; echo $? >"$nofn_home/start.rc" ) &
+  started_at=$!
+  until [ -s "$nofn_home/fake.pid" ]; do
+    waited=$((waited + 1))
+    [ "$waited" -gt 100 ] && fail "the stand-in process never recorded its own pid"
+    sleep 0.05
+  done
+  STANDIN_PID=$(cat "$nofn_home/fake.pid")
+  wait "$started_at"
+  if [ "$(cat "$nofn_home/start.rc")" = "0" ]; then
     fail "start reported success while the API never answered"
   fi
   out=$(cat "$nofn_home/start.out")
@@ -1681,12 +1739,10 @@ FAKE_PY
     "start's failure did not say the API never answered"
   [ -f "$pf" ] && fail "start left a pidfile behind after reporting the API unreachable"
 
-  fake_pid=$(cat "$nofn_home/fake.pid" 2>/dev/null)
-  [ -n "$fake_pid" ] || fail "the stand-in process never recorded its own pid"
-  if kill -0 "$fake_pid" 2>/dev/null; then
-    kill -9 "$fake_pid" 2>/dev/null
-    fail "start left the unreachable process running instead of stopping it"
+  if kill -0 "$STANDIN_PID" 2>/dev/null; then
+    fail "start returned while the unreachable process was still running instead of waiting for it to stop"
   fi
+  STANDIN_PID=""
 
   pass "start stops the process and fails loudly, naming the failure, when the API never answers after it comes up"
 }
@@ -1728,4 +1784,5 @@ test_lifecycle_commands_refuse_a_recycled_pid
 test_star_and_delete
 test_the_captain_set_agrees_across_every_surface
 test_start_defaults_the_bind_host_from_config_dashboard_url
+test_start_waits_for_a_slow_but_healthy_bind
 test_start_fails_loudly_when_the_api_never_answers
