@@ -218,7 +218,9 @@ That is the same family as the six bugs below - an outstanding ask left somewher
 The board stores three things when he approves: that he approved, when, and the verbatim plan as displayed at that moment (`plan_approved_at`, `plan_approved_text`).
 The approve call must name the plan text the surface it came from had rendered, and the server refuses it with `409` if that no longer matches the card - so a plan edited between his last page refresh and his tap cannot silently collect consent for the new wording.
 If the plan is edited *after* an approval, the approval is deliberately NOT carried over.
-The record of his word survives - it is never destroyed, because it is the authority the fleet may already have acted under - but the card, `show`, and `--json` all report it as covering the old wording only, render both texts side by side, and put the approve button back.
+The record of his word survives - it is never destroyed, because it is the authority the fleet may already have acted under - but the card, `show`, and `--json` all report it as covering the old wording only and render both texts side by side.
+Editing the plan does not by itself put the question back in front of him: an approved card has already left `needs-review`, and the approve button exists only there.
+To ask him again, move the card back with `bin/fm-dashboard.sh status <id> needs-review --plan <new text>`, which is the existing re-ask path and the only one that renders the button.
 The derived `plan_approval_stale` flag is what says so, and any reader deciding whether it has permission must read it alongside `plan_approved` rather than trusting `plan_approved` alone.
 A stale approval is not weak permission; it is evidence he was asked a different question.
 

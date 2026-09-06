@@ -707,9 +707,12 @@ class Store:
         Editing the plan does not delete an approval he already gave - that
         record is his word and is never silently thrown away - but it does
         break the binding, because the approval was for the old wording.
-        _with_approval_state then reports the card as approved AND stale, the
-        card shows both texts, and the approve button comes back. Nothing
-        here decides that: it falls out of the two columns disagreeing.
+        _with_approval_state then reports the card as approved AND stale and
+        the card shows both texts. Nothing here decides that: it falls out
+        of the two columns disagreeing. It does not put the question back in
+        front of him either: an approved card has left needs_review and the
+        approve button renders only there, so re-asking is set_status back
+        to needs_review with the new wording.
 
         Replacing the wording also dates it in `review_plan_updated_at`, which
         is the durable mark that says the ask itself changed here. Without it

@@ -68,7 +68,10 @@
 #       If he had already approved the previous wording, that
 #       approval is KEPT as the durable record of his word but is no longer
 #       treated as covering the new text: `show` and --json report it as
-#       stale, the card shows both, and the approve button comes back.
+#       stale and the card shows both. It does not ask him again by itself,
+#       because an approved card has already left needs-review and the
+#       approve button exists only there; to re-ask, move it back with
+#       `status <id> needs-review --plan "..."`.
 #       There is deliberately no `approve` subcommand here. Approval is his
 #       word, so it is recorded only where he himself gives it - the board's
 #       own approve button - and never by an agent on his behalf.
