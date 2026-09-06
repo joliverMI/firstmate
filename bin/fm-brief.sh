@@ -244,7 +244,7 @@ A marked request requires one correlated answer after the work; it does not requ
 Never append \`working:\` merely to acknowledge receipt or announce that a marked request has started.
 Physical-action work is the one exception to the two lines above: when routed work changes or takes control of anything in the captain's physical space (lights, audio, doors, machines), append the BEFORE, START, END, and RELEASE announcements in section 9 of your local \`AGENTS.md\` as their own status lines as each one happens.
 An abort is an END, reported as promptly as a completion, never as silence, and an extended silence during an announced action is broken with a \`working:\` line saying what is currently happening.
-Append these even though they are the receipts and start acknowledgements those two lines otherwise forbid, and even though a \`working:\` line does not reliably wake the main firstmate on its own; those two lines still govern every ordinary non-physical routed request.
+Append these even though they are the receipts and start acknowledgements those two lines otherwise forbid; those two lines still govern every ordinary non-physical routed request.
 When a routed-work phase has a supervisor-actionable material change worth reporting under the rule above, give that reported phase a stable key.
 If its first reportable event is \`working [key=<work-slug>]: {material phase}\`, use the same key on its later \`$PAUSED_VERB\`, \`done\`, \`failed\`, \`needs-decision\`, or \`blocked\` event so the earlier working phase is superseded.
 When a keyed phase ends without another reportable state, append \`resolved [key=<work-slug>]: {why it is no longer active}\`.

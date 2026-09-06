@@ -486,10 +486,11 @@ Any action that changes something in the captain's physical space - lights, audi
 The worker owes firstmate each of these as its own status line the moment it happens; firstmate owes the captain each of these the moment it arrives, relayed on its own rather than folded into the next routine update.
 This contract binds every agent doing physical-action work: crewmates reporting through firstmate's own status and relay path, and persistent secondmates reporting over their existing routed status and escalation channel to the main firstmate.
 For a secondmate these announcements override its charter's "does not require a separate receipt or start acknowledgement" default, which continues to govern all of its ordinary non-physical routed work.
-The always-on watcher does not currently treat a `working:` status line as captain-relevant on its own, so the wake queue alone will not deliver BEFORE, START, or a silence-break while an announced physical action is under way.
-On every wake of any kind that arrives while an announced physical action is open, firstmate reads that agent's status file and pane before trusting the wake reason, the same active supervision it already owes for ordinary progress lines.
+For a crewmate the always-on watcher does not currently treat a `working:` status line as captain-relevant on its own, so the wake queue alone will not deliver BEFORE, START, or a silence-break while an announced physical action is under way.
+A secondmate's routed status append is never absorbed by the parent watcher, so its announcements arrive through the ordinary wake queue and firstmate simply relays what the wake already carried.
+That crewmate gap is what firstmate covers actively: on every wake of any kind that arrives while a crewmate's announced physical action is open, it reads that crewmate's status file and pane before trusting the wake reason, the same active supervision it already owes for ordinary progress lines.
 That duty runs inside section 8's single live supervision cycle and never authorizes a second cycle or a poll loop of its own.
-A trust-registered custom check is the one existing way to add a between-wake cadence here, and its sweep interval makes it a partial backstop rather than an immediate relay.
+A trust-registered custom check is the one existing way to add a between-wake cadence for that crewmate case, and its sweep interval makes it a partial backstop rather than an immediate relay.
 
 **Before asking the captain for his time, presence, or consent, re-check the most recent thing that failed.**
 One check, not a sweep of every precondition: the last failure is by far the most likely to recur, and checking further is ceremony paid for in his waiting.
