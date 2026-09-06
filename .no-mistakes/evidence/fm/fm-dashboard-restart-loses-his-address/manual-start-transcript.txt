@@ -1,0 +1,56 @@
+== setup: $FM_HOME/config/dashboard-url records the address the phone uses ==
+$ cat config/dashboard-url
+http://100.66.231.127:47715
+$ env | grep FM_DASHBOARD_
+FM_DASHBOARD_DB=/tmp/fm-manual-Rcl2/data/dashboard.db
+FM_DASHBOARD_PORT=47715
+
+== BEFORE (base commit 2c93d12): plain start with FM_DASHBOARD_HOST unset ==
+$ bin/fm-dashboard.sh start
+fleet dashboard started (pid 1462093) - http://127.0.0.1:47715/  log: /tmp/fm-manual-Rcl2/state/dashboard.log
+exit=0
+$ curl -sS -m 3 http://100.66.231.127:47715/api/health
+curl: (7) Failed to connect to 100.66.231.127 port 47715 after 0 ms: Couldn't connect to server
+ (exit=7)
+$ curl -sS -m 3 http://127.0.0.1:47715/api/health
+{"ok": true} (exit=0)
+
+== AFTER (target commit 66523ab): same plain start, FM_DASHBOARD_HOST still unset ==
+$ bin/fm-dashboard.sh start
+fleet dashboard started (pid 1462487) - http://100.66.231.127:47715/  api reachable at http://100.66.231.127:47715/api/health  log: /tmp/fm-manual-Rcl2/state/dashboard.log
+exit=0
+$ curl -sS -m 3 http://100.66.231.127:47715/api/health
+{"ok": true} (exit=0)
+$ curl -sS -m 3 http://127.0.0.1:47715/api/health
+curl: (7) Failed to connect to 127.0.0.1 port 47715 after 0 ms: Couldn't connect to server
+ (exit=7)
+$ bin/fm-dashboard.sh server-status
+process: running (pid 1462487)
+api:     UNREACHABLE at http://127.0.0.1:47715
+$ bin/fm-dashboard.sh restart
+stopped (pid 1462487)
+fleet dashboard started (pid 1462532) - http://100.66.231.127:47715/  api reachable at http://100.66.231.127:47715/api/health  log: /tmp/fm-manual-Rcl2/state/dashboard.log
+exit=0
+$ curl -sS -m 3 http://100.66.231.127:47715/api/health
+{"ok": true} (exit=0)
+
+== OVERRIDE: FM_DASHBOARD_HOST=127.0.0.1 must win over config/dashboard-url ==
+$ FM_DASHBOARD_HOST=127.0.0.1 bin/fm-dashboard.sh start
+fleet dashboard started (pid 1463268) - http://127.0.0.1:47715/  api reachable at http://127.0.0.1:47715/api/health  log: /tmp/fm-manual-Rcl2/state/dashboard.log
+exit=0
+$ curl -sS -m 3 http://100.66.231.127:47715/api/health
+curl: (7) Failed to connect to 100.66.231.127 port 47715 after 0 ms: Couldn't connect to server
+ (exit=7)
+
+== FAILURE PATH: recorded address is no longer on this host (192.0.2.1) ==
+$ cat config/dashboard-url
+http://192.0.2.1:47715
+$ bin/fm-dashboard.sh start
+fm-dashboard.sh: failed to start - see /tmp/fm-manual-Rcl2/state/dashboard.log
+exit=1
+$ ls state/dashboard.pid
+ls: cannot access '/tmp/fm-manual-Rcl2/state/dashboard.pid': No such file or directory
+$ tail -n 3 state/dashboard.log
+  File "/usr/lib/python3.12/socketserver.py", line 473, in server_bind
+    self.socket.bind(self.server_address)
+OSError: [Errno 99] Cannot assign requested address

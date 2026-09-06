@@ -1,0 +1,12 @@
+== follow-up: does server-status agree with start about the address? ==
+$ cat config/dashboard-url
+http://100.66.231.127:52401
+$ FM_DASHBOARD_PORT=52401 bin/fm-dashboard.sh start   (host unset)
+fleet dashboard started (pid 1510313) - http://100.66.231.127:52401/  api reachable at http://100.66.231.127:52401/api/health  log: /tmp/fm-manual2-fCMn/state/dashboard.log
+$ bin/fm-dashboard.sh server-status   (no FM_DASHBOARD_* env at all -> dash_url falls back to config/dashboard-url)
+process: running (pid 1510313)
+api:     reachable at http://100.66.231.127:52401
+$ FM_DASHBOARD_PORT=52401 bin/fm-dashboard.sh server-status   (only the port set -> dash_url assumes 127.0.0.1)
+process: running (pid 1510313)
+api:     UNREACHABLE at http://127.0.0.1:52401
+stopped (pid 1510313)
