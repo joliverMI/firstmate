@@ -290,6 +290,12 @@ class PlanChangedError(ValueError):
     """
 
 
+PLAN_CHANGED_MESSAGE = (
+    "the plan changed since it was shown - nothing was approved. "
+    "Re-read the card and approve the plan it now displays."
+)
+
+
 class Store:
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -776,33 +782,41 @@ class Store:
         if not stored:
             raise ValueError("there is no recommended plan on this card to approve")
         if normalized_plan(plan_as_displayed) != stored:
-            raise PlanChangedError(
-                "the plan changed since it was shown - nothing was approved. "
-                "Re-read the card and approve the plan it now displays."
-            )
+            raise PlanChangedError(PLAN_CHANGED_MESSAGE)
         ts = now_iso()
         with self._cursor(write=True) as cur:
+            # The plan is matched again in the UPDATE's own WHERE clause, and
+            # not only in the check above, because that check read the card
+            # outside the write lock: a plan edit committed between the read
+            # and this write would otherwise collect his approval for wording
+            # he never saw, and - below - move the card and wake firstmate on
+            # the strength of it. Matching no row here is the same conflict
+            # the check above reports, answered the same way, and the
+            # transaction commits nothing.
             cur.execute(
                 "UPDATE tasks SET plan_approved_at = ?, plan_approved_text = ?, updated_at = ? "
-                "WHERE id = ?",
-                (ts, stored, ts, task_id),
+                "WHERE id = ? AND review_plan = ?",
+                (ts, stored, ts, task_id, stored),
             )
+            if cur.rowcount != 1:
+                raise PlanChangedError(PLAN_CHANGED_MESSAGE)
             # Same transaction as the approval itself, so the two can never
             # disagree: there is no window in which his consent is recorded on
-            # a card still claiming to be blocked on him. The status is re-read
-            # in the UPDATE's own WHERE clause rather than trusted from the
-            # get_task above, because that read happened outside the write
-            # lock: two taps arriving together would otherwise both see
-            # needs_review and each write a transition and a wake for the one
-            # move that actually happened. `advancing` is therefore what the
-            # database says it did, not what this thread expected it to do.
-            # The reason columns are nulled to hold set_status's invariant
-            # that no status carries another status's reason.
+            # a card still claiming to be blocked on him. The status and the
+            # plan are both re-read in the UPDATE's own WHERE clause rather
+            # than trusted from the get_task above, because that read happened
+            # outside the write lock: two taps arriving together would
+            # otherwise both see needs_review and each write a transition and
+            # a wake for the one move that actually happened. `advancing` is
+            # therefore what the database says it did, not what this thread
+            # expected it to do. The reason columns are nulled to hold
+            # set_status's invariant that no status carries another status's
+            # reason.
             cur.execute(
                 """UPDATE tasks SET status = ?, waiting_on_id = NULL,
                    waiting_reason = NULL, needs_action_reason = NULL
-                   WHERE id = ? AND status = 'needs_review'""",
-                (APPROVED_STATUS, task_id),
+                   WHERE id = ? AND status = 'needs_review' AND review_plan = ?""",
+                (APPROVED_STATUS, task_id, stored),
             )
             advancing = cur.rowcount == 1
             if advancing:

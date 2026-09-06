@@ -1302,9 +1302,6 @@ test_his_approval_moves_the_card_out_of_needs_review_and_records_why() {
   [ "$(printf '%s' "$json" | jq '[.status_history[] | select(.to_status=="not_started")] | length')" -eq 1 ] \
     || fail "a repeated approval wrote a second transition onto the card's history"
 
-  # And it advances the card ONLY - it does not start, merge, or run anything,
-  # which is what not_started says out loud.
-  echo "$id" > "$FM_HOME/approved-id"
   pass "his approval takes the card out of needs_review to not_started, with the transition and its reason on the card's own history"
 }
 
@@ -1355,10 +1352,16 @@ test_an_approval_that_is_refused_or_stale_moves_nothing() {
 # record in firstmate's own wake queue - through firstmate's own writer, in the
 # shape its reader already understands.
 test_an_approval_leaves_firstmate_a_wake_record_its_own_reader_can_read() {
-  local id line drain_home out
-  id=$(cat "$FM_HOME/approved-id" 2>/dev/null) \
-    || fail "the approved card id was not recorded by the advance test"
-  [ -n "$id" ] || fail "the approved card id was empty"
+  local id code line drain_home out
+  id=$("$DASH" add --title "Approval wakes firstmate" --captain firstmate --prompt "x" \
+        --status needs-review --plan "Re-seat the loose header pins." | awk '{print $1}')
+  [ -n "$id" ] || fail "could not create the needs-review card"
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/$id/approve-plan" -H 'Content-Type: application/json' \
+    -d '{"plan":"Re-seat the loose header pins."}')
+  [ "$code" = "200" ] || fail "approving the displayed plan failed (got HTTP $code)"
+  [ "$(printf '%s' "$("$DASH" show "$id" --json)" | jq -r '.status')" = "not_started" ] \
+    || fail "the approval did not move the card, so there is no move to have announced"
 
   [ -f "$FM_HOME/state/.wake-queue" ] || fail "his approval left no wake queue at all"
   line=$(grep "dashboard-approval:$id" "$FM_HOME/state/.wake-queue" | tail -n1)

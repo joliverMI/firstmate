@@ -196,7 +196,8 @@ So a current approval - one whose text still matches the plan the card displays 
 
 The plan, `plan_approved_at`, `plan_approved_text`, and the derived `plan_approved`/`plan_approval_stale` flags are written and preserved exactly as they were before, because the approval outlives the status by design (see the paragraph on that below).
 
-**None of that starts the work.** The approval still does not merge, deploy, delete, spend, or run anything, and firstmate still owes exactly what it owed before: dispatching the work, under exactly the boundaries it already had, at whatever rigor that project's delivery mode requires.
+**None of that starts the work.**
+The approval still does not merge, deploy, delete, spend, or run anything, and firstmate still owes exactly what it owed before: dispatching the work, under exactly the boundaries it already had, at whatever rigor that project's delivery mode requires.
 The move and the wake are the *ask* being answered, not the *plan* being carried out - a card leaving the status that means he is blocking, and firstmate being told so without anyone having to notice.
 
 **What is deliberately narrow about it.**
