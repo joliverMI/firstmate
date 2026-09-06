@@ -1,0 +1,7 @@
+ok - fm-brief.sh: the no-mistakes DOD's rule pointer resolves to the needs-decision rule
+not ok - /tmp/fm-brief-base.R87de7/physical-action-home/data/brief-physical-ship-e1/brief.md: missing the physical-action announcement obligation, or it names a worktree-relative AGENTS.md
+[base test_physical_action_contract_covers_ship_and_scout] failed as expected before the fix
+not ok - secondmate charter is missing the physical-action announcement obligation
+[base test_physical_action_contract_covers_secondmate_charter] failed as expected before the fix
+not ok - ship brief lost its numbered physical-action rule
+[base test_physical_action_rule_exempts_the_sparse_reporting_rule] failed as expected before the fix

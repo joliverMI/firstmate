@@ -1,0 +1,31 @@
+ok - fm-brief.sh: bash -n succeeds
+/tmp/fm-brief.cTn6aU/heredoc-in-substitution.sh:2
+ok - fm-brief.sh: no heredoc is nested inside a command substitution (Bash 3.2 parse-safe)
+ok - fm-brief.sh: the no-mistakes Setup guard is named by a path a project worktree can actually run
+ok - fm-brief.sh: the direct-PR create command names the checkout's own origin as --repo
+ok - fm-brief.sh: the direct-PR create command still ships a project the hazard cannot reach
+ok - fm-brief.sh: the direct-PR create command carries a PR body the shell never evaluates
+ok - fm-brief.sh: the direct-PR body file is private to each checkout, not a shared path
+ok - fm-brief.sh: the direct-PR title reaches gh-axi verbatim, apostrophe and all
+ok - fm-brief.sh: --help renders the complete header
+ok - fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly
+ok - fm-brief.sh: ship --mode is required and closed-set validated
+ok - fm-brief.sh: the explicit ship mode wins over the registered posture
+ok - fm-brief.sh: --yolo and scout/secondmate --mode are refused, never silently dropped
+ok - fm-brief.sh: faster paths use configured authority without stacked review
+ok - fm-brief.sh: no-mistakes DOD keeps its apostrophe prose, now parse-safe
+ok - fm-brief.sh: ship project-memory wording carries the AGENTS.md authoring bar
+ok - fm-brief.sh: the no-mistakes DOD's rule pointer resolves to the needs-decision rule
+ok - fm-brief.sh: ship and scout briefs carry the physical-action announcement and precondition-verification contract
+ok - fm-brief.sh: the secondmate charter carries the physical-action announcement contract and overrides its no-receipt default
+ok - fm-brief.sh: the physical-action rule exempts its events from the sparse-reporting rule it names
+ok - fm-brief.sh: --herdr-lab emits the complete hard safety contract
+ok - fm-brief.sh: --herdr-lab uses its quoted Firstmate-owned helper path
+ok - fm-brief.sh: ship and scout scaffolds make omitted Herdr intent fail-visible
+ok - fm-brief.sh: Herdr lab contract covers scouts and rejects secondmate misuse
+ok - fm-brief.sh: --no-projects scaffolds a project-less charter and guards misuse
+ok - fm-brief.sh: marked requests avoid generic acknowledgements and preserve material reporting
+ok - fm-brief.sh: relative directory inputs ignore CDPATH, render stable absolute charter paths, or fail loudly
+ok - fm-brief.sh: custom pause verb renders in every scaffold
+ok - fm-brief.sh: investigation and visual-review completions load the shared decision policy
+ok - fm-brief: scout and secondmate code paths still scaffold well-formed briefs
