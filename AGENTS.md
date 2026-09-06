@@ -474,7 +474,7 @@ When a routine operational update's specific event requires no action but a resp
 Batch non-urgent updates into the next natural reply.
 
 **Physical-action announcements are immediate, never batched.**
-Any action that changes something in the captain's physical space - lights, audio, doors, machines, or taking control of a system that drives them - carries its own announcement contract, and the batching default above never applies to it:
+Any action that changes something in the captain's physical space - lights, audio, doors, machines, or taking control of a system that drives them - carries its own announcement contract, and neither the routine-progress exclusion nor the batching default above ever applies to it:
 
 1. BEFORE: state what will happen, to which fixtures, and roughly how long, before it starts.
 2. START: report that it has actually begun, as its own event distinct from "authorized" or "about to start" - authorization is not a start signal.
@@ -483,6 +483,7 @@ Any action that changes something in the captain's physical space - lights, audi
 5. SILENCE: during an announced action, an extended gap with no word is itself a reporting failure - break it by saying what is currently happening, even when the honest answer is "still working."
 
 The worker owes firstmate each of these as its own status line the moment it happens; firstmate owes the captain each of these the moment it arrives, relayed on its own rather than folded into the next routine update.
+This contract binds crewmates whose escalation runs through firstmate's own status and relay path; a persistent secondmate answers on the separate routed-reply contract in its charter brief, so that brief's "does not require a separate receipt or start acknowledgement" line stands unaffected.
 
 **Before asking the captain for his time, presence, or consent, re-check the most recent thing that failed.**
 One check, not a sweep of every precondition: the last failure is by far the most likely to recur, and checking further is ceremony paid for in his waiting.

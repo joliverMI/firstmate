@@ -389,6 +389,33 @@ test_dod_rule_pointer_resolves_to_the_escalation_rule() {
   pass "fm-brief.sh: the no-mistakes DOD's rule pointer resolves to the needs-decision rule"
 }
 
+test_physical_action_rule_exempts_the_sparse_reporting_rule() {
+  local home id brief kind physical_num sparse_num physical_rule sparse_rule
+  home="$TMP_ROOT/sparse-exemption-home"
+  mkdir -p "$home/data"
+  for kind in ship scout; do
+    id="brief-sparse-exempt-$kind"
+    if [ "$kind" = scout ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
+    fi
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$kind brief was not scaffolded"
+    physical_num=$(sed -n 's/^\([0-9][0-9]*\)\. If this task changes or takes control of anything in the captain.s physical space.*/\1/p' "$brief")
+    [ -n "$physical_num" ] || fail "$kind brief lost its numbered physical-action rule"
+    physical_rule=$(sed -n "/^$physical_num\. /,/^[0-9][0-9]*\. /p" "$brief")
+    sparse_num=$(printf '%s\n' "$physical_rule" | sed -n 's/.*are never the step-by-step FYI progress lines rule \([0-9][0-9]*\) forbids.*/\1/p')
+    [ -n "$sparse_num" ] || fail "$kind brief: the physical-action rule does not exempt itself from the sparse-reporting rule"
+    sparse_rule=$(sed -n "/^$sparse_num\. /,/^[0-9][0-9]*\. /p" "$brief")
+    case "$sparse_rule" in
+      *"No step-by-step"*"FYI progress lines"*) : ;;
+      *) fail "$kind brief: the exemption cites rule $sparse_num, which is not the sparse-reporting rule: $sparse_rule" ;;
+    esac
+  done
+  pass "fm-brief.sh: the physical-action rule exempts its events from the sparse-reporting rule it names"
+}
+
 test_physical_action_contract_covers_ship_and_scout() {
   local home ship_id ship_brief scout_id scout_brief foreign_root
   home="$TMP_ROOT/physical-action-home"
@@ -415,6 +442,8 @@ test_physical_action_contract_covers_ship_and_scout() {
       "$brief: precondition rule lost its honest first-time-failure limitation"
     assert_no_grep "AGENTS.md section 9" "$brief" \
       "$brief: physical-action contract must not point at a worktree-relative AGENTS.md"
+    assert_grep "are never the step-by-step FYI progress lines rule" "$brief" \
+      "$brief: physical-action events are not exempted from the sparse-reporting default"
   done
   pass "fm-brief.sh: ship and scout briefs carry the physical-action announcement and precondition-verification contract"
 }
@@ -1030,6 +1059,7 @@ test_no_mistakes_dod_wording
 test_ship_project_memory_wording
 test_dod_rule_pointer_resolves_to_the_escalation_rule
 test_physical_action_contract_covers_ship_and_scout
+test_physical_action_rule_exempts_the_sparse_reporting_rule
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout
