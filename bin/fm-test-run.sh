@@ -229,7 +229,7 @@ family_for_basename() {
     fm-backend-orca.test.sh)
       printf '%s\n' orca
       ;;
-    fm-dashboard.test.sh|fm-dashboard-card-link.test.sh|fm-fleet-audit.test.sh)
+    fm-dashboard.test.sh|fm-dashboard-boot.test.sh|fm-dashboard-card-link.test.sh|fm-fleet-audit.test.sh)
       printf '%s\n' dashboard
       ;;
     *)

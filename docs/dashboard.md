@@ -15,7 +15,6 @@ It serves both the API and the built page from the same port - there is no separ
 That synchrony is what stops `restart` from ever running two servers against the same database at once, which is what the one-time migration below depends on (see "Why `testing` split into `testing` and `review`").
 Before acting on a recorded pid, `start`, `stop`, and `server-status` all check that the process behind it is still a dashboard server and not a number the host has since recycled: `start` and `server-status` read such a pid as no board running, and `stop` drops the stale pidfile instead of signalling whatever unrelated process inherited that pid.
 `restart` brings the board up even when its stop half had nothing to stop or refused - a crashed board recovers with one command - and a stop that genuinely refused says why on stderr instead of failing silently.
-The process is not currently registered with a supervisor (systemd, cron `@reboot`, or equivalent) - that registration is a deliberate follow-up for whoever deploys this, done once on the host that will run it continuously, not part of this change. Until it is, the board does not survive a host reboot even though its *data* does (see "Persistence" below).
 
 Reachable from the Admiral's phone the same way Lavish already is: bind to the host's tailnet address rather than `127.0.0.1`.
 
@@ -28,6 +27,19 @@ Once `config/dashboard-url` records that address (see "Server URL resolution" in
 For the same reason it refuses up front, leaving no pidfile, when something its pidfile does not track already answers on that address: the new server's bind would fail behind that stranger, and the probe would otherwise vouch for the wrong process.
 
 There is no login and no per-request auth - the same trust model the existing Lavish pages already use, appropriate for a tailnet-only surface with a single operator. If the board is ever exposed beyond the tailnet, that assumption needs revisiting before deploy, not after.
+
+### Surviving a host reboot
+
+`bin/fm-dashboard.sh install-boot` registers the board with the host's systemd **user** manager, once, on the host that runs it continuously.
+It writes and enables `~/.config/systemd/user/fm-dashboard.service`, a `WantedBy=default.target` unit that runs `bin/fm-dashboard.sh serve-foreground` - the same server in the foreground, resolving host, port and database through the same code `start` does - and restarts it on failure.
+It also runs `loginctl enable-linger`, without which a user unit waits for that user to log in rather than coming up with the host; if that needs privileges the command does not have, it still installs and enables the unit and prints the exact command to run by hand.
+`uninstall-boot` stops, disables and removes the unit, and deliberately leaves lingering alone, since other user units on the host depend on it.
+The unit is pinned to `$FM_HOME`'s own checkout and records the home it manages, so it can be installed from anywhere without ever pointing at a disposable task copy, and a secondmate home that shares a host with the primary's unit is unaffected by it.
+`install-boot` refuses outright when `$FM_HOME` is itself a linked git worktree, naming the primary checkout to pass instead, so a unit can never be pinned to a task copy that is later deleted.
+
+Once that unit manages a home, it owns that home's lifecycle: `start`, `stop` and `restart` act on the unit through `systemctl --user` rather than the pidfile, `start` refuses instead of racing a board the unit already has running, and `server-status` reports the unit's state and whether lingering is on instead of "no pid recorded".
+A board hand-started before the unit existed is still tracked by its pidfile and still holds the address the unit needs: `server-status` says so, and `restart` retires it and hands that address to the unit, so installing and handing over is `install-boot` then `restart`.
+Every one of those commands behaves exactly as described above on a home with no unit installed.
 
 ## Persistence
 
@@ -208,7 +220,7 @@ His consent is captured only where he himself gives it, on the board's own butto
 The status now called `review` used to be called `testing`, carrying two different meanings at once: "done, and ready for the Admiral to look at" and "the fleet is currently exercising this." Conflating them meant a dozen actually-finished cards read no differently from a handful genuinely still in flight, and gave the fleet auditor nothing to check, since an in-flight card and a finished one both just sat there looking the same.
 The split keeps `testing` for the live-fleet-activity meaning and gives the ready-for-him-to-look-at meaning its own status, `review`, which inherits every rule the old `testing` status carried: optional to him, never age-checked by the auditor (see the section above; `needs-review`, despite the shared word, IS age-checked, because it is one of the two statuses that mean he is the next step), and the status `bin/fm-teardown.sh` advances a card to once its work has actually landed.
 Every card that was in `testing` before this split meant the ready-for-him-to-look-at thing, since no code existed yet to set the new meaning - `bin/fleet-dashboard/server/store.py`'s one-time migration converts them to `review`, gated by a settings marker so a genuinely new `testing` card is never later mistaken for a pre-split leftover.
-That migration says what it changed rather than running silently: on the startup that converts them it reports the count and the exact card ids (in the server log `bin/fm-dashboard.sh start` names) and writes a `testing` -> `review` row into each converted card's own status history, while deliberately leaving `updated_at` alone so a mechanical relabel does not float a dozen finished cards to the top of his default sort.
+That migration says what it changed rather than running silently: on the startup that converts them it reports the count and the exact card ids (in the server log `bin/fm-dashboard.sh start` names, or in `journalctl --user -u fm-dashboard.service` when the boot unit from "Surviving a host reboot" runs the server) and writes a `testing` -> `review` row into each converted card's own status history, while deliberately leaving `updated_at` alone so a mechanical relabel does not float a dozen finished cards to the top of his default sort.
 Reload any board page that was already open when the upgraded server started: a phone tab still holding the pre-split frontend renders a migrated card with a bare `review` pill and no Mark Complete button until it is refreshed - non-destructive and self-clearing on reload, which is why this is an operational step rather than a cache-busting surface on the board.
 `testing` on its own is no longer inert: the fleet auditor's sweep now corroborates it against live crew state exactly like `working`, so a `testing` card nothing is actually exercising is a discrepancy the same way a stale `working` card is.
 

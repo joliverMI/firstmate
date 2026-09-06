@@ -111,7 +111,38 @@
 #       success until the API actually answers on that address (polling for
 #       up to $FM_DASHBOARD_MAX_TIME seconds, default 20), stopping the
 #       process and dying loudly instead of leaving a pane he cannot reach.
+#   fm-dashboard.sh install-boot                       (start at host boot)
+#   fm-dashboard.sh uninstall-boot
+#   fm-dashboard.sh serve-foreground                   (what the boot unit runs)
 #   fm-dashboard.sh --help
+#
+# Surviving a host reboot: `install-boot` writes and enables a systemd USER
+# unit, $HOME/.config/systemd/user/fm-dashboard.service (override the directory
+# with $FM_DASHBOARD_UNIT_DIR), that runs `serve-foreground` - the same server
+# in the foreground, resolving host, port and database exactly the way `start`
+# does. It pins ExecStart to $FM_HOME/bin/fm-dashboard.sh, the tracked root of
+# the home being installed, never to whatever checkout the command was run
+# from, and records the resolved FM_HOME, host, port and database as unit
+# `Environment=` lines so the unit binds the address that was reachable at
+# install time. It refuses when that $FM_HOME is itself a linked git worktree
+# (its .git is a pointer file rather than the repository), since a unit pinned
+# to a task worktree dies with it, and names the primary checkout to pass as
+# FM_HOME instead; a home that is not a git checkout is unaffected. It also
+# runs `loginctl enable-linger` so the unit comes up at
+# boot with nobody logged in, and prints the exact command to run by hand when
+# that needs privileges it does not have. `uninstall-boot` stops, disables and
+# removes the unit; it deliberately leaves lingering alone, since other user
+# units on the host depend on it.
+#
+# Once that unit exists FOR THIS $FM_HOME, it owns the lifecycle: `start`,
+# `stop` and `restart` act on the unit through `systemctl --user` instead of
+# the pidfile, `start` refuses rather than racing a server the unit already has
+# running, and `server-status` reports the unit's state instead of "no pid
+# recorded". A server hand-started before the unit existed is still tracked by
+# its pidfile: `server-status` says so, and `stop` and `restart` retire it as
+# well, so `restart` is the whole handover. Every one of those commands behaves
+# exactly as it always did on a home with no unit installed, or when the
+# installed unit names a different FM_HOME.
 #
 # The audit-tick/audit-claim/audit-release/audit-status quartet is the fleet
 # auditor's own timer plumbing (bin/fm-fleet-audit-tick.sh and
@@ -185,6 +216,14 @@ dashboard_default_host() {
   fi
   printf '127.0.0.1'
 }
+
+# The one resolution of what the server binds and reads. `start` launches with
+# these, `serve-foreground` (what the boot unit runs) execs with these, and
+# `install-boot` records their resolved values in the unit, so a board brought
+# up at boot lands on exactly the address a hand `start` would have chosen.
+dashboard_bind_host() { printf '%s' "${FM_DASHBOARD_HOST:-$(dashboard_default_host)}"; }
+dashboard_bind_port() { printf '%s' "${FM_DASHBOARD_PORT:-8420}"; }
+dashboard_db_path()   { printf '%s' "${FM_DASHBOARD_DB:-$FM_HOME/data/dashboard.db}"; }
 
 die() { printf 'fm-dashboard.sh: %s\n' "$1" >&2; exit 1; }
 
@@ -691,6 +730,91 @@ cmd_audit_release() {
   dash_call POST /api/audit/release >/dev/null && printf 'sweep lock released\n'
 }
 
+# One bounded health request. Echoes the HTTP status code, or nothing when the
+# address did not answer at all; never fails, so callers read the code.
+dashboard_probe_health() {  # <health-url> <connect-timeout> <attempt-max>
+  # curl still writes its %{http_code} placeholder ("000") on a failed request,
+  # so the exit status - not the output - is what says nothing answered.
+  local code
+  code=$(curl -sS -o /dev/null -w '%{http_code}' \
+    --connect-timeout "$2" --max-time "$3" "$1" 2>/dev/null) || code=""
+  printf '%s' "$code"
+}
+
+# --- the systemd user unit that survives a host reboot ----------------------
+#
+# Installed by `install-boot`; see this script's header for the contract. The
+# unit records the FM_HOME it manages, and every lifecycle command below routes
+# through systemctl only for a unit that names THIS home - so a secondmate home
+# sharing a host with the primary's installed unit keeps the pidfile lifecycle
+# it has always had.
+DASHBOARD_UNIT=fm-dashboard.service
+
+dashboard_unit_dir() { printf '%s' "${FM_DASHBOARD_UNIT_DIR:-${HOME:-/nonexistent}/.config/systemd/user}"; }
+dashboard_unit_path() { printf '%s/%s' "$(dashboard_unit_dir)" "$DASHBOARD_UNIT"; }
+
+dashboard_unit_quote() {  # <value> -> the value as a double-quoted unit-file word
+  local v=$1
+  v=${v//\\/\\\\}
+  v=${v//\"/\\\"}
+  v=${v//%/%%}
+  printf '"%s"' "$v"
+}
+
+dashboard_unit_unquote() {  # <quoted word> -> the value dashboard_unit_quote was given
+  local v=$1
+  v=${v#\"}; v=${v%\"}
+  v=${v//%%/%}
+  v=${v//\\\"/\"}
+  v=${v//\\\\/\\}
+  printf '%s' "$v"
+}
+
+dashboard_unit_home() {
+  local path raw; path=$(dashboard_unit_path)
+  [ -f "$path" ] || return 1
+  raw=$(sed -n 's/^Environment="FM_HOME=\(.*\)"$/\1/p' "$path" | head -n1)
+  [ -n "$raw" ] || return 0
+  dashboard_unit_unquote "\"$raw\""
+}
+
+dashboard_home_key() {  # <dir> -> its physical path, or the spelling given when it cannot be entered
+  (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"
+}
+
+dashboard_same_home() {  # <a> <b>
+  [ -n "$1" ] && [ -n "$2" ] && [ "$(dashboard_home_key "$1")" = "$(dashboard_home_key "$2")" ]
+}
+
+dashboard_unit_manages_this_home() {
+  command -v systemctl >/dev/null 2>&1 || return 1
+  local home; home=$(dashboard_unit_home) || return 1
+  dashboard_same_home "$home" "$FM_HOME"
+}
+
+dashboard_primary_checkout() {  # <linked worktree> -> the checkout whose .git it links into
+  local gitdir; gitdir=$(sed -n 's/^gitdir: //p' "$1/.git" | head -n1)
+  [ -n "$gitdir" ] || return 1
+  case "$gitdir" in /*) ;; *) gitdir="$1/$gitdir" ;; esac
+  gitdir=${gitdir%/worktrees/*}
+  case "$gitdir" in
+    */.git) printf '%s' "${gitdir%/.git}" ;;
+    *) return 1 ;;
+  esac
+}
+
+dashboard_unit_active() { systemctl --user is-active --quiet "$DASHBOARD_UNIT" 2>/dev/null; }
+
+# `is-active`/`is-enabled` exit non-zero for every state but the good one, and
+# their words are the reportable answer either way.
+dashboard_unit_state() { systemctl --user is-active "$DASHBOARD_UNIT" 2>/dev/null || true; }
+dashboard_unit_enabled() { systemctl --user is-enabled "$DASHBOARD_UNIT" 2>/dev/null || true; }
+
+dashboard_linger_enabled() {
+  command -v loginctl >/dev/null 2>&1 || return 1
+  loginctl show-user "${USER:-$(id -un)}" --property=Linger 2>/dev/null | grep -qx 'Linger=yes'
+}
+
 pidfile() { printf '%s/state/dashboard.pid' "$FM_HOME"; }
 
 # A recorded pid only means "the board" if the process behind it is still the
@@ -720,12 +844,16 @@ dashboard_server_running() {  # <pid>
 
 cmd_server_start() {
   need_tool curl
+  if dashboard_unit_manages_this_home; then
+    dashboard_unit_start
+    return
+  fi
   local pf; pf=$(pidfile)
   if [ -f "$pf" ] && dashboard_server_running "$(cat "$pf")"; then
     die "already running (pid $(cat "$pf")) - see: fm-dashboard.sh server-status"
   fi
-  local host="${FM_DASHBOARD_HOST:-$(dashboard_default_host)}" port="${FM_DASHBOARD_PORT:-8420}"
-  local db="${FM_DASHBOARD_DB:-$FM_HOME/data/dashboard.db}"
+  local host port db
+  host=$(dashboard_bind_host); port=$(dashboard_bind_port); db=$(dashboard_db_path)
   local health="http://$host:$port/api/health" code=""
   local connect_timeout max_time attempt_max budget_whole deadline
   connect_timeout=$(dash_timeout_seconds FM_DASHBOARD_CONNECT_TIMEOUT "${FM_DASHBOARD_CONNECT_TIMEOUT:-}" 5)
@@ -738,8 +866,7 @@ cmd_server_start() {
   # probe too, before the new interpreter has even reached its bind - and
   # that bind is going to fail. Refuse up front rather than report a healthy
   # start for a process that is dying on EADDRINUSE behind a stranger.
-  code=$(curl -sS -o /dev/null -w '%{http_code}' \
-    --connect-timeout "$connect_timeout" --max-time "$attempt_max" "$health" 2>/dev/null) || code=""
+  code=$(dashboard_probe_health "$health" "$connect_timeout" "$attempt_max")
   if [ -n "$code" ]; then
     die "something already answers at $health (HTTP $code) that this pidfile does not track - refusing to start a second server on that address. See: fm-dashboard.sh server-status"
   fi
@@ -758,8 +885,7 @@ cmd_server_start() {
   budget_whole=${max_time%%.*}
   deadline=$((SECONDS + 10#${budget_whole:-0} + 1))
   while kill -0 "$pid" 2>/dev/null; do
-    code=$(curl -sS -o /dev/null -w '%{http_code}' \
-      --connect-timeout "$connect_timeout" --max-time "$attempt_max" "$health" 2>/dev/null) || code=""
+    code=$(dashboard_probe_health "$health" "$connect_timeout" "$attempt_max")
     case "$code" in 2??) break ;; esac
     [ "$SECONDS" -ge "$deadline" ] && break
     sleep 0.25
@@ -785,6 +911,42 @@ cmd_server_start() {
     "$pid" "$host" "$port" "$health" "$FM_HOME"
 }
 
+# Bringing up a unit-managed board is `systemctl --user start` - never a second
+# process racing the unit for the same port. The refusals and the "prove the API
+# answers before reporting success" contract are the pidfile path's, unchanged:
+# an address he cannot reach is the failure either way.
+dashboard_unit_start() {
+  local host port health connect_timeout max_time attempt_max code budget_whole deadline
+  host=$(dashboard_bind_host); port=$(dashboard_bind_port)
+  health="http://$host:$port/api/health"
+  connect_timeout=$(dash_timeout_seconds FM_DASHBOARD_CONNECT_TIMEOUT "${FM_DASHBOARD_CONNECT_TIMEOUT:-}" 5)
+  max_time=$(dash_timeout_seconds FM_DASHBOARD_MAX_TIME "${FM_DASHBOARD_MAX_TIME:-}" 20)
+  attempt_max=$(awk -v m="$max_time" 'BEGIN { print (m < 2) ? m : 2 }')
+  if dashboard_unit_active; then
+    die "already running under the systemd user unit $DASHBOARD_UNIT - see: fm-dashboard.sh server-status"
+  fi
+  code=$(dashboard_probe_health "$health" "$connect_timeout" "$attempt_max")
+  if [ -n "$code" ]; then
+    die "something already answers at $health (HTTP $code) that $DASHBOARD_UNIT does not manage - refusing to start a second server on that address. See: fm-dashboard.sh server-status"
+  fi
+  systemctl --user start "$DASHBOARD_UNIT" \
+    || die "systemctl --user start $DASHBOARD_UNIT failed - see: journalctl --user -u $DASHBOARD_UNIT"
+  budget_whole=${max_time%%.*}
+  deadline=$((SECONDS + 10#${budget_whole:-0} + 1))
+  while :; do
+    code=$(dashboard_probe_health "$health" "$connect_timeout" "$attempt_max")
+    case "$code" in 2??) break ;; esac
+    [ "$SECONDS" -ge "$deadline" ] && break
+    sleep 0.25
+  done
+  case "$code" in
+    2??) ;;
+    *) die "$DASHBOARD_UNIT started but $health did not answer within ${max_time}s - his phone could not have reached it. See: journalctl --user -u $DASHBOARD_UNIT" ;;
+  esac
+  printf 'fleet dashboard started by %s - http://%s:%s/  api reachable at %s\n' \
+    "$DASHBOARD_UNIT" "$host" "$port" "$health"
+}
+
 # SIGTERM, then SIGKILL after ~10s of being ignored. Returns 0 when it exited
 # on SIGTERM, 2 when SIGKILL was needed, 1 when it is still alive after ~15s
 # and the port must be assumed held. Prints nothing; callers own the wording.
@@ -805,6 +967,38 @@ dashboard_server_terminate() {  # <pid>
 # failure when the point of the command is to end up with a board running, but
 # a stop that actually refused still has to say so on stderr and report it.
 cmd_server_stop() {
+  if dashboard_unit_manages_this_home; then
+    dashboard_unit_stop "${1:-}"
+    return
+  fi
+  dashboard_stop_pidfile_server "${1:-}"
+}
+
+# Stopping a unit-managed board also retires a server hand-started before the
+# unit existed: that process holds the port the unit needs, so `restart` is the
+# whole handover rather than a step in one.
+dashboard_unit_stop() {
+  local lenient=false stopped=false pf
+  [ "${1:-}" = "--if-running" ] && lenient=true
+  pf=$(pidfile)
+  if [ -f "$pf" ]; then
+    dashboard_server_running "$(cat "$pf")" && stopped=true
+    dashboard_stop_pidfile_server --if-running || return 1
+  fi
+  if dashboard_unit_active; then
+    systemctl --user stop "$DASHBOARD_UNIT" \
+      || die "systemctl --user stop $DASHBOARD_UNIT failed - see: journalctl --user -u $DASHBOARD_UNIT"
+    printf 'stopped (systemd user unit %s)\n' "$DASHBOARD_UNIT"
+    stopped=true
+  fi
+  if ! $stopped; then
+    $lenient && return 0
+    die "$DASHBOARD_UNIT is not running (see: fm-dashboard.sh server-status)"
+  fi
+  return 0
+}
+
+dashboard_stop_pidfile_server() {
   local lenient=false
   [ "${1:-}" = "--if-running" ] && lenient=true
   local pf; pf=$(pidfile)
@@ -842,7 +1036,21 @@ cmd_server_stop() {
 
 cmd_server_status() {
   local pf; pf=$(pidfile)
-  if [ -f "$pf" ] && dashboard_server_running "$(cat "$pf")"; then
+  if dashboard_unit_manages_this_home; then
+    printf 'process: unit-managed by %s (%s, %s)\n' \
+      "$DASHBOARD_UNIT" "$(dashboard_unit_state)" "$(dashboard_unit_enabled)"
+    local user="${USER:-$(id -un)}"
+    if dashboard_linger_enabled; then
+      printf 'boot:    lingering on for %s - the unit comes up with the host\n' "$user"
+    else
+      printf 'boot:    lingering OFF for %s - the board waits for a login instead of coming up with the host: loginctl enable-linger %s\n' \
+        "$user" "$user"
+    fi
+    if [ -f "$pf" ] && dashboard_server_running "$(cat "$pf")"; then
+      printf 'process: ALSO running from a pidfile (pid %s), hand-started before the unit - hand it over with: fm-dashboard.sh restart\n' \
+        "$(cat "$pf")"
+    fi
+  elif [ -f "$pf" ] && dashboard_server_running "$(cat "$pf")"; then
     printf 'process: running (pid %s)\n' "$(cat "$pf")"
   else
     printf 'process: not running (no active pid recorded by this script)\n'
@@ -852,6 +1060,102 @@ cmd_server_status() {
   else
     printf 'api:     UNREACHABLE at %s\n' "$(dash_url)"
   fi
+}
+
+# What the boot unit runs: the same server in the FOREGROUND, resolved through
+# the same three functions `start` uses, and exec'd so systemd supervises the
+# server itself rather than this wrapper. It writes no pidfile - the unit is
+# the record of what is running.
+cmd_serve_foreground() {
+  local host port db
+  host=$(dashboard_bind_host); port=$(dashboard_bind_port); db=$(dashboard_db_path)
+  mkdir -p "$(dirname "$db")"
+  exec python3 "$DASHBOARD_DIR/server/main.py" --host "$host" --port "$port" --db "$db"
+}
+
+cmd_install_boot() {
+  command -v systemctl >/dev/null 2>&1 \
+    || die "requires 'systemctl' on PATH - without a systemd user manager there is no unit to install"
+  FM_HOME=$(dashboard_home_key "$FM_HOME")
+  if [ -f "$FM_HOME/.git" ]; then
+    local primary
+    primary=$(dashboard_primary_checkout "$FM_HOME") || primary='<primary checkout>'
+    die "FM_HOME=$FM_HOME is a linked git worktree ($FM_HOME/.git is a pointer file, not the repository) - a unit pinned there dies with the worktree. Install from the tracked root instead: FM_HOME=$primary fm-dashboard.sh install-boot"
+  fi
+  local exec_path="$FM_HOME/bin/fm-dashboard.sh"
+  [ -x "$exec_path" ] \
+    || die "no runnable dashboard script at $exec_path - the unit is pinned to \$FM_HOME's own checkout, never to the copy this command was run from"
+  local path; path=$(dashboard_unit_path)
+  if [ -f "$path" ]; then
+    local existing; existing=$(dashboard_unit_home)
+    if [ -z "$existing" ]; then
+      die "$path already exists and records no FM_HOME - remove it by hand, then run install-boot again"
+    fi
+    dashboard_same_home "$existing" "$FM_HOME" \
+      || die "$path already manages FM_HOME=$existing - run uninstall-boot from that home before installing this one"
+  fi
+  local host port db dir
+  host=$(dashboard_bind_host); port=$(dashboard_bind_port); db=$(dashboard_db_path)
+  dir=$(dashboard_unit_dir)
+  mkdir -p "$dir" || die "could not create $dir"
+  cat > "$path" <<UNIT || die "could not write $path"
+[Unit]
+Description=Admiral's Fleet Dashboard (firstmate)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=$(dashboard_unit_quote "FM_HOME=$FM_HOME")
+Environment=$(dashboard_unit_quote "FM_DASHBOARD_HOST=$host")
+Environment=$(dashboard_unit_quote "FM_DASHBOARD_PORT=$port")
+Environment=$(dashboard_unit_quote "FM_DASHBOARD_DB=$db")
+ExecStart=$(dashboard_unit_quote "$exec_path") serve-foreground
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+UNIT
+  systemctl --user daemon-reload || die "systemctl --user daemon-reload failed - $path is written but not loaded"
+  systemctl --user enable "$DASHBOARD_UNIT" >/dev/null 2>&1 \
+    || die "systemctl --user enable $DASHBOARD_UNIT failed - $path is written but will not start at boot"
+  local user="${USER:-$(id -un)}" linger
+  if dashboard_linger_enabled; then
+    linger="lingering already on for $user"
+  elif command -v loginctl >/dev/null 2>&1 && loginctl enable-linger "$user" >/dev/null 2>&1; then
+    linger="lingering enabled for $user"
+  else
+    linger="lingering NOT enabled - the board will wait for a login instead of coming up with the host. Run this yourself: sudo loginctl enable-linger $user"
+  fi
+  printf 'installed %s -> %s\n' "$DASHBOARD_UNIT" "$path"
+  printf 'binds http://%s:%s/  db %s  home %s\n' "$host" "$port" "$db" "$FM_HOME"
+  printf '%s\n' "$linger"
+  local pf; pf=$(pidfile)
+  if [ -f "$pf" ] && dashboard_server_running "$(cat "$pf")"; then
+    printf 'a hand-started board (pid %s) still holds that address - hand it over with: fm-dashboard.sh restart\n' "$(cat "$pf")"
+  else
+    printf 'bring it up now with: fm-dashboard.sh start\n'
+  fi
+}
+
+cmd_uninstall_boot() {
+  command -v systemctl >/dev/null 2>&1 || die "requires 'systemctl' on PATH"
+  local path; path=$(dashboard_unit_path)
+  [ -f "$path" ] || die "no unit installed at $path"
+  local existing; existing=$(dashboard_unit_home)
+  dashboard_same_home "$existing" "$FM_HOME" \
+    || die "$path manages FM_HOME=${existing:-<none recorded>}, not $FM_HOME - run uninstall-boot from that home"
+  if dashboard_unit_active; then
+    systemctl --user stop "$DASHBOARD_UNIT" \
+      || die "systemctl --user stop $DASHBOARD_UNIT failed - refusing to remove a unit file still supervising a running board"
+  fi
+  systemctl --user disable "$DASHBOARD_UNIT" >/dev/null 2>&1 || true
+  rm -f "$path"
+  systemctl --user daemon-reload || true
+  printf 'removed %s (%s) - the board no longer starts at boot, and start/stop/restart go back to the pidfile\n' \
+    "$DASHBOARD_UNIT" "$path"
+  printf 'lingering left as it is: other user units on this host depend on it\n'
 }
 
 main() {
@@ -884,6 +1188,9 @@ main() {
     stop) cmd_server_stop ;;
     restart) cmd_server_stop --if-running || true; cmd_server_start ;;
     server-status) cmd_server_status ;;
+    install-boot) cmd_install_boot ;;
+    uninstall-boot) cmd_uninstall_boot ;;
+    serve-foreground) cmd_serve_foreground ;;
     # Help is the header comment block itself: everything from line 2 (past the
     # shebang) up to the first non-comment line. Derived, not a fixed range, so
     # editing the header can never silently truncate --help.
