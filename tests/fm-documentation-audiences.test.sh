@@ -135,7 +135,43 @@ MD
   pass "local links resolve while dates, versions, commands, and incident prose remain semantically reviewed"
 }
 
+test_no_mistakes_document_schema() {
+  # .no-mistakes.yaml is machine-consumed by the no-mistakes Document step, so
+  # parse it as YAML and assert on the resulting document.instructions value
+  # rather than grepping the file, where comments could satisfy a substring.
+  local config="$ROOT/.no-mistakes.yaml" instructions
+  if python3 -c 'import yaml' >/dev/null 2>&1; then
+    instructions=$(python3 -c '
+import sys, yaml
+doc = yaml.safe_load(open(sys.argv[1]))
+if not isinstance(doc, dict) or not isinstance(doc.get("document"), dict):
+    raise SystemExit("document is not a mapping")
+value = doc["document"].get("instructions")
+if not isinstance(value, str):
+    raise SystemExit("document.instructions is not a string")
+print(" ".join(value.split()))
+' "$config") || fail ".no-mistakes.yaml does not carry a string document.instructions"
+  elif command -v ruby >/dev/null 2>&1; then
+    instructions=$(ruby -ryaml -e '
+doc = YAML.safe_load(File.read(ARGV[0]))
+raise "document is not a mapping" unless doc.is_a?(Hash) && doc["document"].is_a?(Hash)
+value = doc["document"]["instructions"]
+raise "document.instructions is not a string" unless value.is_a?(String)
+puts value.split.join(" ")
+' "$config") || fail ".no-mistakes.yaml does not carry a string document.instructions"
+  else
+    fail "a YAML parser (python3 with PyYAML, or ruby) is required to parse .no-mistakes.yaml"
+  fi
+  [ -n "$instructions" ] || fail "document.instructions is empty"
+  assert_contains "$instructions" "docs/documentation-audiences.json" \
+    "Document instructions do not point to the audience inventory"
+  assert_contains "$instructions" "review the complete branch diff" \
+    "Document instructions do not require a complete branch-diff review"
+  pass "no-mistakes uses the supported trusted document.instructions schema"
+}
+
 test_repository_inventory_passes
 test_duplicate_and_setup_classification_fail
 test_required_pointer_fails
 test_local_links_and_no_keyword_heuristic
+test_no_mistakes_document_schema

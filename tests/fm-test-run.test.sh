@@ -425,6 +425,40 @@ test_portable_shard_union_and_coverage_guard() {
   pass "portable shard union, disjointness, and coverage guard hold"
 }
 
+test_coverage_guard_survives_a_non_c_collation_locale() {
+  local tmp loc pick out rc
+  # The guard sorts its lane files with LC_ALL=C but compares them with `comm`.
+  # Under a glibc collation that ignores '-' and '.' (en_US.UTF-8 and friends) a
+  # C-sorted file reads as unsorted, `comm` exits non-zero, and `set -e` kills
+  # the guard with no verdict at all. Run it under such a locale and require the
+  # same clean answer it gives under C.
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-locale.XXXXXX")
+  "$RUNNER" --list --all | LC_ALL=C sort >"$tmp/all_c"
+
+  pick=""
+  while read -r loc; do
+    [ -n "$loc" ] || continue
+    # Only a locale that actually reorders the inventory exercises the bug;
+    # C.UTF-8 collates by codepoint and would pass either way.
+    if ! LC_ALL="$loc" sort -c "$tmp/all_c" 2>/dev/null; then
+      pick="$loc"
+      break
+    fi
+  done < <(locale -a 2>/dev/null | grep -i -e 'utf-\?8$' || true)
+  rm -rf "$tmp"
+  if [ -z "$pick" ]; then
+    pass "skipped - no installed locale reorders the test inventory relative to C"
+    return 0
+  fi
+
+  out=$(LC_ALL="$pick" "$RUNNER" --check-coverage 2>&1) && rc=0 || rc=$?
+  [ "$rc" -eq 0 ] \
+    || fail "--check-coverage under LC_ALL=$pick exited $rc"$'\n'"--- output ---"$'\n'"$out"
+  assert_contains "$out" "FM_TEST_COVERAGE ok" "coverage guard verdict under LC_ALL=$pick"
+  assert_not_contains "$out" "comm:" "coverage guard must not emit comm sort-order warnings"
+  pass "coverage guard verdict is locale-independent (checked under LC_ALL=$pick)"
+}
+
 test_portable_serial_shards_partition_the_serial_lane() {
   local lanes count serial shard listed union dups shard_lane total cap
   lanes=$("$RUNNER" --list-lanes)
@@ -782,6 +816,7 @@ test_gate_skip_accounting
 test_fail_on_gate_skip_token
 test_exclude_family
 test_portable_shard_union_and_coverage_guard
+test_coverage_guard_survives_a_non_c_collation_locale
 test_portable_serial_shards_partition_the_serial_lane
 test_portable_serial_shard_lane_refusals
 test_jobs_requires_proven_isolated
