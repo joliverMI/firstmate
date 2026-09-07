@@ -1033,28 +1033,6 @@ test_no_run_idle_secondmate_resolved_event_not_state() {
   pass "a trailing resolved: event does not corrupt state render (idle stays idle)"
 }
 
-# A remote secondmate's endpoint lives on ANOTHER host's server (window=remote:<id>
-# with no backend= key, so fm_backend_of_meta defaults to tmux). The local pinned
-# probe can never resolve that target - proven here by making it always fail
-# (FM_FAKE_TMUX_MISSING=1) regardless of the target string - so pane_readable must
-# be skipped entirely for a remote_host record rather than short-circuiting the
-# status-log fallback that is this machine's only real source for a remote mate.
-test_remote_secondmate_not_judged_by_local_tmux() {
-  reset_fakes
-  local d; d=$(new_case remote-mate)
-  mkdir -p "$d/wt"
-  make_fakebin "$d" >/dev/null
-  fm_write_meta "$d/state/mate.meta" "window=remote:mate" "worktree=$d/wt" "kind=secondmate" "remote_host=homelab"
-  printf 'working: reconciling backlog\n' > "$d/state/mate.status"
-  FM_FAKE_AXI_STATUS=""
-  FM_FAKE_TMUX_MISSING=1
-  local out; out=$(run_crew_state "$d" mate)
-  assert_contains "$out" "state: working" "a remote secondmate's status log is still read despite the always-failing local probe"
-  assert_contains "$out" "source: status-log" "a remote secondmate falls back to its status log rather than short-circuiting on the local probe"
-  assert_not_contains "$out" "backend target gone" "a remote secondmate must never be judged by the local tmux server"
-  pass "a remote secondmate is not judged by this machine's local tmux server"
-}
-
 test_dead_window_ignores_stale_status_log() {
   reset_fakes
   local d; d=$(new_case dead-window)
@@ -1173,6 +1151,105 @@ test_torn_down_worktree() {
   assert_contains "$out" "state: unknown" "torn-down -> unknown"
   assert_contains "$out" "source: none" "torn-down -> none source"
   pass "torn-down worktree is handled gracefully"
+}
+
+# --- remote secondmate arm ---------------------------------------------------
+# A meta recording remote_host= must never be read through the local worktree
+# probe or a local backend adapter: the recorded worktree and pane live on the
+# remote host, and the old local reads misreported a healthy remote mate as
+# "worktree gone". These cases drive the real helper over the real fm-on.sh
+# route with a stubbed ssh transport (FM_SSH_BIN seam): the stub prints
+# FM_FAKE_REMOTE_STATE_OUT as the remote endpoint's recovery-grade state and
+# exits FM_FAKE_SSH_RC.
+
+setup_remote_case() {  # <name> -> echoes case dir with remote meta + registry
+  local d
+  d=$(new_case "$1")
+  mkdir -p "$d/data" "$d/fakebin"
+  fm_write_meta "$d/state/rsm.meta" \
+    "window=remote:rsm" \
+    "endpoint_task_id=rsm" \
+    "worktree=/remote/home/never-locally-present" \
+    "harness=claude" \
+    "kind=secondmate" \
+    "mode=secondmate" \
+    "remote_host=remote-mac" \
+    "remote_root=/remote/root" \
+    "remote_backend=herdr" \
+    "remote_herdr_session=fm-remote" \
+    "remote_target=fm-remote:w1:p1"
+  cat > "$d/data/secondmates.md" <<EOF
+- rsm - remote test domain (host: remote-mac; root: /remote/root; home: /remote/home; scope: remote testing; projects: alpha; added 2026-08-02)
+EOF
+  cat > "$d/fakebin/fake-ssh" <<'SH'
+#!/usr/bin/env bash
+cat > /dev/null
+[ -z "${FM_FAKE_REMOTE_STATE_OUT:-}" ] || printf '%s\n' "$FM_FAKE_REMOTE_STATE_OUT"
+exit "${FM_FAKE_SSH_RC:-0}"
+SH
+  chmod +x "$d/fakebin/fake-ssh"
+  printf '%s\n' "$d"
+}
+
+run_remote_crew_state() {  # <case-dir> <id>
+  PATH="$1/fakebin:$PATH" FM_HOME="$1" FM_STATE_OVERRIDE="$1/state" \
+    FM_SSH_BIN="$1/fakebin/fake-ssh" "$CREW_STATE" "$2"
+}
+
+test_remote_alive_with_log_uses_status_log() {
+  reset_fakes
+  local d out rc
+  d=$(setup_remote_case remote-alive-log)
+  make_fakebin "$d" >/dev/null
+  printf 'working: refactoring the quota adapter\n' > "$d/state/rsm.status"
+  out=$(FM_FAKE_REMOTE_STATE_OUT=alive FM_FAKE_SSH_RC=0 run_remote_crew_state "$d" rsm); rc=$?
+  expect_code 0 "$rc" "remote alive exits 0"
+  assert_contains "$out" "state: working" "alive remote mate with a working log reads working"
+  assert_contains "$out" "source: status-log" "alive remote mate reads current activity from the routed log"
+  assert_contains "$out" "remote endpoint alive on remote-mac" "the remote liveness read should be visible"
+  assert_not_contains "$out" "worktree gone" "a healthy remote mate must never read as torn down"
+  pass "fm-crew-state remote: alive endpoint falls through to the routed status log"
+}
+
+test_remote_alive_idle_is_healthy_not_gone() {
+  reset_fakes
+  local d out rc
+  d=$(setup_remote_case remote-alive-idle)
+  make_fakebin "$d" >/dev/null
+  out=$(FM_FAKE_REMOTE_STATE_OUT=alive FM_FAKE_SSH_RC=0 run_remote_crew_state "$d" rsm); rc=$?
+  expect_code 0 "$rc" "remote alive-idle exits 0"
+  assert_contains "$out" "source: remote-endpoint" "the remote endpoint is the reported source"
+  assert_contains "$out" "alive on remote-mac" "an idle remote mate reads alive"
+  assert_not_contains "$out" "worktree gone" "a healthy remote mate must never read as torn down"
+  assert_not_contains "$out" "backend target gone" "a healthy remote mate must never read as a dead target"
+  pass "fm-crew-state remote: an idle alive endpoint reads alive, never gone or dead"
+}
+
+test_remote_unreachable_is_unknown_remote_not_dead() {
+  reset_fakes
+  local d out rc
+  d=$(setup_remote_case remote-unreachable)
+  make_fakebin "$d" >/dev/null
+  printf 'working: refactoring the quota adapter\n' > "$d/state/rsm.status"
+  out=$(FM_FAKE_SSH_RC=255 run_remote_crew_state "$d" rsm); rc=$?
+  expect_code 0 "$rc" "unreachable remote exits 0"
+  assert_contains "$out" "unknown-remote" "an unreachable remote must be labeled unknown-remote"
+  assert_contains "$out" "not proof of death" "an unreachable remote must not read as dead"
+  assert_not_contains "$out" "worktree gone" "an unreachable remote must never read as torn down"
+  assert_not_contains "$out" "backend target gone" "an unreachable remote must never read as a dead target"
+  pass "fm-crew-state remote: an unreachable host reads unknown-remote, never gone or dead"
+}
+
+test_remote_dead_reports_remote_verdict() {
+  reset_fakes
+  local d out rc
+  d=$(setup_remote_case remote-dead)
+  make_fakebin "$d" >/dev/null
+  out=$(FM_FAKE_REMOTE_STATE_OUT=dead FM_FAKE_SSH_RC=0 run_remote_crew_state "$d" rsm); rc=$?
+  expect_code 0 "$rc" "remote dead exits 0"
+  assert_contains "$out" "remote endpoint dead on remote-mac" \
+    "a genuinely dead remote endpoint reports the remote host's own verdict"
+  pass "fm-crew-state remote: the remote host's own dead verdict is reported truthfully"
 }
 
 test_missing_meta() {
@@ -1369,13 +1446,16 @@ test_no_run_idle_pane_uses_keyed_log
 test_no_run_idle_pane_paused
 test_no_run_idle_pane_custom_paused_verb
 test_no_run_idle_secondmate_resolved_event_not_state
-test_remote_secondmate_not_judged_by_local_tmux
 test_dead_window_ignores_stale_status_log
 test_dead_window_still_reports_terminal_run_step
 test_dead_window_still_reports_active_run_step
 test_no_timeout_uses_perl_bound
 test_scout_skips_run_lookup
 test_torn_down_worktree
+test_remote_alive_with_log_uses_status_log
+test_remote_alive_idle_is_healthy_not_gone
+test_remote_unreachable_is_unknown_remote_not_dead
+test_remote_dead_reports_remote_verdict
 test_missing_meta
 test_provably_working_via_runs_list_fallback
 test_not_provably_working_when_stopped

@@ -33,6 +33,17 @@ trap 'fm_fleet_audit_test_cleanup; exit 143' TERM
 FM_HOME=$(fm_test_tmproot fm-fleet-audit-test) || fail "could not create temp FM_HOME"
 mkdir -p "$FM_HOME/state" "$FM_HOME/data"
 export FM_HOME
+# The fixture crews below are remote secondmates whose endpoint read goes over
+# fm-on.sh's ssh transport; this stub answers `alive` for every host so the
+# sweep's crew-state corroboration reads the routed status log, never a real ssh.
+mkdir -p "$FM_HOME/fakebin"
+cat > "$FM_HOME/fakebin/fake-ssh" <<'SH'
+#!/usr/bin/env bash
+cat > /dev/null
+printf 'alive\n'
+SH
+chmod +x "$FM_HOME/fakebin/fake-ssh"
+export FM_SSH_BIN="$FM_HOME/fakebin/fake-ssh"
 # Shrunk from the real 600s so the stale-lock self-heal path (a crashed sweep
 # never released its claim) can be proven without a real 10-minute wait.
 export FM_AUDIT_MAX_SWEEP_SECONDS=2
@@ -153,8 +164,13 @@ test_sweep_counts_testing_cards_and_never_flags_an_unverifiable_one() {
 make_crew_state_case() {  # <crew-id> <status-log-line> - a meta/status pair
   # that makes bin/fm-crew-state.sh report a definite, non-working state with
   # no tmux, git or no-mistakes dependency: kind=secondmate skips the run
-  # lookup and the busy probe, remote_host skips the local endpoint probe, so
-  # the status log's own verb is the answer.
+  # lookup and the busy probe, and remote_host routes the endpoint read through
+  # fm-on.sh's stubbed ssh transport (the FM_SSH_BIN seam, exported once at the top of this file)
+  # whose answer is `alive`, so the routed status log's own verb is the answer -
+  # the same alive-falls-through-to-the-log contract tests/fm-crew-state.test.sh
+  # proves for a real remote mate. An unreachable remote would honestly read
+  # unknown-remote, which is exactly why the transport is stubbed rather than
+  # left to fail.
   local crew_id=$1 log_line=$2
   mkdir -p "$FM_HOME/wt-$crew_id"
   fm_write_meta "$FM_HOME/state/$crew_id.meta" \
@@ -163,6 +179,8 @@ make_crew_state_case() {  # <crew-id> <status-log-line> - a meta/status pair
     "worktree=$FM_HOME/wt-$crew_id" \
     "kind=secondmate" \
     "remote_host=elsewhere"
+  printf -- '- %s - audit fixture (host: elsewhere; root: /remote/root; home: /remote/home; scope: audit fixture; projects: alpha; added 2026-09-06)\n' \
+    "$crew_id" >> "$FM_HOME/data/secondmates.md"
   printf '%s\n' "$log_line" > "$FM_HOME/state/$crew_id.status"
 }
 
