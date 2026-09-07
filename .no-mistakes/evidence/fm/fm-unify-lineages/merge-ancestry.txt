@@ -1,0 +1,17 @@
+$ git log --oneline --graph -4
+* e0433bf no-mistakes(test): stub ssh transport in fleet-audit fixture for truthful remote read
+* 6bfdd22 fix(lint): recompute fm-lint.sh usage range against the merged header
+*   df9d8e7 merge: unify the fleet's two firstmate instruction lineages
+|\  
+| * 1cb900c feat(bearings): add interactive Lavish fleet board (#2659)
+
+$ git rev-list --parents -n1 df9d8e7
+df9d8e723d0203b157e32eefdd93e2d33b7a53c8 879fd1e09f310131f3ca9fdb2d59a44f23eb1cb2 1cb900c28faf23fe23c9bb54e63f7c3b436ea096
+
+$ git merge-base --is-ancestor 1cb900c HEAD && echo OK
+OK
+$ git merge-base --is-ancestor 879fd1e HEAD && echo OK
+OK
+$ git merge-base --is-ancestor origin/main HEAD && echo OK
+OK
+879fd1e09f310131f3ca9fdb2d59a44f23eb1cb2

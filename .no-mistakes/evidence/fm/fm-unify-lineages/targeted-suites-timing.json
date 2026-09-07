@@ -1,0 +1,218 @@
+{
+  "families": [
+    {
+      "count": 1,
+      "duration_ms": 861,
+      "failed": 0,
+      "name": "backend-dispatch"
+    },
+    {
+      "count": 2,
+      "duration_ms": 78673,
+      "failed": 0,
+      "name": "dashboard"
+    },
+    {
+      "count": 1,
+      "duration_ms": 2923,
+      "failed": 0,
+      "name": "pr-forge"
+    },
+    {
+      "count": 6,
+      "duration_ms": 71134,
+      "failed": 0,
+      "name": "pure-contract-unit"
+    },
+    {
+      "count": 3,
+      "duration_ms": 51435,
+      "failed": 0,
+      "name": "secondmate"
+    },
+    {
+      "count": 6,
+      "duration_ms": 93995,
+      "failed": 0,
+      "name": "unclassified"
+    },
+    {
+      "count": 1,
+      "duration_ms": 58140,
+      "failed": 0,
+      "name": "watcher-wake-lock"
+    }
+  ],
+  "finished_at": "2026-09-07T02:12:50Z",
+  "run_id": "fm-test-run-1788746813290-3672249",
+  "scripts": [
+    {
+      "duration_ms": 47464,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "pure-contract-unit",
+      "gate_skip": false,
+      "path": "tests/fm-decision-hold-lifecycle.test.sh"
+    },
+    {
+      "duration_ms": 50876,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "unclassified",
+      "gate_skip": false,
+      "path": "tests/fm-procevent.test.sh"
+    },
+    {
+      "duration_ms": 13895,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "unclassified",
+      "gate_skip": false,
+      "path": "tests/fm-procevent-when.test.sh"
+    },
+    {
+      "duration_ms": 10453,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "unclassified",
+      "gate_skip": false,
+      "path": "tests/fm-procevent-river.test.sh"
+    },
+    {
+      "duration_ms": 1669,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "unclassified",
+      "gate_skip": false,
+      "path": "tests/fm-send-remote-delivery.test.sh"
+    },
+    {
+      "duration_ms": 5444,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "pure-contract-unit",
+      "gate_skip": false,
+      "path": "tests/fm-crew-state.test.sh"
+    },
+    {
+      "duration_ms": 55321,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "dashboard",
+      "gate_skip": false,
+      "path": "tests/fm-fleet-audit.test.sh"
+    },
+    {
+      "duration_ms": 3139,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "secondmate",
+      "gate_skip": false,
+      "path": "tests/fm-backlog-handoff.test.sh"
+    },
+    {
+      "duration_ms": 15752,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "secondmate",
+      "gate_skip": false,
+      "path": "tests/fm-remote-backlog-handoff.test.sh"
+    },
+    {
+      "duration_ms": 14115,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "pure-contract-unit",
+      "gate_skip": false,
+      "path": "tests/fm-test-run.test.sh"
+    },
+    {
+      "duration_ms": 2269,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "pure-contract-unit",
+      "gate_skip": false,
+      "path": "tests/fm-bearings-board.test.sh"
+    },
+    {
+      "duration_ms": 1320,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "pure-contract-unit",
+      "gate_skip": false,
+      "path": "tests/fm-lint.test.sh"
+    },
+    {
+      "duration_ms": 522,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "pure-contract-unit",
+      "gate_skip": false,
+      "path": "tests/fm-lint-workflows.test.sh"
+    },
+    {
+      "duration_ms": 23352,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "dashboard",
+      "gate_skip": false,
+      "path": "tests/fm-dashboard.test.sh"
+    },
+    {
+      "duration_ms": 3349,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "unclassified",
+      "gate_skip": false,
+      "path": "tests/fm-status-board.test.sh"
+    },
+    {
+      "duration_ms": 32544,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "secondmate",
+      "gate_skip": false,
+      "path": "tests/fm-remote-reply.test.sh"
+    },
+    {
+      "duration_ms": 13753,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "unclassified",
+      "gate_skip": false,
+      "path": "tests/fm-pending-reply.test.sh"
+    },
+    {
+      "duration_ms": 2923,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "pr-forge",
+      "gate_skip": false,
+      "path": "tests/fm-pr-destination-guard.test.sh"
+    },
+    {
+      "duration_ms": 58140,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "watcher-wake-lock",
+      "gate_skip": false,
+      "path": "tests/fm-watch-arm.test.sh"
+    },
+    {
+      "duration_ms": 861,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "backend-dispatch",
+      "gate_skip": false,
+      "path": "tests/fm-send-strict.test.sh"
+    }
+  ],
+  "selection": "scripts",
+  "started_at": "2026-09-07T02:06:53Z",
+  "summary": {
+    "duration_ms": 357572,
+    "failed": 0,
+    "skipped_gate": 0,
+    "total": 20
+  }
+}

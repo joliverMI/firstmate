@@ -1,0 +1,36 @@
+FM_TEST_BEGIN 2026-09-07T02:02:01Z tests/fm-fleet-audit.test.sh family=dashboard expected_gate_skip=none
+ok - the sweep lock is exclusive and release frees it for the next claim
+ok - a tick reclaims and heals a lock abandoned by a crashed sweep, instead of staying stuck forever
+ok - audit-run records the forced flag and releases the lock as part of recording
+ok - the tick script heartbeats every invocation and only sweeps once the interval has elapsed
+ok - the sweep checks testing cards and never flags one it cannot verify
+ok - the sweep flags a working or testing card whose linked crew is demonstrably not working
+ok - a recurring identical finding updates one row's last-seen time and seen-count instead of appending
+ok - two genuinely different cards each get their own row rather than collapsing together
+ok - an unrelated finding on the same card is never silenced by, or merged into, a different check's collapse
+ok - a collapsed but still-outstanding finding keeps counting toward the run total and never reads clean
+ok - a repeating sweep failure updates one fleet-level row while a different failure still opens its own
+ok - the sweep flags a card waiting on a card that is already complete
+ok - the sweep checks not-started cards and never flags one nothing currently references
+ok - the sweep flags a not-started card that a currently-waiting card is blocked on
+ok - the sweep flags a blocked not-started card once per pairing, not once per sweep
+ok - a finding another check raised about the same card never silences the not-started check
+ok - two waiting cards blocked on one not-started card are a single finding in one sweep
+ok - a block that is quiet because it was already described still counts toward the run total
+ok - a not-started card that was started and abandoned is flagged again, not answered for by the old entry
+ok - the sweep flags a stale unreplied needs-attention card and stops once he has replied
+ok - a needs-attention card that cycles back in after a reply gets a fresh row, not the closed one
+ok - the sweep ages a needs-review card exactly like a needs-action one, because both mean he is the next step
+ok - a current approval closes the sweep's age finding - by answering it and by moving the card - while an approval left stale by a re-ask does not
+ok - editing the plan re-opens the question, so a reply he gave about the old plan never stands as an answer to the new one
+ok - a re-ask keeps his waiting clock running from the original block while the card shows the newest ask, and his reply still closes it
+ok - an answer he gave to an earlier ask does not silence a later one
+ok - an approval never quiets a needs-action card - only his own reply does
+ok - POST /api/audit/force launches a real sweep that records itself as forced
+ok - the button refuses to stack a second sweep onto one already in progress
+ok - a claim abandoned by a crashed sweep is reclaimed once it outlives the max sweep duration
+FM_TEST_END 2026-09-07T02:02:56Z tests/fm-fleet-audit.test.sh exit=0 duration_ms=55035 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=55066
+FM_TEST_SUMMARY_FAMILY family=dashboard count=1 duration_ms=55035 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-fleet-audit.test.sh duration_ms=55035
+exit=0

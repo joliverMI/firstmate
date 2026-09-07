@@ -1,0 +1,39 @@
+# Merge resolution direction per file, on the PR head (HEAD=e0433bf)
+# 'fork' column: lines differing from fork parent 879fd1e ; 'secondmate' column: lines differing from secondmate parent 1cb900c
+# A 0 in a column means the merged file is byte-identical to that parent.
+file                                                                         fork   secondmate
+AGENTS.md                                                                    6+5-        30+4-
+docs/configuration.md                                                        8+6-         4+1-
+bin/fm-decision-hold.sh                                                    67+16-            0
+bin/fm-procevent-lavish.sh                                                   4+1-            0
+bin/fm-send.sh                                                              69+6-        14+3-
+docs/verification/process-event-sources.md                                   2+1-            0
+README.md                                                                       0         2+1-
+bin/fm-backlog-handoff.sh                                                       0       703+7-
+tests/fm-test-run.test.sh                                                       0       109+7-
+docs/scripts.md                                                              1+0-         9+2-
+bin/fm-test-run.sh                                                           6+2-      106+16-
+tests/fm-decision-hold-lifecycle.test.sh                                   145+0-        30+1-
+tests/fm-crew-state.test.sh                                               103+23-         3+0-
+tests/fm-send-remote-delivery.test.sh                                      340+0-        27+1-
+bin/fm-procevent.sh                                                             0        66+1-
+bin/fm-lint.sh                                                              26+6-        17+8-
+.agents/skills/decision-hold-lifecycle/SKILL.md                              1+1-            0
+.agents/skills/process-event-sources/SKILL.md                                2+1-         5+1-
+.agents/skills/stuck-crewmate-recovery/SKILL.md                              1+1-            0
+
+# README /updatefirstmate row on each side:
+fork  : | `/updatefirstmate` | Self-update the running firstmate and its secondmates to the latest from each checkout's own conf
+second: | `/updatefirstmate` | Self-update the running firstmate and its secondmates to the latest from origin with fast-forward
+HEAD  : | `/updatefirstmate` | Self-update the running firstmate and its secondmates to the latest from each checkout's own conf
+
+# docs/scripts.md board rows on HEAD (union: fork's four + secondmate's bearings-board):
+20:| `fm-status-board.sh`     | Render the bearings classification and fleet snapshot detail into the captain's five-section web status board |
+21:| `fm-dashboard.sh`        | The only agent-facing command surface for the Admiral's Fleet Dashboard task board and its server process ([dashboard.md](dashboard.md)) |
+22:| `fm-fleet-audit-tick.sh` | The fleet auditor's host-cron timer: heartbeats every invocation, sweeps when the dashboard's own interval setting says it is due ([dashboard.md](dashboard.md#the-timer)) |
+23:| `fm-fleet-audit-sweep.sh` | One fleet-auditor sweep - claims the dashboard's sweep lock, runs the mechanical checks, records the result; used by both the timer and the Force Audit button |
+24:| `fm-bearings-board.sh`   | Build and arm the stable interactive `/bearings lavish` fleet board                  |
+
+# usage() sed ranges vs header end (first non-comment line):
+bin/fm-procevent.sh: usage range 2,119 ; first non-comment line 120
+bin/fm-lint.sh: usage range 2,43 ; first non-comment line 44

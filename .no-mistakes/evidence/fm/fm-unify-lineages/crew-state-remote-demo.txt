@@ -1,0 +1,14 @@
+# Hands-on: bin/fm-crew-state.sh on a remote secondmate (ssh transport stubbed via FM_SSH_BIN)
+# meta: kind=secondmate remote_host=remote-mac ; status log last line: 'blocked: waiting on credentials'
+
+$ FM_FAKE_SSH_RC=255 bin/fm-crew-state.sh rsm      # ssh unreachable
+state: unknown · source: remote-endpoint · unknown-remote: remote-mac unreachable or endpoint unreadable (not proof of death)
+rc=0
+
+$ FM_FAKE_REMOTE_STATE_OUT=alive bin/fm-crew-state.sh rsm   # remote answers alive -> falls through to routed status log
+state: blocked · source: status-log · waiting on credentials · remote endpoint alive on remote-mac
+rc=0
+
+$ FM_FAKE_REMOTE_STATE_OUT=dead bin/fm-crew-state.sh rsm    # remote host own verdict
+state: unknown · source: remote-endpoint · remote endpoint dead on remote-mac
+rc=0

@@ -1,0 +1,11 @@
+# fm-procevent-lavish.sh answers <result> - question-key cap raised 64 -> 128 (secondmate side)
+# key A: full hold identity <origin>-decision-<key>, length 91
+# key B: 129 chars (over the merged cap)
+
+## fork parent 879fd1e (cap 64), key A:
+    -> 0 answer rows (the 91-char hold identity is dropped)
+## merged HEAD (cap 128), key A:
+    secondmate-home-serenity-javi-firstmate-main-decision-fleet-bearings-order-proof-2026-09-06	yes	Order proof: yes
+    -> 1 answer row (key<TAB>answer<TAB>label)
+## merged HEAD (cap 128), key B (129 chars):
+    -> 0 answer rows (over-cap key still refused)

@@ -1,0 +1,40 @@
+# Merge-shape check on branch head (hard constraint: merge commit survives)
+## git log --graph --oneline -4
+    * 6bfdd22 fix(lint): recompute fm-lint.sh usage range against the merged header
+    *   df9d8e7 merge: unify the fleet's two firstmate instruction lineages
+    |\  
+    | * 1cb900c feat(bearings): add interactive Lavish fleet board (#2659)
+    | * 87681a4 fix(bin): reliably confirm herdr steer submission (#2647)
+## merge commit parents
+    df9d8e7 parents=879fd1e 1cb900c (merge: unify the fleet's two firstmate instruction lineages)
+## ancestry
+    git merge-base --is-ancestor 1cb900c HEAD -> true (secondmate line is an ancestor of HEAD)
+    git merge-base --is-ancestor 879fd1e HEAD -> true (fork main is an ancestor of HEAD)
+    commits between fork main and HEAD that are not on the secondmate line: 2 (merge + lint fixup only)
+## leftover conflict markers in tracked files
+    files with markers: 0
+## fixup 3 + lint fixup: usage() sed ranges measured against the merged headers
+    bin/fm-procevent.sh: sed -n '2,119p'; header ends at line 119
+    bin/fm-lint.sh:      sed -n '2,43{; header ends at line 43
+    bin/fm-procevent.sh --help last line: about the source side of the handoff.
+    bin/fm-lint.sh --help last line:        fm-lint.sh --help                  print this usage
+## resolution direction of the conflicting files (lines differing from the chosen side that are NOT the other side's own non-conflicting hunks)
+    secondmate-side AGENTS.md: 0 unexplained lines
+    secondmate-side skills/decision-hold-lifecycle: 0 unexplained lines
+    secondmate-side docs/decision-hold-lifecycle.md: 0 unexplained lines
+    secondmate-side docs/configuration.md: 0 unexplained lines
+    secondmate-side bin/fm-decision-hold.sh: 0 unexplained lines
+    secondmate-side bin/fm-procevent-lavish.sh: 0 unexplained lines
+    secondmate-side bin/fm-send.sh: 0 unexplained lines
+    secondmate-side skills/stuck-crewmate-recovery: 0 unexplained lines
+    secondmate-side docs/verification/process-event-sources.md: 0 unexplained lines
+    fork-side skills/process-event-sources: 0 lines differ from fork
+    fork-side README.md: 0 lines differ from fork
+    fork-side bin/fm-backlog-handoff.sh: 0 lines differ from fork
+    fork-side tests/fm-test-run.test.sh: 0 lines differ from fork
+    union docs/scripts.md rows:
+      `fm-status-board.sh`
+      `fm-dashboard.sh`
+      `fm-fleet-audit-tick.sh`
+      `fm-fleet-audit-sweep.sh`
+      `fm-bearings-board.sh`

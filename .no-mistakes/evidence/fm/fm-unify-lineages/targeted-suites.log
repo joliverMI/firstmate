@@ -1,0 +1,511 @@
+FM_TEST_BEGIN 2026-09-07T02:06:53Z tests/fm-decision-hold-lifecycle.test.sh family=pure-contract-unit expected_gate_skip=none
+ok - report-only unresolved decision is reproduced and completion refuses before loss
+ok - non-forced scout teardown always requires durable inventory verification
+ok - a declined decision closes with a recorded answer and no routed work
+ok - a decision closed outside the script is repairable and then clears teardown
+ok - an unanswered decision still blocks completion and resists both unrouted close paths
+ok - captain holds are idempotent, distinct, teardown-safe, Bearings-visible, and durably routed before close
+ok - completion and verification validate origins before constructing paths
+ok - ended visual review follows the same decision-hold completion owner
+ok - resolved findings and decision-like prose do not create false holds
+ok - terminal single-owner stale status decisions do not block empty inventory
+ok - main-home and secondmate-home captain holds remain correctly routed
+ok - resolve matches first/middle/last in quoted blocked_by and rejects a genuinely absent id
+ok - a bound channel's captured answers close their captain holds at answer time
+ok - a channel source with no decision binding closes nothing
+ok - an any-origin bound source closes full-identity holds across origins
+ok - the answer path keeps every guard the unrouted close path already had
+ok - the chat channel feeds the same keyed-answer intake a captured review does
+FM_TEST_END 2026-09-07T02:07:40Z tests/fm-decision-hold-lifecycle.test.sh exit=0 duration_ms=47464 gate_skip=false
+FM_TEST_BEGIN 2026-09-07T02:07:40Z tests/fm-procevent.test.sh family=unclassified expected_gate_skip=none
+ok - no configured source means no generated state and no process
+ok - one blocking completion yields exactly one bounded normalized event
+not-autohandled: direct-src (left for the handler; still unacknowledged)
+ok - public start owns the process group recorded by its claim
+Terminated
+ok - public start never claims an inherited caller process group
+ok - an unhandled result survives restart and repeat drains, and only explicit acknowledgement stops its re-announcement
+ok - publication cannot race a handled acknowledgement
+ok - handled acknowledgement creation is private and fails safely
+ok - automatic application waits for durable publication and failed publication remains recoverable
+ok - a self-announcing adapter applies quietly and still publishes what it could not apply
+not-autohandled: ends-src (left for the handler; still unacknowledged)
+ok - an adapter-classified terminal result is captured once, announced, and retires its source automatically
+not-autohandled: open-src (left for the handler; still unacknowledged)
+ok - a source stays armed unless its own adapter classifies the result terminal
+not-autohandled: replace-src (left for the handler; still unacknowledged)
+ok - terminal retirement preserves and releases a concurrently replaced registration
+ok - failed terminal retirement is fail-closed and idempotently recoverable
+ok - one Send & End yields exactly one captured result, automatic retirement, and no recurring poll
+ok - a drained-but-unhandled result survives a replacement session and is retired only by explicit handling, never twice
+ok - five delivery attempts against one captured generation forward the message exactly once
+ok - a failed delivery attempt leaves the generation eligible for retry instead of being dropped or repeated
+ok - pending results preserve numeric order and distinct wake identity
+ok - one owner per canonical source across homes
+ok - retiring a never-completing source stops its runner and its blocked child
+ok - reconcile reaps a runner whose source registration is gone
+not-autohandled: stale-src (left for the handler; still unacknowledged)
+ok - stale-owner recovery removes abandoned output without displacing a live owner
+not-autohandled: cross-home-src (left for the handler; still unacknowledged)
+ok - cross-home stale recovery removes abandoned output from the old state directory
+not-autohandled: race-src (left for the handler; still unacknowledged)
+not-autohandled: race-src (left for the handler; still unacknowledged)
+not-autohandled: race-src (left for the handler; still unacknowledged)
+not-autohandled: race-src (left for the handler; still unacknowledged)
+ok - concurrent stale-claim replacement starts exactly one runner
+ok - a crashed runner leader never lets a live owned group be reclaimed as stale
+ok - a truly dead generation with no surviving group is still safely reclaimed
+ok - claim replacement cannot produce a torn ownership snapshot
+ok - retirement and start share one serialized lifecycle boundary
+ok - PID reuse cannot signal an unrelated process
+ok - transient identity failure preserves the live source for retry
+ok - bounded home sweep preflights then retires every locally owned source
+ok - home sweep leaves foreign-home claims and runners untouched
+ok - home sweep refuses safely until runner identity is readable
+ok - healthy runtime behavior remains registration-only
+ok - registration rejects unrepresentable newline arguments
+ok - nonzero exit with no output stays armed and silent
+ok - oversized output is bounded rather than published whole or dropped
+ok - live output stays bounded and retirement reaps the whole source group
+ok - invalid output bounds fail closed
+ok - the adapter derives physical identity without newline path corruption
+ok - source-only homes trigger the general supervision guard
+ok - the adapter classifies published poll output safely
+ok - the adapter owns which Lavish results end a source, and payload text cannot forge one
+ok - the published interfaces state the loss limitation and claim no lossless delivery
+
+all procevent tests passed
+FM_TEST_END 2026-09-07T02:08:31Z tests/fm-procevent.test.sh exit=0 duration_ms=50876 gate_skip=false
+FM_TEST_BEGIN 2026-09-07T02:08:31Z tests/fm-procevent-when.test.sh family=unclassified expected_gate_skip=none
+ok - arm binds, refuses duplicates, and retire cleans up
+ok - concurrent arms publish exactly one complete watch
+ok - a stable true fires the action exactly once and wakes with the outcome
+ok - a flapping condition never reaches the action
+ok - an action failure wakes with the captured error
+ok - a repeatedly erroring condition wakes firstmate instead of firing
+ok - an expired deadline wakes with never-true
+ok - a late true poll cannot fire after its deadline
+ok - action timeouts terminate the complete process group
+ok - command output staging stays within its byte bound
+ok - a restart after a claimed fire reports ambiguity instead of double-firing
+ok - a mutated spec is refused without executing anything
+ok - mutated action bytes are refused before claiming the fire
+all fm-procevent-when tests passed
+FM_TEST_END 2026-09-07T02:08:45Z tests/fm-procevent-when.test.sh exit=0 duration_ms=13895 gate_skip=false
+FM_TEST_BEGIN 2026-09-07T02:08:45Z tests/fm-procevent-river.test.sh family=unclassified expected_gate_skip=none
+ok - a burst of three queued takeovers becomes ONE captured result, not three
+ok - the poll authenticates with the home's configured bearer token
+ok - a non-empty item array classifies as takeovers
+ok - an over-budget burst splits into two captures, every item delivered exactly once
+ok - an empty long-poll window re-polls instead of ending the source
+ok - the bearer token appears in neither the registered argv nor any live process argument
+not-autohandled: river-takeover-stream (left for the handler; still unacknowledged)
+ok - a captured takeover wakes firstmate and leaves the standing source armed
+ok - arm registers the continuous source and retire drops it
+ok - arming refuses a home whose River configuration is incomplete or multi-line
+ok - a bounded unreachable window wakes firstmate loudly instead of sleeping through an outage
+ok - an empty batch and an unreadable result both classify as unknown
+ok - no result ever retires this source, so an acknowledged outage cannot silently end it
+ok - the published interface owns the adapter's mechanics
+
+all procevent river tests passed
+FM_TEST_END 2026-09-07T02:08:56Z tests/fm-procevent-river.test.sh exit=0 duration_ms=10453 gate_skip=false
+FM_TEST_BEGIN 2026-09-07T02:08:56Z tests/fm-send-remote-delivery.test.sh family=unclassified expected_gate_skip=none
+ok - fm-send remote: delivered-unconfirmed reports delivered, exits 0, keeps the expectation armed
+ok - fm-send remote: a real remote failure still fails loudly with the remote diagnostics
+ok - fm-send remote: ssh 255 still refuses loudly and preserves the expectation as delivery_unknown
+ok - fm-send remote: a delivered-unconfirmed answer closes its --resolve-key decision
+ok - fm-send local: an unconfirmed submit exits 3 with an honest non-error report
+ok - fm-send local: an unconfirmed submit still never closes a --resolve-key decision
+ok - fm-send local: an unconfirmed secondmate send keeps its reply expectation armed
+all fm-send-remote-delivery tests passed
+FM_TEST_END 2026-09-07T02:08:57Z tests/fm-send-remote-delivery.test.sh exit=0 duration_ms=1669 gate_skip=false
+FM_TEST_BEGIN 2026-09-07T02:08:57Z tests/fm-crew-state.test.sh family=pure-contract-unit expected_gate_skip=none
+ok - active run-step is authoritative
+ok - stale needs-decision over active run is superseded
+ok - stale blocked over active run is superseded
+ok - genuine parked run is not flagged superseded
+ok - scalar gate parked run is not flagged superseded
+ok - gate block parked run is not flagged superseded
+ok - ci-ready status log beats monitoring run
+ok - ci-monitoring run with checks already green surfaces done
+ok - top-level ci status uses ci log green marker
+ok - terminal no-checks ci-monitor marker surfaces done
+ok - base-advance rearm after green stays working
+ok - pending no-checks ci-monitor marker stays working
+ok - ci-monitoring run with checks not yet green stays working
+ok - a fresh issue after an earlier green reading is not masked
+ok - stale checks-green status log does not mask CI relapse
+ok - ci fixing is not overridden by an earlier green marker
+ok - top-level fixing is not overridden by a stale ci running row
+ok - top-level fixing is not overridden by a stale done log
+ok - terminal passed run is authoritative
+ok - terminal failed run is authoritative
+ok - cross-branch run is attributed via the real runs list
+ok - cross-branch attribution picks the branch's most recent row
+ok - coarse run does not probe another branch's ci log
+ok - another branch's run is ignored, falls back
+ok - no run + a busy semantic record reads working, attributed to its source
+ok - a converted adapter never reads working from rendered footer text
+ok - grok still reads working through its isolated rendered-tail fallback
+ok - herdr's native busy verdict reads working with no record present
+ok - a mid-tool-call crew stays working because its record outranks herdr's generation state
+ok - an idle record with idle agent_status stays not-busy (no regression for a human-blocked agent)
+ok - no run + idle pane uses the status-log verb
+ok - no run + idle pane parses keyed status syntax
+ok - no run + idle pane on a paused: status reports state: paused with its reason
+ok - no run + idle pane honors the configured paused verb
+ok - a trailing resolved: event does not corrupt state render (idle stays idle)
+ok - dead window ignores stale status log
+ok - closed pane still reports a terminal run-step
+ok - closed pane still reports an active run-step
+ok - no timeout command uses perl bound
+ok - scout skips the run lookup
+ok - torn-down worktree is handled gracefully
+ok - fm-crew-state remote: alive endpoint falls through to the routed status log
+ok - fm-crew-state remote: an idle alive endpoint reads alive, never gone or dead
+ok - fm-crew-state remote: an unreachable host reads unknown-remote, never gone or dead
+ok - fm-crew-state remote: the remote host's own dead verdict is reported truthfully
+ok - missing meta is handled gracefully
+ok - crew_is_provably_working absorbs a validating crew found only via the runs-list fallback
+ok - crew_is_provably_working still surfaces a genuinely stopped crew (safety property preserved)
+ok - usage error exits 2
+ok - historical same-branch rewritten head is not attributed as current
+ok - active run with valid descendant fix head remains current
+ok - local work advanced past run head invalidates attribution
+ok - missing run head falls back instead of matching by branch
+all fm-crew-state tests passed
+FM_TEST_END 2026-09-07T02:09:03Z tests/fm-crew-state.test.sh exit=0 duration_ms=5444 gate_skip=false
+FM_TEST_BEGIN 2026-09-07T02:09:03Z tests/fm-fleet-audit.test.sh family=dashboard expected_gate_skip=none
+ok - the sweep lock is exclusive and release frees it for the next claim
+ok - a tick reclaims and heals a lock abandoned by a crashed sweep, instead of staying stuck forever
+ok - audit-run records the forced flag and releases the lock as part of recording
+ok - the tick script heartbeats every invocation and only sweeps once the interval has elapsed
+ok - the sweep checks testing cards and never flags one it cannot verify
+ok - the sweep flags a working or testing card whose linked crew is demonstrably not working
+ok - a recurring identical finding updates one row's last-seen time and seen-count instead of appending
+ok - two genuinely different cards each get their own row rather than collapsing together
+ok - an unrelated finding on the same card is never silenced by, or merged into, a different check's collapse
+ok - a collapsed but still-outstanding finding keeps counting toward the run total and never reads clean
+ok - a repeating sweep failure updates one fleet-level row while a different failure still opens its own
+ok - the sweep flags a card waiting on a card that is already complete
+ok - the sweep checks not-started cards and never flags one nothing currently references
+ok - the sweep flags a not-started card that a currently-waiting card is blocked on
+ok - the sweep flags a blocked not-started card once per pairing, not once per sweep
+ok - a finding another check raised about the same card never silences the not-started check
+ok - two waiting cards blocked on one not-started card are a single finding in one sweep
+ok - a block that is quiet because it was already described still counts toward the run total
+ok - a not-started card that was started and abandoned is flagged again, not answered for by the old entry
+ok - the sweep flags a stale unreplied needs-attention card and stops once he has replied
+ok - a needs-attention card that cycles back in after a reply gets a fresh row, not the closed one
+ok - the sweep ages a needs-review card exactly like a needs-action one, because both mean he is the next step
+ok - a current approval closes the sweep's age finding - by answering it and by moving the card - while an approval left stale by a re-ask does not
+ok - editing the plan re-opens the question, so a reply he gave about the old plan never stands as an answer to the new one
+ok - a re-ask keeps his waiting clock running from the original block while the card shows the newest ask, and his reply still closes it
+ok - an answer he gave to an earlier ask does not silence a later one
+ok - an approval never quiets a needs-action card - only his own reply does
+ok - POST /api/audit/force launches a real sweep that records itself as forced
+ok - the button refuses to stack a second sweep onto one already in progress
+ok - a claim abandoned by a crashed sweep is reclaimed once it outlives the max sweep duration
+FM_TEST_END 2026-09-07T02:09:58Z tests/fm-fleet-audit.test.sh exit=0 duration_ms=55321 gate_skip=false
+FM_TEST_BEGIN 2026-09-07T02:09:58Z tests/fm-backlog-handoff.test.sh family=secondmate expected_gate_skip=none
+ok - body followed by another item moves intact with no source orphans
+ok - body followed by section heading moves intact; section stays
+ok - multi-paragraph body with internal blank lines moves whole and is idempotent
+ok - body as last lines of the file moves intact
+ok - EOF body before a seeded destination section keeps its boundary
+ok - untouched EOF line preserves its original terminator
+ok - body-carrying handoff is idempotent: re-run changes nothing
+ok - noncanonical one-space and tab continuations refuse without changes
+ok - indented ## Intent / ## Acceptance are body, not section boundaries
+ok - registry home parses when summary has parentheses before (home: ...)
+ok - registry entry without (home: ...) fails cleanly with has no home
+ok - handoff reports a moved item whose public commitment still binds this home
+ok - handoff says nothing about public commitments in a relay-free home
+ALL TESTS PASSED
+FM_TEST_END 2026-09-07T02:10:01Z tests/fm-backlog-handoff.test.sh exit=0 duration_ms=3139 gate_skip=false
+FM_TEST_BEGIN 2026-09-07T02:10:01Z tests/fm-remote-backlog-handoff.test.sh family=secondmate expected_gate_skip=none
+ok - confined put rejects incomplete and superseded payload generations
+ok - confined put rejects directory replacement without external writes
+ok - ambiguous receipt leaves one durable outbox and no duplicate dispatchable source
+ok - re-delivery after unknown completion converges without duplication
+ok - dropped transfer recovery overwrites scratch and delivers exactly once
+ok - concurrent handoffs serialize staging through confirmed cleanup
+ok - receiver removes one proven dead stale lock and retries once
+ok - bootstrap detects pending outbox handoffs without a journal
+ok - route classification serializes with retirement before staging
+ok - unconfigured bootstrap has no remote handoff behavior
+ALL TESTS PASSED
+FM_TEST_END 2026-09-07T02:10:17Z tests/fm-remote-backlog-handoff.test.sh exit=0 duration_ms=15752 gate_skip=false
+FM_TEST_BEGIN 2026-09-07T02:10:17Z tests/fm-test-run.test.sh family=pure-contract-unit expected_gate_skip=none
+ok - exact suite coverage: --all lists every tests/*.test.sh once
+ok - family selection returns a proper subset of the suite
+ok - single-script selection lists exactly that path
+ok - changed-file selection stays conservative (never silent full suite)
+ok - changed selection covers dependents and fails closed for unmapped source
+ok - empty changed selection emits deterministic text and JSON summaries
+ok - fm-test-run.sh --changed defaults to main's configured upstream, not a hardcoded origin/main
+ok - timing markers and JSON artifact are valid
+ok - aggregate exit reflects any script failure
+ok - gate-skip accounting is honest and non-failing
+ok - fail-on-gate-skip converts herdr-not-found into a hard failure
+ok - exclude-family drops the named primary family after selection
+ok - portable shard union, disjointness, and coverage guard hold
+ok - coverage guard verdict is locale-independent (checked under LC_ALL=en_US.utf8)
+ok - portable serial shards are a deterministic disjoint cover of the serial lane
+ok - portable serial shard lanes refuse mismatched, out-of-range, and countless names
+ok - --jobs refuses non-proven / stateful selections
+ok - jobs scheduler runs proven scripts; failure propagates; non-proven refused
+ok - Herdr CI family-run step times out at 20 min under a 75 min job backstop
+ok - aggregate-json merges lane timing artifacts
+FM_TEST_END 2026-09-07T02:10:31Z tests/fm-test-run.test.sh exit=0 duration_ms=14115 gate_skip=false
+FM_TEST_BEGIN 2026-09-07T02:10:31Z tests/fm-bearings-board.test.sh family=pure-contract-unit expected_gate_skip=none
+ok - path prints the stable home-scoped board location
+ok - build refuses malformed payloads before touching the board
+ok - build injects the payload, binds any-origin, then arms the source
+not-autohandled: lavish-f35837789084edf6 (left for the handler; still unacknowledged)
+ok - registration can consume answers only after any-origin binding exists
+ok - build establishes the Lavish session before binding and arming
+ok - rebuild refreshes the board in place without double-arming
+ok - build refuses a template without exactly one data slot
+FM_TEST_END 2026-09-07T02:10:33Z tests/fm-bearings-board.test.sh exit=0 duration_ms=2269 gate_skip=false
+FM_TEST_BEGIN 2026-09-07T02:10:33Z tests/fm-lint.test.sh family=pure-contract-unit expected_gate_skip=none
+ok - fm-lint.sh --list-files reports the complete shell inventory
+ok - fm-lint.sh pins an explicit ShellCheck version (0.11.0)
+ok - ShellCheck installer retries a transient download failure
+ok - ShellCheck installer selects the official archive, URL, and checksum per OS/arch
+ok - ShellCheck installer rejects a wrong checksum
+ok - ShellCheck installer falls back to shasum -a 256 when sha256sum is absent
+ok - ShellCheck installer prefers sha256sum when both hashers are present
+ok - ShellCheck installer rejects an unsupported OS or architecture
+ok - fm-lint.sh refuses to lint under a non-pinned ShellCheck version
+ok - fm-lint.sh catches a real lint defect the old no-op gate passed
+ok - fm-lint.sh ignores ambient ShellCheck options
+ok - fm-lint.sh passes a clean fixture
+ok - jobs=1 and jobs=2 preserve deterministic diagnostics, failures, cleanup bounds, and quiet telemetry
+ok - jobs=1 and jobs=2 stop complete worker trees with and without telemetry
+ok - seeded dispatcher, adapter, production-owner, and test-local diagnostics preserve parity
+ok - fm-lint.sh changed mode lints only the changed canonical file
+ok - fm-lint.sh changed mode diffs against main's configured upstream, not a hardcoded origin/main
+ok - fm-lint.sh falls back to origin/main when main tracks a local branch, which names no remote
+ok - fm-lint.sh forces a full lint in CI even when the local diff would be empty
+ok - fm-lint.sh forces a full lint when HEAD is on main
+ok - fm-lint.sh explicit paths bypass changed-file mode selection
+ok - fm-lint.sh exits 0 with a note when the local branch has no changed lint targets
+ok - fm-lint.sh --list-files reports the would-be changed set in changed mode
+FM_TEST_END 2026-09-07T02:10:35Z tests/fm-lint.test.sh exit=0 duration_ms=1320 gate_skip=false
+FM_TEST_BEGIN 2026-09-07T02:10:35Z tests/fm-lint-workflows.test.sh family=pure-contract-unit expected_gate_skip=none
+ok - fm-lint-workflows.sh pins an explicit actionlint version (1.7.12)
+ok - current .github/workflows YAML files parse
+ok - column-0 heredoc workflow fails validation with a clear error
+ok - valid fixture workflow passes
+ok - empty workflows directory fails closed
+ok - explicit malformed workflow path fails validation
+ok - non-mapping workflow YAML root fails
+ok - missing actionlint fails closed
+ok - fm-lint-workflows.sh refuses to lint under a non-pinned actionlint version
+ok - actionlint installer retries a transient download failure
+ok - actionlint installer selects the official archive, URL, and checksum per OS/arch
+ok - actionlint installer rejects a wrong checksum
+ok - actionlint installer falls back to shasum -a 256 when sha256sum is absent
+ok - actionlint installer prefers sha256sum when both hashers are present
+ok - actionlint installer rejects an unsupported OS or architecture
+ok - fm-lint.sh default path catches a self-broken ci.yml
+FM_TEST_END 2026-09-07T02:10:35Z tests/fm-lint-workflows.test.sh exit=0 duration_ms=522 gate_skip=false
+FM_TEST_BEGIN 2026-09-07T02:10:35Z tests/fm-dashboard.test.sh family=dashboard expected_gate_skip=none
+ok - server-status reports the running, reachable server
+ok - add/list/show round-trip works through the CLI
+ok - status, title, and captain updates persist through the CLI
+ok - testing and review are separate, independently settable statuses
+ok - waiting status carries its target card and reason
+ok - interpretation tab stays absent until something real is recorded
+ok - link policy rejects GitHub/PR and local-only links, accepts a real one
+ok - needs-action status carries a reason and sorts above every other status
+ok - needs-action refuses a missing or report-shaped reason, on both status and add, and the server enforces both independently of the CLI
+ok - no path - either spelling, a blank reason, or PATCH - can put a card in needs-action without a real ask
+ok - needs-attention is accepted as an input alias for needs-action, enforced the same way, and never emitted
+ok - needs-review refuses a missing, blank, or absent plan on every writer, and accepts one the card already holds
+ok - an approval binds to the verbatim plan it was given for, is refused against any other text, and never drifts onto an edited plan
+ok - his approval takes the card out of needs_review to not_started, with the transition and its reason on the card's own history
+ok - a refused or stale approval moves nothing and wakes nobody, and an approval on a card that has moved on records consent without dragging it back
+ok - an approval publishes one durable check record through firstmate's own writer, and firstmate's own drain reads it back
+ok - a card's recommended plan and his approval of it survive the status change, so the fleet can still read its authority while acting
+ok - status refuses a --plan for every status but needs-review, exactly as add does
+ok - a plan can only be created by the path that shows him the approval box, while a card already through it still accepts a correction
+ok - correcting a plan on a card that has left needs-review still breaks the binding and keeps both texts readable
+ok - a plan is stored under one normalization, so approving it exactly as displayed binds cleanly while different wording still reads stale
+ok - plan refuses an unquoted multi-word plan instead of recording its first word
+ok - needs-action sorts above needs-review, and both sort above ordinary work
+ok - the needs-attention split migrates every card to needs-action, keeping its reason, notes, history, and blocked-age, and runs once
+ok - a report phrase buried mid-clause does not refuse a genuine ask
+ok - add refuses a --reason no status but needs-action can carry, instead of dropping it
+ok - the catch, miss, and false-positive rates documented for the reason guard are the ones it actually achieves
+ok - audit-log, audit-run, and audit-interval work end to end
+ok - invalid input fails loudly with a non-zero exit, not a silent success
+ok - --help prints the header through its final exit-code block
+ok - every dashboard call is bounded, so a board that never answers fails fast instead of hanging
+ok - a zero timeout override is refused and replaced by the default, so the bound cannot be handed back
+ok - a board-answered missing id and an unreachable board are distinguishable by exit code
+ok - the testing-to-review split migration converts only pre-existing testing cards, and runs at most once
+ok - a start that cannot bind leaves the migration pending, and stop waits for the port
+ok - restart brings the board back from a crash, from stopped, and from healthy
+ok - the lifecycle commands refuse a recycled pid instead of signalling it
+ok - starring persists and delete requires --confirm
+ok - the CLI, the server and the page the browser loads all name the same captains
+ok - start defaults its bind host to the address recorded in config/dashboard-url, and an explicit FM_DASHBOARD_HOST still wins
+ok - start keeps waiting for a slow but healthy bind instead of killing it
+ok - start refuses an address something else already answers on, leaving it alone and no pidfile behind
+ok - start stops the process and fails loudly, naming the failure, when the API never answers after it comes up
+FM_TEST_END 2026-09-07T02:10:59Z tests/fm-dashboard.test.sh exit=0 duration_ms=23352 gate_skip=false
+FM_TEST_BEGIN 2026-09-07T02:10:59Z tests/fm-status-board.test.sh family=unclassified expected_gate_skip=none
+ok - an empty fleet renders all five empty-state sentences plus the disclosure section
+ok - the five sections render in the captain's fixed order
+ok - decisions render with a tag, HTML is escaped, full texture appears, and a stale duplicate is deduped in favor of in-progress
+ok - a task whose validation finished (state=done) is reclassified as needs-captain, not in-progress
+ok - a recorded PR never becomes a link or appears anywhere on the page
+ok - a report renders an honest not-reachable statement when no report-url: marker was recorded
+ok - a report renders as a tappable full https link once firstmate records a report-url: marker
+ok - a localhost report-url: marker is ignored rather than rendered as a dead link
+ok - a ready: marker written as a raw repo path is replaced with an honest flag, not shown as a dead-end location
+ok - a cross-home item's bounded detail states plainly that the rest is not reachable, with no dead pointer or PR link
+ok - a landed item's ready: marker promotes it into Ready for you to look at with its pointer text, never its PR, and dedupes out of Recently completed
+ok - --help prints usage and an unrecognized flag exits 2
+ok - --json prints the underlying bearings and fleet snapshots for debugging
+FM_TEST_END 2026-09-07T02:11:02Z tests/fm-status-board.test.sh exit=0 duration_ms=3349 gate_skip=false
+FM_TEST_BEGIN 2026-09-07T02:11:02Z tests/fm-remote-reply.test.sh family=secondmate expected_gate_skip=none
+ok - a blocking non-destructive remote delta reaches durable process-event capture
+ok - a captured delta is applied, acknowledged, and re-armed without a handler
+ok - ingest appends one validated line, fetches its document, and advances the cursor
+ok - replayed capture has one deduplicated append and one durable handling identity
+ok - later generations cannot invalidate an unacknowledged ingested result
+ok - the remote status and decision model mirrors and the cursor advances
+ok - a remote mate's new decision folds open exactly as a local mate's does
+ok - a replayed mirrored delta is idempotent in both the stream and the cursor
+ok - transported control bytes are normalized in place and never stop the stream
+ok - payload protocol-field names cannot collide with transport metadata
+ok - NUL bytes are normalized in place before shell line processing
+ok - local document storage failures remain retryable until delivery succeeds
+ok - a mirrored reserved-key line cannot squat or clear the parent's own decision
+ok - a reply that arrives after escalation resolves it and clears the open decision
+ok - a preempted reply poll cannot publish channel freshness
+ok - a quiet reply window publishes the caught-up watermark the reply guard reads
+ok - a cursor-loss whole-log recapture is acknowledged quietly with no duplicate wake
+ok - truncation is detected, escalated once, and not silently rebased
+ok - remote reply retirement quiesces and refuses unhandled captured results
+ALL TESTS PASSED
+FM_TEST_END 2026-09-07T02:11:35Z tests/fm-remote-reply.test.sh exit=0 duration_ms=32544 gate_skip=false
+FM_TEST_BEGIN 2026-09-07T02:11:35Z tests/fm-pending-reply.test.sh family=unclassified expected_gate_skip=none
+ok - normal correlated reply resolves once (idempotent)
+ok - completed turn with no report triggers exactly one recovery
+ok - recovery attempts reconcile without reinjection
+ok - recovery reply resolves the original expectation
+ok - second missed turn escalates once and remains durable
+ok - escalations and replies wake; the home's own escalation close stays quiet
+ok - failed escalation publication remains retryable and publishes once
+ok - legacy escalation closes under the shared default key
+ok - legacy escalation cannot close an unrelated default-key decision
+ok - foreign correlated blocker cannot impersonate a pending-reply escalation
+ok - concurrent resolution closes one keyed escalation exactly once
+ok - concurrent escalation yields to a late correlated reply
+ok - transport success cannot masquerade as reply success
+ok - undelivered records remain immutable across scan paths
+ok - delivery confirmation fallback reconciles durably
+ok - unrelated events and stale correlation ids cannot resolve
+ok - restart preserves expectation and exact parent destination
+ok - wrong-home reports are detected but do not silently acknowledge
+ok - direct unmarked captain input creates no expectation
+ok - fm-send marked secondmate path creates pending and embeds corr
+ok - status-pointed document resolves the expectation
+ok - optional helper report resolves without being required for correctness
+ok - backend busy/idle observation covers Pi/Claude paths without conversation scrape
+ok - tmux and zellij unknown states use bounded capture fallback
+ok - pending replies scope Kimi capture fallback by recorded harness
+ok - tick skips terminal records and reuses target observations
+ok - correlations are reused only for matching open task records
+ok - tick end-to-end: miss -> one recovery -> escalate -> durable
+ok - failed transport discards undelivered expectation only
+ok - a remote repost waits for the reply channel and still fires on a real miss
+ok - a mirrored correlated remote reply resolves without any repost
+ok - all pending-reply tests passed
+FM_TEST_END 2026-09-07T02:11:48Z tests/fm-pending-reply.test.sh exit=0 duration_ms=13753 gate_skip=false
+FM_TEST_BEGIN 2026-09-07T02:11:48Z tests/fm-pr-destination-guard.test.sh family=pr-forge expected_gate_skip=none
+ok - guard pins and verifies the project checkout and its gate
+ok - guard fails loudly instead of proceeding when the gate is undiscoverable
+ok - guard fails loudly when the gate itself cannot be pinned
+ok - guard fails loudly instead of proceeding without an origin remote
+ok - guard explicitly skips a non-GitHub origin instead of guessing
+ok - guard refuses a pin that exists but names a repository other than the project's own
+ok - guard refuses a correctly pinned checkout whose gate still resolves to the fork parent
+ok - guard treats an empty or failed destination read as a refusal, never as a pass
+ok - guard compares owner/repository case-insensitively, as GitHub itself does
+ok - guard verifies an already-correct destination without writing it again
+ok - guard still writes the pin when the destination is not already set
+ok - guard reports gh's own diagnostic so a blocked crewmate records the real cause
+ok - guard accepts every legitimate spelling of the project's own GitHub origin
+ok - guard names the failing directory without echoing its origin credential
+ok - guard --print-destination names the project's own repository from origin alone
+ok - guard --print-destination refuses with an empty stdout instead of naming a guess
+ok - guard treats a non-GitHub origin as out of scope, never as a blocked project
+ok - guard --print-destination names an ssh-alias GitHub origin from the URL alone
+ok - guard refuses to call an ssh-alias destination verified when gh cannot resolve it
+ok - guard does not read a github.com-lookalike domain as a GitHub destination
+FM_TEST_END 2026-09-07T02:11:51Z tests/fm-pr-destination-guard.test.sh exit=0 duration_ms=2923 gate_skip=false
+FM_TEST_BEGIN 2026-09-07T02:11:51Z tests/fm-watch-arm.test.sh family=watcher-wake-lock expected_gate_skip=none
+ok - watch-arm: an attached arm reports the wake its cycle delivered instead of a false failure
+ok - watch-arm: a delivered wake consumed by the handling turn still closes the attached arm cleanly
+ok - watch-arm: a cycle that delivered no wake of its own still fails loudly
+/home/joliv/.no-mistakes/worktrees/4cc5c0885385/01M1WRC0HRP7VYP0VRM284BVP7/bin/fm-watch-arm.sh: line 566: 4162712 Killed                  "$WATCH" > "$child_out"
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 2 --recovery-generation 4163274.1788747139.oSIlii
+ok - watch-arm: re-arm surfaces every queued wake and an open remote decision after downtime
+watcher: recovery state could not be persisted; retaining stale lock evidence
+ok - watch-arm: marker publication failure retains stale-lock recovery evidence
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 2 --recovery-generation 4170540.1788747147.DlyRze
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 3 --recovery-generation 4171573.1788747148.Kyc4SZ
+ok - watch-arm: a wake queued after handling drain is recovered once at successor arm
+ok - watch-arm: interrupted handling leaves its wake durable for successor re-drain
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 0 --recovery-generation 4178499.1788747154.kgaKOp
+ok - watch-arm: malformed recovery state is quarantined without a successor loop
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 4183010.1788747157.3dLVGY
+ok - watch-arm: publication after recovery handoff is surfaced
+ok - watch-arm: restart publishes recovery before clearing a reused-pid watcher lock
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 7 --recovery-generation 4187421.1788747159.RAYWIp
+ok - watch-arm: markerless legacy queues are adopted and recovered
+ok - watch-arm: a watcher close during handling keeps the printed acknowledgement valid
+ok - watch-arm: a moved recovery generation consumes handled rows and names its remedy
+ok - watch-arm: downtime marker publication does not follow symlinks
+FM_TEST_END 2026-09-07T02:12:49Z tests/fm-watch-arm.test.sh exit=0 duration_ms=58140 gate_skip=false
+FM_TEST_BEGIN 2026-09-07T02:12:49Z tests/fm-send-strict.test.sh family=backend-dispatch expected_gate_skip=none
+ok - fm-send strict: exact task/lane ids resolve through home metadata
+ok - fm-send --key: exit status follows delivery, and an undelivered key never reports success
+ok - fm-send strict: unset FM_HOME fails before target resolution
+ok - fm-send strict: unresolvable selectors do not fall back to tmux
+ok - fm-send strict: prefixless herdr pane ids are rejected before tmux fallback
+ok - fm-send strict: unmatched single-colon explicit targets must verify live before sending
+ok - fm-send strict: fm-prefixed Herdr sessions remain explicit backend targets
+ok - fm-send strict: healthy fm-<id> sends still type once and submit
+FM_TEST_END 2026-09-07T02:12:50Z tests/fm-send-strict.test.sh exit=0 duration_ms=861 gate_skip=false
+FM_TEST_SUMMARY total=20 failed=0 skipped_gate=0 duration_ms=357572
+FM_TEST_SUMMARY_FAMILY family=backend-dispatch count=1 duration_ms=861 failed=0
+FM_TEST_SUMMARY_FAMILY family=dashboard count=2 duration_ms=78673 failed=0
+FM_TEST_SUMMARY_FAMILY family=pr-forge count=1 duration_ms=2923 failed=0
+FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=6 duration_ms=71134 failed=0
+FM_TEST_SUMMARY_FAMILY family=secondmate count=3 duration_ms=51435 failed=0
+FM_TEST_SUMMARY_FAMILY family=unclassified count=6 duration_ms=93995 failed=0
+FM_TEST_SUMMARY_FAMILY family=watcher-wake-lock count=1 duration_ms=58140 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-watch-arm.test.sh duration_ms=58140
+FM_TEST_SLOWEST rank=2 script=tests/fm-fleet-audit.test.sh duration_ms=55321
+FM_TEST_SLOWEST rank=3 script=tests/fm-procevent.test.sh duration_ms=50876
+FM_TEST_SLOWEST rank=4 script=tests/fm-decision-hold-lifecycle.test.sh duration_ms=47464
+FM_TEST_SLOWEST rank=5 script=tests/fm-remote-reply.test.sh duration_ms=32544
+FM_TEST_SLOWEST rank=6 script=tests/fm-dashboard.test.sh duration_ms=23352
+FM_TEST_SLOWEST rank=7 script=tests/fm-remote-backlog-handoff.test.sh duration_ms=15752
+FM_TEST_SLOWEST rank=8 script=tests/fm-test-run.test.sh duration_ms=14115
+FM_TEST_SLOWEST rank=9 script=tests/fm-procevent-when.test.sh duration_ms=13895
+FM_TEST_SLOWEST rank=10 script=tests/fm-pending-reply.test.sh duration_ms=13753
+FM_TEST_SLOWEST rank=11 script=tests/fm-procevent-river.test.sh duration_ms=10453
+FM_TEST_SLOWEST rank=12 script=tests/fm-crew-state.test.sh duration_ms=5444
+FM_TEST_SLOWEST rank=13 script=tests/fm-status-board.test.sh duration_ms=3349
+FM_TEST_SLOWEST rank=14 script=tests/fm-backlog-handoff.test.sh duration_ms=3139
+FM_TEST_SLOWEST rank=15 script=tests/fm-pr-destination-guard.test.sh duration_ms=2923
+fm-test-run: wrote timing artifact: /tmp/no-mistakes-evidence/01M1WRC0HRP7VYP0VRM284BVP7/targeted-suites-timing.json
+exit=0
