@@ -547,7 +547,7 @@ test_ensure_hands_the_detached_deadman_its_harness() {
     FM_CONTINUITY_DEADMAN_INJECT_BACKOFF=3600 FM_CONTINUITY_DEADMAN_ALARM_INTERVAL=3600 \
     FM_SUPERVISOR_TARGET=sess:win FM_SUPERVISOR_BACKEND=tmux \
     FM_FAKE_PANE_BODY="$dir/busy-body" FM_INJECT_LOG="$dir/inject.log" FM_ALARM_LOG="$dir/alarm.log" \
-    "$FAKEBIN/claude" -c '"$1" ensure' _ "$dir/bin/fm-continuity-deadman.sh" \
+    "$FAKEBIN/claude" -c '"$1" ensure; :' _ "$dir/bin/fm-continuity-deadman.sh" \
     || fail "ensure exited non-zero under the fake harness"
   wait_until 5 test -e "$dir/state/.continuity-deadman.lock/pid" \
     || fail "ensure did not start a deadman"
