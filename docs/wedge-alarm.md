@@ -23,13 +23,13 @@ It lists channel directives, one per non-empty, non-comment line, and every list
 - `command:<cmd>` runs `<cmd>` through `sh -c` with the alarm summary as `$1` and on stdin, allowing delivery to a phone or pager service.
 
 An absent `config/wedge-alarm` behaves as `auto`, which is default-on on macOS.
-This is deliberate because the alarm fires only after a genuine max-defer wedge and is rate-limited to at most once per max-defer window.
+This is deliberate because each caller fires it only after a genuine stall, a max-defer wedge or a supervision chain dead past the grace window, and rate-limits its own re-alarms.
 
 Each channel is best-effort.
-A missing binary or non-zero exit logs a warning and continues to the next channel without crashing the daemon loop.
+A missing binary or non-zero exit logs a warning and continues to the next channel without crashing the caller's loop.
 Every invocation is process-group bounded by `FM_WEDGE_ALARM_TIMEOUT_SECS`, which defaults to 10 seconds, including `command:`, `osascript`, `herdr`, and the test seam.
-On timeout or daemon shutdown, the notifier process group is terminated and the next configured channel may run.
-AppleScript receives the summary as an argv item rather than interpolated source, so summary text cannot alter the script.
+On timeout, and on away-mode daemon shutdown, the notifier process group is terminated and the next configured channel may run.
+AppleScript receives the summary and the caller's title as argv items rather than interpolated source, so neither text can alter the script.
 See [`examples/wedge-alarm`](examples/wedge-alarm) for a copyable config.
 
 ## Test safety

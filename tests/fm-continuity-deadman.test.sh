@@ -130,11 +130,20 @@ make_home() {
 
 session_pid() { cat "$1/session.pid"; }
 
+# kill_fake_session <pid>: end a fake session AND its sleep child. TERM on the
+# bash parent alone orphans the child, which then outlives the suite by up to
+# ten minutes as a stray `sleep 600`.
+kill_fake_session() {
+  local pid=${1:-}
+  [ -n "$pid" ] || return 0
+  pkill -P "$pid" 2>/dev/null
+  kill "$pid" 2>/dev/null
+  return 0
+}
+
 stop_home() {  # <home>
-  local pid
   "$1/bin/fm-continuity-deadman.sh" stop >/dev/null 2>&1 || true
-  pid=$(cat "$1/session.pid" 2>/dev/null || true)
-  [ -n "$pid" ] && kill "$pid" 2>/dev/null
+  kill_fake_session "$(cat "$1/session.pid" 2>/dev/null || true)"
   return 0
 }
 
@@ -487,6 +496,38 @@ test_ensure_starts_one_detached_singleton() {
   pass "ensure starts exactly one deadman, detached from its starter's process group, and stop retires it"
 }
 
+test_arm_starts_and_refreshes_the_deadman() {
+  local dir pid second own_pgid dm_pgid watcher_pid
+  dir=$(make_home arm-starts-deadman)
+  # The real arm against the fixture home: the fake tmux reports the task's
+  # window gone, so the watcher closes its cycle on one stale wake and the arm
+  # returns on its own. The deadman it started must outlive that arm.
+  PATH="$FAKEBIN:$PATH" FM_HOME="$dir" FM_ROOT_OVERRIDE="$dir" FM_POLL=1 \
+    FM_CONTINUITY_DEADMAN_TICK=600 FM_SUPERVISOR_PANE_HARNESS=claude \
+    "$dir/bin/fm-watch-arm.sh" > "$dir/arm.out" 2>&1 &
+  wait_until 15 test -e "$dir/state/.continuity-deadman.lock/pid" \
+    || fail "an arm did not start this home's deadman: $(cat "$dir/arm.out" 2>/dev/null)"
+  wait "$!" 2>/dev/null || true
+  pid=$(cat "$dir/state/.continuity-deadman.lock/pid")
+  pid_alive "$pid" || fail "the deadman the arm started did not outlive the arm"
+  own_pgid=$(ps -o pgid= -p $$ | tr -d '[:space:]')
+  dm_pgid=$(ps -o pgid= -p "$pid" | tr -d '[:space:]')
+  [ -n "$dm_pgid" ] && [ "$dm_pgid" != "$own_pgid" ] \
+    || fail "the arm-started deadman shares the arm's process group ($dm_pgid) and would die with the harness"
+  grep -q '^watcher: started pid=' "$dir/arm.out" \
+    || fail "the arm never armed a watcher, so the deadman start is unproven: $(cat "$dir/arm.out")"
+
+  PATH="$FAKEBIN:$PATH" FM_HOME="$dir" FM_ROOT_OVERRIDE="$dir" FM_POLL=1 \
+    FM_CONTINUITY_DEADMAN_TICK=600 FM_SUPERVISOR_PANE_HARNESS=claude \
+    "$dir/bin/fm-watch-arm.sh" > "$dir/arm2.out" 2>&1 || true
+  second=$(cat "$dir/state/.continuity-deadman.lock/pid" 2>/dev/null || true)
+  [ "$second" = "$pid" ] || fail "a second arm replaced the live deadman ($second != $pid) instead of refreshing it"
+  watcher_pid=$(cat "$dir/state/.watch.lock/pid" 2>/dev/null || true)
+  [ -n "$watcher_pid" ] && kill "$watcher_pid" 2>/dev/null
+  stop_home "$dir"
+  pass "a real arm starts this home's deadman outside its own process group and a later arm keeps the same one"
+}
+
 test_deadman_exits_when_the_session_is_gone() {
   local dir pid
   dir=$(make_home session-gone)
@@ -496,7 +537,7 @@ test_deadman_exits_when_the_session_is_gone() {
     || fail "ensure did not start a deadman"
   pid=$(cat "$dir/state/.continuity-deadman.lock/pid")
 
-  kill "$(session_pid "$dir")" 2>/dev/null
+  kill_fake_session "$(session_pid "$dir")"
   wait_until 20 sh -c "! kill -0 $pid 2>/dev/null" \
     || fail "the deadman outlived the session that owned its home"
   grep -q 'exiting: the session that owned this home is gone' "$dir/state/.continuity-deadman.log" \
@@ -527,7 +568,7 @@ test_deadman_retires_when_the_session_is_replaced() {
   pid_alive "$old_session" || fail "the old session died on its own, so this case proved nothing"
   grep -q 'exiting: the session that owned this home changed' "$dir/state/.continuity-deadman.log" \
     || fail "the exit was not recorded: $(cat "$dir/state/.continuity-deadman.log")"
-  kill "$new_session" 2>/dev/null
+  kill_fake_session "$new_session"
   stop_home "$dir"
   pass "a deadman retires when a different session takes over its home, so the next arm starts one from that session"
 }
@@ -592,7 +633,7 @@ test_ensure_replaces_a_superseded_sessions_deadman() {
   FM_CONTINUITY_DEADMAN_TICK=600 run_deadman "$dir" ensure || fail "third ensure exited non-zero"
   [ "$(cat "$dir/state/.continuity-deadman.lock/pid")" = "$new_pid" ] \
     || fail "ensure replaced a deadman that already belonged to the current session"
-  kill "$new_session" 2>/dev/null
+  kill_fake_session "$new_session"
   stop_home "$dir"
   pass "ensure retires a deadman started under a superseded session and starts one for the current session at once"
 }
@@ -659,6 +700,7 @@ test_idle_pane_after_a_dead_turn_still_alarms
 test_self_recovery_defers_to_an_unreadable_composer
 test_episode_closes_when_supervision_returns
 test_ensure_starts_one_detached_singleton
+test_arm_starts_and_refreshes_the_deadman
 test_deadman_exits_when_the_session_is_gone
 test_deadman_retires_when_the_session_is_replaced
 test_ensure_hands_the_detached_deadman_its_harness
