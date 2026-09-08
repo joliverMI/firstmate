@@ -2,10 +2,11 @@
 
 The board is otherwise a closed loop: agents write cards, the Admiral reads
 them, and nothing the board records reaches firstmate unless a session
-happens to look. That is fine for everything except his approval, which is
-the one board write that hands work BACK to the fleet - see docs/dashboard.md
-"What an approval does mechanically" for why a status nobody is woken about
-rots by construction.
+happens to look. That is fine for everything except the two board writes
+that hand work BACK to the fleet: his approval, and a note he writes on a
+card - see docs/dashboard.md "What an approval does mechanically" for why a
+status nobody is woken about rots by construction, and a note nobody is
+woken about goes unanswered the same way.
 
 Nothing here interprets a card or decides anything. It appends one wake
 record through firstmate's own writer, `fm_wake_append` in

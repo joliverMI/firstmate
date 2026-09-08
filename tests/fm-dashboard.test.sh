@@ -1439,9 +1439,12 @@ test_an_agent_note_publishes_no_wake() {
 
 # The note is his either way: a queue that cannot be written must never cost
 # him the note itself, matching how the approval path treats the same
-# failure.
+# failure. The publish is bounded by wake.py's PUBLISH_TIMEOUT_SECONDS, so
+# this case deliberately takes about that long while the lock wait runs out
+# against the unwritable directory - it is not hanging.
 test_a_note_is_saved_even_when_the_wake_cannot_be_published() {
-  local id code text
+  local id code text status_json
+  [ "$(id -u)" -ne 0 ] || { pass "skipped unpublishable-wake coverage - running as root ignores permissions"; return 0; }
   id=$("$DASH" add --title "Note survives an unpublishable wake" --captain firstmate --prompt "x" | awk '{print $1}')
   [ -n "$id" ] || fail "could not create the card"
 
@@ -1456,7 +1459,16 @@ test_a_note_is_saved_even_when_the_wake_cannot_be_published() {
   text=$("$DASH" show "$id")
   assert_contains "$text" "still there?" "the note was not saved when the wake could not be published"
 
-  pass "a note is saved even when the wake queue could not be written to"
+  if [ -f "$FM_HOME/state/.wake-queue" ] && grep -q "dashboard-note:$id" "$FM_HOME/state/.wake-queue"; then
+    fail "the wake was published anyway, so this case never exercised the failure it claims to cover"
+  fi
+  status_json=$(curl -sS "http://127.0.0.1:$PORT/api/audit/status")
+  assert_contains "$status_json" '"key": "note-wake-unpublished"' \
+    "an unpublishable note wake left no finding in the discrepancy log"
+  assert_contains "$status_json" "$id" \
+    "the unpublished-wake finding does not name the card he wrote on"
+
+  pass "a note is saved, and the failure is written down, even when the wake queue could not be written to"
 }
 
 # Regression: the CLI and the raw API do not trim a plan, so a plan could be
