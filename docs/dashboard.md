@@ -313,8 +313,9 @@ The gap now has a deliberate producer rather than only accidental ones: the mech
 
 ## Link policy (standing order 17)
 
-`bin/fm-dashboard.sh link` and the underlying `POST /api/tasks/{id}/notes` endpoint reject, structurally, any link whose host contains `github`, any link that is not a full `http(s)://` URL, and any link whose host is local-only and will not resolve from the Admiral's phone (`bin/fleet-dashboard/server/validation.py`).
+`bin/fm-dashboard.sh link` and the underlying `POST /api/tasks/{id}/notes` endpoint reject, structurally, any link whose host contains `github`, any link that is not a full `http(s)://` URL, and any link whose host is loopback, link-local, or unspecified and so will not resolve from the Admiral's phone (`bin/fleet-dashboard/server/validation.py`).
 This is enforcement, not just a written rule an agent has to remember: "never a GitHub or pull-request link" and "a link he can open on his phone" are the two things this board sends the Admiral, so both are checked server-side on every write, not left to habit.
+A private LAN address (10/8, 172.16/12, 192.168/16) or a `.lan`/`.local` hostname is explicitly allowed rather than refused: his phone reaches his home services - Spectra, Home Assistant, Forgejo - on exactly those addresses, over the LAN or his tailnet, so refusing them would keep the links he most needs off the board while doing nothing to protect a host that only resolves on this machine.
 
 ## Auditor integration
 

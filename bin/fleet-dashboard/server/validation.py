@@ -6,7 +6,12 @@ just documented, so a card cannot silently carry a link that fails them:
 
   1. Never a GitHub or pull-request link.
   2. Never a link that cannot open on his phone (a bare path, or a host
-     that only resolves on this machine).
+     that only resolves on this machine: loopback, link-local, or
+     unspecified). A private LAN address (10/8, 172.16/12, 192.168/16) or
+     a `.lan`/`.local` hostname IS allowed - his phone reaches his Spectra,
+     Home Assistant, and Forgejo boxes on exactly those addresses over the
+     LAN or tailnet, so refusing them would keep the links he most needs
+     off the board.
 
 A third rule enforced here: `needs_action` is the loudest status on the
 board and means the work is blocked on him doing something himself. A card
@@ -225,11 +230,17 @@ def validate_review_plan(plan: str | None) -> None:
         )
 
 
-def _is_private_literal(host: str) -> bool:
+def _is_blocked_ip_literal(host: str) -> bool:
+    """True if host is an IP literal that never opens on his phone: loopback,
+    link-local (169.254/16, fe80::/10), or unspecified. A plain RFC1918
+    private literal (10/8, 172.16/12, 192.168/16) is NOT blocked here - his
+    phone reaches those addresses directly on the LAN or over the tailnet.
+    """
     try:
-        return ipaddress.ip_address(host).is_private
+        addr = ipaddress.ip_address(host)
     except ValueError:
         return False
+    return addr.is_loopback or addr.is_link_local or addr.is_unspecified
 
 
 def validate_review_link(url: str) -> None:
@@ -249,7 +260,7 @@ def validate_review_link(url: str) -> None:
             "never a GitHub or pull-request link to the Admiral (standing order 17) "
             f"- report the outcome in words instead: {url!r}"
         )
-    if host in LOCAL_HOSTNAMES or _is_private_literal(host):
+    if host in LOCAL_HOSTNAMES or _is_blocked_ip_literal(host):
         raise InvalidLinkError(
             f"link host is local-only and will not open on his phone: {url!r}"
         )
