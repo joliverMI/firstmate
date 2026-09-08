@@ -433,7 +433,68 @@ test_link_policy_rejects_github_and_localhost() {
   "$DASH" link "$id" --url "https://example.com/review/42" --label "Preview" >/dev/null \
     || fail "a legitimate phone-openable link was rejected"
   assert_contains "$("$DASH" show "$id")" "example.com/review/42" "accepted link did not persist"
-  pass "link policy rejects GitHub/PR and local-only links, accepts a real one"
+
+  "$DASH" link "$id" --url "http://192.168.40.145:8000/status" --label "Spectra" >/dev/null \
+    || fail "a private LAN link his phone can reach was rejected"
+  assert_contains "$("$DASH" show "$id")" "192.168.40.145:8000" "accepted LAN link did not persist"
+
+  pass "link policy rejects GitHub/PR and local-only links, accepts a real one and a LAN one"
+}
+
+# The three real hosts his phone reaches on the LAN or tailnet must be
+# accepted, while loopback, link-local, unspecified, and GitHub/PR hosts
+# stay refused. Exercised directly against validation.py (like the
+# needs-action guard-rates test above) rather than through the running
+# server, so every host in the corpus is checked without needing a card
+# per URL.
+test_link_policy_accepts_his_lan_hosts_and_still_refuses_loopback_and_link_local() {
+  python3 - "$ROOT/bin/fleet-dashboard/server" <<'LAN_LINKS' || fail "the LAN link policy no longer holds"
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from validation import InvalidLinkError, validate_review_link
+
+ACCEPTED = [
+    "http://192.168.40.145:8000",  # Spectra
+    "http://192.168.40.16:8123",  # Home Assistant, by IP
+    "http://homeassistant.lan",  # Home Assistant, by .lan hostname
+    "http://192.168.40.145:3000",  # Forgejo
+]
+REFUSED = [
+    "http://localhost/thing",
+    "http://127.0.0.1/thing",
+    "http://0.0.0.0/thing",
+    "http://[::1]/thing",
+    "http://169.254.1.1/thing",
+    "http://[fe80::1]/thing",
+    "http://[::ffff:127.0.0.1]/thing",
+    "http://[::ffff:169.254.1.1]/thing",
+    "https://github.com/joliverMI/firstmate",
+    "https://github.com/joliverMI/firstmate/pull/1",
+]
+
+
+def refused(url):
+    try:
+        validate_review_link(url)
+    except InvalidLinkError:
+        return True
+    return False
+
+
+failures = []
+for url in ACCEPTED:
+    if refused(url):
+        failures.append(f"phone-reachable LAN link was refused: {url!r}")
+for url in REFUSED:
+    if not refused(url):
+        failures.append(f"a link that cannot open on his phone was accepted: {url!r}")
+
+if failures:
+    print("\n".join(failures))
+    sys.exit(1)
+LAN_LINKS
+  pass "private LAN and .lan hosts are accepted; loopback, link-local, and GitHub/PR hosts stay refused"
 }
 
 test_audit_log_run_and_interval() {
@@ -1948,6 +2009,7 @@ test_testing_and_review_are_distinct_statuses
 test_waiting_status_carries_target_and_reason
 test_notes_tabs_and_empty_tab_semantics
 test_link_policy_rejects_github_and_localhost
+test_link_policy_accepts_his_lan_hosts_and_still_refuses_loopback_and_link_local
 test_needs_action_status_carries_reason_and_sorts_first
 test_needs_action_requires_a_real_ask
 test_no_path_can_set_needs_action_without_an_ask
