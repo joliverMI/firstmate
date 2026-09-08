@@ -121,7 +121,8 @@ The prompt is not a tab you write to - it is set once at `add` time.
 ## Links: how he receives anything to review
 
 `bin/fm-dashboard.sh link <id> --url <url> [--label <text>]` is how the fleet sends the Admiral something to look at.
-The server rejects (400) any link that is not a full `http(s)://` URL, any link whose host is local-only and will not resolve on his phone, and **any GitHub or pull-request link at all** - standing order 17, enforced structurally so it cannot slip through as a copy-paste habit.
+The server rejects (400) any link that is not a full `http(s)://` URL, any link whose host is local-only (loopback, link-local, or unspecified) and will not resolve on his phone, and **any GitHub or pull-request link at all** - standing order 17, enforced structurally so it cannot slip through as a copy-paste habit.
+His own LAN and tailnet services (a private `10.`/`172.16.`/`192.168.` address or a `.lan`/`.local` hostname) are accepted, not refused - see "Link policy (standing order 17)" in [`docs/dashboard.md`](../../../docs/dashboard.md) for the full policy.
 If a link is rejected, that is not a bug to route around - find or make a URL that actually opens on his phone and report the outcome in words if nothing else exists yet.
 
 ## Reading the board
