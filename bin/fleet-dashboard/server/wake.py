@@ -2,10 +2,11 @@
 
 The board is otherwise a closed loop: agents write cards, the Admiral reads
 them, and nothing the board records reaches firstmate unless a session
-happens to look. That is fine for everything except his approval, which is
-the one board write that hands work BACK to the fleet - see docs/dashboard.md
-"What an approval does mechanically" for why a status nobody is woken about
-rots by construction.
+happens to look. That is fine for everything except the two board writes
+that hand work BACK to the fleet: his approval, and a note he writes on a
+card - see docs/dashboard.md "What an approval does mechanically" for why a
+status nobody is woken about rots by construction, and a note nobody is
+woken about goes unanswered the same way.
 
 Nothing here interprets a card or decides anything. It appends one wake
 record through firstmate's own writer, `fm_wake_append` in
@@ -47,7 +48,7 @@ def resolve_fm_home(db_path: str) -> str:
     - a bare `python3 main.py` - fall back to db_path's grandparent, since
     every caller passes --db as <FM_HOME>/data/dashboard.db. Stated once
     here because both the Force Audit button's sweep subprocess and the
-    approval wake below have to resolve the SAME home; two copies of this
+    wakes published below have to resolve the SAME home; two copies of this
     rule would let a board wake one home while sweeping another.
     """
     return os.environ.get(
@@ -60,9 +61,9 @@ def publish_check_wake(fm_home: str, key: str, payload: str) -> None:
 
     Raises WakePublishError if the record was not written, having written
     nothing. The caller decides what a failure costs it; for the approval
-    path the answer is deliberately "the approval still stands, loudly
-    unaccompanied", because refusing to record his consent because a queue
-    file was unwritable would be the worse failure.
+    and note paths the answer is deliberately "his write still stands,
+    loudly unaccompanied", because refusing to record his consent, or his
+    note, because a queue file was unwritable would be the worse failure.
 
     A record is never left half-written, including when the bound below cuts
     the writer off: the append is one line written under the queue's own lock

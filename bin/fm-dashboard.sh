@@ -79,6 +79,11 @@
 #   fm-dashboard.sh unstar <id>
 #   fm-dashboard.sh note <id> --tab <interpretation|communication|needs> \
 #       [--text <text>] [--link <url>] [--link-label <text>] [--author <a>]
+#       --author defaults to agent. `admiral` is his own voice - it is what
+#       the board's card posts as - and an admiral-authored note wakes
+#       firstmate once with `check: dashboard-note <id>`; a note by anyone
+#       else wakes nobody (see docs/dashboard.md "What an approval does
+#       mechanically").
 #   fm-dashboard.sh link <id> --url <url> [--label <text>] [--tab <tab>]
 #   fm-dashboard.sh delete <id> --confirm
 #   fm-dashboard.sh audit-log (<id> | --fleet) <text> [--kind discrepancy|error] \

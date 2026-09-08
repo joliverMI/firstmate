@@ -917,7 +917,46 @@ class Store:
                 (task_id, tab, author, text, link_url, link_label, ts),
             )
             cur.execute("UPDATE tasks SET updated_at = ? WHERE id = ?", (ts, task_id))
+        if author == "admiral":
+            self._publish_note_wake(task_id)
         return self.get_task(task_id)
+
+    def _publish_note_wake(self, task_id: str) -> None:
+        """Tell firstmate, durably, that he wrote on a card.
+
+        Mirrors `_publish_approval_wake`: the wake is what makes a note
+        mechanical rather than something a session has to notice by
+        happening to look at the card. Published after the note commits, and
+        a failure to publish never costs him the note he just wrote - the
+        note is his either way, so a queue write failing is logged loudly
+        rather than raised back at the note write.
+        """
+        try:
+            publish_check_wake(
+                self.fm_home,
+                f"dashboard-note:{task_id}",
+                f"check: dashboard-note {task_id} - he wrote on the card; "
+                f"read and answer it",
+            )
+            return
+        except WakePublishError as exc:
+            reason = str(exc)
+        print(
+            f"dashboard: NOTE NOT ANNOUNCED for {task_id} - he wrote on the card but "
+            f"firstmate was not woken: {reason}. Read and answer it by hand.",
+            file=sys.stderr, flush=True,
+        )
+        try:
+            self.record_audit_finding(
+                "error",
+                f"he wrote on this card, but firstmate could not be notified "
+                f"({reason}) - this card needs reading and answering by hand",
+                task_id=task_id,
+                key="note-wake-unpublished",
+            )
+        except Exception as exc:  # noqa: BLE001 - the log must never cost the note
+            print(f"dashboard: could not record the unannounced note either: {exc}",
+                  file=sys.stderr, flush=True)
 
     # ---- settings (key/value) ----
 
