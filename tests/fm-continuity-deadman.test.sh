@@ -532,6 +532,36 @@ test_deadman_retires_when_the_session_is_replaced() {
   pass "a deadman retires when a different session takes over its home, so the next arm starts one from that session"
 }
 
+test_ensure_hands_the_detached_deadman_its_harness() {
+  local dir
+  dir=$(make_home detached-harness)
+  printf 'esc to interrupt\n' > "$dir/busy-body"
+  # No harness marker and no preset: the only evidence of which harness runs
+  # firstmate is the fake `claude` in ensure's own ancestry, which the detached
+  # child cannot see. The grace is short because every measure here is absent
+  # state, which no amount of startup time can undo.
+  # shellcheck disable=SC2016 # $1 must expand inside the fake harness child, not here.
+  env -u CLAUDECODE -u FM_SUPERVISOR_PANE_HARNESS \
+    PATH="$FAKEBIN:$PATH" FM_HOME="$dir" FM_ROOT_OVERRIDE="$dir" \
+    FM_GUARD_GRACE=3 FM_CONTINUITY_DEADMAN_TICK=1 \
+    FM_CONTINUITY_DEADMAN_INJECT_BACKOFF=3600 FM_CONTINUITY_DEADMAN_ALARM_INTERVAL=3600 \
+    FM_SUPERVISOR_TARGET=sess:win FM_SUPERVISOR_BACKEND=tmux \
+    FM_FAKE_PANE_BODY="$dir/busy-body" FM_INJECT_LOG="$dir/inject.log" FM_ALARM_LOG="$dir/alarm.log" \
+    "$FAKEBIN/claude" -c '"$1" ensure' _ "$dir/bin/fm-continuity-deadman.sh" \
+    || fail "ensure exited non-zero under the fake harness"
+  wait_until 5 test -e "$dir/state/.continuity-deadman.lock/pid" \
+    || fail "ensure did not start a deadman"
+  wait_until 20 grep -q 'mid-turn' "$dir/state/.continuity-deadman.log" \
+    || fail "the detached deadman never read the pane as mid-turn: $(cat "$dir/state/.continuity-deadman.log")"
+  [ ! -e "$dir/state/.continuity-deadman-alarm" ] \
+    || fail "the detached deadman opened an episode against a mid-turn pane: $(cat "$dir/state/.continuity-deadman-alarm")"
+  [ "$(queue_rows "$dir")" = 0 ] || fail "the detached deadman queued an outage wake against a mid-turn pane"
+  [ ! -s "$dir/alarm.log" ] || fail "the detached deadman alarmed against a mid-turn pane: $(cat "$dir/alarm.log")"
+  [ ! -s "$dir/inject.log" ] || fail "the detached deadman typed into a mid-turn pane: $(cat "$dir/inject.log")"
+  stop_home "$dir"
+  pass "ensure resolves firstmate's harness from its own ancestry and hands it to the detached deadman, so a mid-turn pane still reads busy there"
+}
+
 test_ensure_replaces_a_superseded_sessions_deadman() {
   local dir old_pid new_pid old_session new_session
   dir=$(make_home session-superseded)
@@ -631,6 +661,7 @@ test_episode_closes_when_supervision_returns
 test_ensure_starts_one_detached_singleton
 test_deadman_exits_when_the_session_is_gone
 test_deadman_retires_when_the_session_is_replaced
+test_ensure_hands_the_detached_deadman_its_harness
 test_ensure_replaces_a_superseded_sessions_deadman
 test_stop_is_prompt_inside_a_long_tick
 test_ensure_is_inert_outside_a_primary_home

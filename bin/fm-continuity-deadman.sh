@@ -591,11 +591,26 @@ cmd_run() {
 # The child is handed this process's ALREADY RESOLVED home so it can never
 # re-derive a different one: `ensure` proved primary scope against exactly these
 # paths, and the deadman must supervise that same home or nothing.
+# It is also handed firstmate's harness, resolved HERE while this process still
+# sits inside the harness's process tree: bin/fm-harness.sh falls back to a walk
+# up the process ancestry for the harnesses that publish no environment marker,
+# and a detached child has no ancestry left to walk. The busy predicate that
+# gates both the episode and the injection is harness-scoped, so an unresolved
+# harness would make a mid-turn pane read idle.
 spawn_detached() {
-  local program
+  local program harness
   export FM_HOME
   export FM_ROOT_OVERRIDE="$FM_ROOT"
   [ -z "${FM_STATE_OVERRIDE:-}" ] || export FM_STATE_OVERRIDE
+  if [ -z "${FM_SUPERVISOR_PANE_HARNESS:-}" ]; then
+    harness=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || true)
+    case "$harness" in
+      ''|unknown) ;;
+      *) export FM_SUPERVISOR_PANE_HARNESS="$harness" ;;
+    esac
+  else
+    export FM_SUPERVISOR_PANE_HARNESS
+  fi
   if command -v setsid >/dev/null 2>&1; then
     setsid "$SCRIPT_DIR/fm-continuity-deadman.sh" run >/dev/null 2>&1 </dev/null &
     return 0
