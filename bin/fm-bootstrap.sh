@@ -82,7 +82,8 @@
 #          Set FM_FLEET_PRUNE=0 to skip branch pruning during that refresh.
 #          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the six MUTATING sweeps
 #          (PR-check migration, secondmate_sync, secondmate_liveness_sweep,
-#          secondmate_handoff_resume, x_mode_setup, fleet_sync) while still
+#          secondmate_handoff_resume, x_mode_setup, fleet_sync) and the local
+#          continuity-deadman start, while still
 #          printing every read-only detect line
 #          above; the TANGLE line switches to advisory-only wording with no
 #          checkout command. Used by
@@ -1267,6 +1268,12 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
   fi
   # x_mode_setup writes local Relay artifacts only and never leaves the machine.
   local_phase && x_mode_setup
+  # Start or refresh this home's continuity deadman, the one supervision process
+  # that lives outside the harness's process tree so a turn boundary that never
+  # fires cannot take supervision down silently (bin/fm-continuity-deadman.sh).
+  # Local, idempotent, silent, and never fatal: a home that already has a live
+  # one pays a lock read, and a failure here can never block a session start.
+  local_phase && "$SCRIPT_DIR/fm-continuity-deadman.sh" ensure >/dev/null 2>&1
   if network_phase && network_sweep_authorized 'project clone refresh'; then
     __fm_timing_stamp=$(fm_timing_now_ms)
     fleet_sync

@@ -17,6 +17,10 @@ When work, a process-event source, a trust-registered custom check, or Relay pol
 The mid-turn pull warning uses the model-aware supervision verdict described below, while the turn-end guard keeps the PID-strict watcher predicate.
 The guard remains a backstop; [`watcher-continuity.md`](watcher-continuity.md) owns normal continuity.
 
+This guard and the Stop-owned auto-arm are both hosted on the primary's turn boundary, and Claude Code v2.1.263 does not run Stop hooks at all for a turn that terminates in an API error.
+A persistent API failure therefore skips continuity, its failure detection, and its alarm together, and the session survives looking healthy.
+`bin/fm-continuity-deadman.sh` is the out-of-tree backstop for exactly that class; [`watcher-continuity.md`](watcher-continuity.md#continuity-deadman) owns it.
+
 ## Guard predicates
 
 The guard first calls the shared primary scope.
@@ -51,6 +55,7 @@ If `jq` is missing or hook stdin is empty, the guard exits 0 because it cannot s
 ## Harness integrations
 
 - Claude registers two `Stop` hooks in `.claude/settings.json`, both anchored through `CLAUDE_PROJECT_DIR`: `bin/fm-turnend-guard.sh --claude`, and `bin/fm-claude-stop-autoarm.sh` with `asyncRewake: true` and `timeout: 28800`.
+  Neither fires when the turn ends in an API error, so the auto-arm marks each delivered rewake in `state/.rewake-pending` (cleared by `bin/fm-wake-drain.sh`) and the detached deadman treats an aged marker as a woken turn that never ran.
 - Codex registers a `Stop` hook in `.codex/hooks.json`, anchors the executable to the hook process working directory, verifies a Firstmate-shaped hook-bearing root, and passes the original payload to the shared guard.
 - OpenCode listens for `session.idle` in `.opencode/plugins/fm-primary-turnend-guard.js`, lets the watcher coordinator act first, and calls `client.session.promptAsync` once when the guard returns 2.
 - Pi listens for `agent_settled` in `.pi/extensions/fm-primary-turnend-guard.ts`, runs once per logical agent run, and calls `pi.sendUserMessage(..., { deliverAs: "followUp" })` once when the guard returns 2.
@@ -143,6 +148,7 @@ That warning uses `bin/fm-supervision-instructions.sh --repair-line`, so it alwa
 - Installation refuses before writing unless `python3` with `tomllib` and `jq` are available.
 - If `jq` is removed after installation, the hook remains silent and exits 0, turn-end wakes stop, and Kimi crews fall back to idle detection.
 - Unreadable hook input remains fail-open.
+- A turn that ends in an API error runs no Stop hooks on Claude Code v2.1.263, so neither the guard nor the auto-arm can act on it; that gap is covered outside the turn boundary by [`watcher-continuity.md`](watcher-continuity.md#continuity-deadman).
 - No harness adapter uses a shell ampersand to manufacture supervision.
 
 ## Regression coverage

@@ -344,7 +344,57 @@ test_actionable_close_rewakes_with_reason() {
   [ "$(epoch_outcome "$dir")" = rewake ] || fail "epoch must record outcome=rewake, got: $(epoch_outcome "$dir")"
   [ ! -e "$dir/state/.claude-autoarm.lock" ] || fail "owner lock must be released after the cycle"
   [ -e "$dir/state/arm-ran" ] || fail "hook never foregrounded the arm wrapper"
+  [ -e "$dir/state/.rewake-pending" ] \
+    || fail "a delivered rewake left no pending marker, so an unhandled one could not be detected"
   pass "auto-arm: actionable close translates to exactly one exit-2 rewake with reason"
+}
+
+# A rewake is DELIVERED by this hook but only HANDLED by the turn it wakes. The
+# marker separates the two so bin/fm-continuity-deadman.sh can tell a woken turn
+# that ran from one that died before its own Stop hooks (the 2026-09-07 shape).
+# A close that does NOT rewake must leave no marker, or every quiet cycle would
+# read as an unhandled rewake.
+test_non_rewaking_close_leaves_no_pending_marker() {
+  local dir status pid identity
+  dir=$(make_primary_dir "$TMP_ROOT/no-rewake-marker")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" benign-live
+  sleep 60 &
+  pid=$!
+  identity=$(watcher_identity "$dir" "$pid") || fail "could not identify live watcher holder"
+  record_watcher_lock "$dir" "$pid" "$identity"
+  touch "$dir/state/.last-watcher-beat"
+  run_autoarm "$dir" >/dev/null 2>&1; status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 0 "$status" "a benign close with a live watcher must stay quiet"
+  [ ! -e "$dir/state/.rewake-pending" ] \
+    || fail "a cycle that never rewoke the primary still claimed a rewake was pending"
+  pass "auto-arm: only a delivered rewake records a pending rewake"
+}
+
+# Every owner killed mid-arm by process-group teardown leaves one arm-output temp
+# file behind. They accumulated one per uncleanly ended session; the claiming
+# owner now sweeps its own home's day-old siblings without touching fresh ones.
+test_claim_sweeps_stale_arm_output_temp_files() {
+  local dir status
+  dir=$(make_primary_dir "$TMP_ROOT/temp-sweep")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" actionable
+  : > "$dir/state/.claude-autoarm-output.old1"
+  : > "$dir/state/.claude-autoarm-output.old2"
+  touch -d '3 days ago' "$dir/state/.claude-autoarm-output.old1" \
+    "$dir/state/.claude-autoarm-output.old2" 2>/dev/null \
+    || fail "could not backdate the stale temp files"
+  : > "$dir/state/.claude-autoarm-output.fresh"
+  : > "$dir/state/keep-me"
+  run_autoarm "$dir" >/dev/null 2>&1; status=$?
+  expect_code 2 "$status" "the sweep must not change the cycle's own outcome"
+  [ ! -e "$dir/state/.claude-autoarm-output.old1" ] || fail "stale arm-output temp file survived the claim sweep"
+  [ ! -e "$dir/state/.claude-autoarm-output.old2" ] || fail "stale arm-output temp file survived the claim sweep"
+  [ -e "$dir/state/.claude-autoarm-output.fresh" ] || fail "the sweep removed a temp file from a live cycle"
+  [ -e "$dir/state/keep-me" ] || fail "the sweep removed an unrelated state file"
+  pass "auto-arm: claiming the home sweeps only its own day-old arm-output temp files"
 }
 
 test_actionable_close_with_live_successor_rewakes_once() {
@@ -605,6 +655,8 @@ test_resolves_outermost_claude_pid_in_nested_bgspare_chain
 test_inert_when_fleet_idle
 test_actionable_close_rewakes_with_reason
 test_actionable_close_with_live_successor_rewakes_once
+test_non_rewaking_close_leaves_no_pending_marker
+test_claim_sweeps_stale_arm_output_temp_files
 test_failed_close_rewakes_with_failure_banner
 test_failed_cycles_notify_once_and_keep_retrying
 test_unverified_clean_close_exhausts_retries

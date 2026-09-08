@@ -407,6 +407,14 @@ if [ "$mode" = handling-delivered ]; then
   exit $?
 fi
 
+# Start or refresh this home's continuity deadman on every arm. It is the one
+# supervision process deliberately outside the harness's process tree, because
+# every other layer - the arm, the auto-arm, the turn-end guard - is hosted on
+# the primary's turn boundary and dies with it (bin/fm-continuity-deadman.sh).
+# Idempotent, silent, and never fatal: a home that already has a live one pays a
+# lock read, and a failure to start one can never stop a watcher from arming.
+"$SCRIPT_DIR/fm-continuity-deadman.sh" ensure >/dev/null 2>&1 || true
+
 if [ "$mode" = restart ]; then
   # Home-scoped stop: only the watcher pid recorded in THIS home's lock.
   lock_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)

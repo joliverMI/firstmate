@@ -587,6 +587,12 @@ FM_WATCH_REARM_RETRY_LIMIT=5   # Pi/OpenCode adapter launch-failure retries befo
 FM_WATCH_CYCLE_LOG_MAX_BYTES=262144   # size cap for the arm-owned watcher lifecycle ledger
 FM_WATCH_CYCLE_LOG_KEEP_LINES=1000   # newest complete lifecycle rows considered when the ledger is capped
 FM_WATCHER_STALE_GRACE=300   # defaults to FM_GUARD_GRACE; seconds a live watcher lock may have a stale beacon before re-arm errors
+FM_CONTINUITY_DEADMAN_TICK=60   # seconds between continuity-deadman evaluations (bin/fm-continuity-deadman.sh)
+FM_CONTINUITY_DEADMAN_INJECT_BACKOFF=600   # seconds between the deadman's bounded self-recovery injections into firstmate's own pane
+FM_CONTINUITY_DEADMAN_ALARM_INTERVAL=1800   # seconds between re-alarms inside one continuity-outage episode
+FM_CONTINUITY_DEADMAN_IDLE_EXIT=900   # seconds with nothing to supervise before the deadman retires itself
+FM_CONTINUITY_DEADMAN_LOG_MAX_BYTES=262144   # size cap for the deadman's bounded diagnostic log
+FM_CONTINUITY_DEADMAN_INJECT_EXEC=   # submit seam: route the deadman's pane submit through this command as `<cmd> <backend> <target> <encoded>`; "discard" sends nothing; unset in production; the deadman defaults it to "discard" when sourced so no test types into a real pane (docs/watcher-continuity.md)
 FM_SIGNAL_GRACE=30      # seconds to coalesce nearby status and turn-end signals into one wake
 FM_CAPTAIN_RE='done:|needs-decision:|blocked:|failed:|PR ready|checks green|ready in branch|merged'   # captain-relevant status regex; nonterminal progress verbs remain excluded even when their prose matches
 FM_CLASSIFY_PAUSED_VERB=paused     # leading status verb for a declared external wait; excluded from FM_CAPTAIN_RE and distinct from blocked
@@ -621,7 +627,8 @@ FM_INJECT_SKIP=heartbeat           # |-prefixes force-self-handled bypassing cla
 FM_ESCALATE_BATCH_SECS=90          # buffer window for batched escalation digests; 0 = flush immediately
 FM_MAX_DEFER_SECS=300              # max buffered escalation age before retry plus wedge alarm; 0 disables
 FM_WEDGE_ALARM_CHANNEL=            # override config/wedge-alarm with one active-alert directive for the wedge alarm; off|auto|osascript|herdr|command:<cmd>; absent = auto (macOS -> an OS notification)
-FM_WEDGE_ALARM_EXEC=              # notifier seam: route every channel (osascript, herdr, command:) through this command as `<cmd> <channel> <summary>`; "discard" fires nothing; unset in production; the daemon defaults it to "discard" when sourced so no test posts a real notification (docs/wedge-alarm.md)
+FM_WEDGE_ALARM_EXEC=              # notifier seam: route every channel (osascript, herdr, command:) through this command as `<cmd> <channel> <summary>`; "discard" fires nothing; unset in production; the away daemon and the continuity deadman default it to "discard" when sourced so no test posts a real notification (docs/wedge-alarm.md)
+FM_WEDGE_ALARM_TITLE=             # alert title the calling owner sets before raising an alarm; defaults to the away-mode wording (bin/fm-wedge-alarm-lib.sh)
 FM_WEDGE_ALARM_TIMEOUT_SECS=10    # maximum seconds for each osascript, herdr, override, or command: notifier before its watchdog terminates it and continues to the next channel; invalid or zero values use 10
 FM_INJECT_FAIL_SLEEP=30            # seconds to back off when the supervisor pane is unavailable
 FM_INJECT_CONFIRM_RETRIES=3        # daemon Enter-retry attempts after typing a digest once

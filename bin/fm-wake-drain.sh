@@ -19,6 +19,7 @@ DRAIN_TMP=
 DRAIN_LOCK_HELD=false
 RAW_ROWS=
 RECOVERY_MARKER="$STATE/.watcher-down"
+REWAKE_PENDING="$STATE/.rewake-pending"
 RECOVERY_MARKER_TOKEN=
 RECOVERY_ACK_REQUIRED=false
 RECOVERY_ACK_MOVED=false
@@ -40,6 +41,17 @@ case "${1:-}" in
     ;;
   *) echo "usage: fm-wake-drain.sh [--ack-through SEQUENCE --recovery-generation GENERATION]" >&2; exit 2 ;;
 esac
+
+# This drain running at all is the proof that a handling turn is under way, so
+# retire the auto-arm's delivered-rewake marker here. bin/fm-claude-stop-autoarm.sh
+# writes it immediately before its exit-2 rewake, and bin/fm-continuity-deadman.sh
+# reads a marker older than the grace window as evidence that the woken turn never
+# ran - the 2026-09-07 shape, where an API error killed the rewake turn before its
+# Stop hooks could restore supervision. Clearing it early and unconditionally keeps
+# the predicate honest in both directions: an interrupted handling turn still
+# counts as handled here, because the rewake WAS consumed by a real turn and the
+# queue itself stays durable until its own acknowledgement.
+rm -f "$REWAKE_PENDING" 2>/dev/null || true
 
 # Defense in depth for the supervision chain: this script runs at the top of
 # every wake-handling and recovery turn, so assert supervision health here too. A
