@@ -1,0 +1,57 @@
+
+### 1. fixture home: plain checkout with the real bin/, one task in flight, fake claude session, idle fake pane
+session-lock pid=4054328 comm=claude
+
+### 2. the 2026-09-07 shape: watcher beacon 6 min old, rewake delivered 6 min ago and never drained, pane idle
+07:56:18 /tmp/fm-deadman-replay.bNSBLQ/state/.last-watcher-beat
+07:56:18 /tmp/fm-deadman-replay.bNSBLQ/state/.rewake-pending
+now: 08:02:18
+
+### 3. start the deadman the way an arm does: `ensure` (silent, exit 0), grace compressed to 20s, tick 2s
+ensure exit=0, stdout/stderr empty=yes
+continuity deadman: running pid=4055662
+process tree isolation: my pgid=4054255 sid=4054221 | deadman pgid=4055662 sid=4055662 ppid=284
+
+### 4. wait through the startup settle window; the episode must open on its own
+episode opened after ~18s (now 08:02:38)
+continuity deadman: running pid=4055662
+continuity deadman: OPEN OUTAGE EPISODE - /tmp/fm-deadman-replay.bNSBLQ/state/.continuity-deadman-alarm
+  since=1788868958
+  detected_at=2026-09-08T08:02:38-0400
+  reason=no watcher has beaten for 380s
+  home=/tmp/fm-deadman-replay.bNSBLQ
+  note=firstmate supervision is not running here; see docs/watcher-continuity.md "Continuity deadman"
+
+### 5a. durable wake record in state/.wake-queue
+1788868958	1	check	watcher-continuity-lost	check: watcher-continuity-lost since=1788868958 - supervision stopped here and was not automatically restored; run bin/fm-wake-drain.sh, handle every queued wake, and confirm a live watcher before continuing
+
+### 5b. active alert delivered through the real command: channel (what a phone-push command would receive)
+firstmate supervision is NOT running in /tmp/fm-deadman-replay.bNSBLQ - no watcher has beaten for 380s. Queued work is safe; nothing is watching it.
+
+### 5c. self-recovery: one operational input handed to firstmate's own pane
+backend=tmux target=sess:win
+operational-input kind: turn-end-guard
+decoded body: v1 turn-end-guard: SUPERVISION CONTINUITY LOST - no watcher has beaten for 380s, supervision is still needed here, and no automatic recovery is under way. A tur...
+submit attempts so far: 1 (backoff default 600s, so exactly one)
+
+### 6. the woken turn drains the queue: real bin/fm-wake-drain.sh (what the primary sees at the top of its turn)
+1788868958	1	check	watcher-continuity-lost	check: watcher-continuity-lost since=1788868958 - supervision stopped here and was not automatically restored; run bin/fm-wake-drain.sh, handle every queued wake, and confirm a 
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 4096074.1788868958.E1QBbv
+state/.rewake-pending after drain: cleared
+
+### 7. the turn's Stop re-arms a watcher (fresh identity-matched lock + beat); episode must close
+episode closed after ~1s
+continuity deadman: running pid=4055662
+submit attempts total: 1 (no injection after recovery)
+
+### 8. the session ends; the deadman must retire itself without anyone stopping it
+deadman pid 4055662 alive after session death: no (after ~3s)
+continuity deadman: not running
+
+### 9. deadman diagnostic log (state/.continuity-deadman.log)
+[2026-09-08T08:02:18-0400] started pid=4055662 session=4054328 grace=20s tick=2s
+[2026-09-08T08:02:38-0400] durable wake appended: watcher-continuity-lost since=1788868958
+[2026-09-08T08:02:38-0400] ALARM: supervision continuity lost (no watcher has beaten for 380s); episode since=1788868958
+[2026-09-08T08:02:38-0400] self-recovery injected one turn-end-guard input into firstmate's pane
+[2026-09-08T08:02:42-0400] recovered: supervision is running again
+[2026-09-08T08:02:45-0400] exiting: the session that owned this home is gone
