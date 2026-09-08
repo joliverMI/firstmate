@@ -115,7 +115,7 @@ Every `note` call names a `--tab`: `interpretation`, `communication`, or `needs`
 The prompt is not a tab you write to - it is set once at `add` time.
 
 - **Interpretation**: your read on what he meant, only when you genuinely have one worth recording. Do not add an interpretation note just to fill the tab - an empty tab is the correct, honest state when there is nothing to add, and the board renders that calmly rather than as a problem.
-- **Communication**: the ongoing back-and-forth about this specific task. He can also post here directly from the card; read it before assuming he has not responded.
+- **Communication**: the ongoing back-and-forth about this specific task. He can also post here directly from the card; read it before assuming he has not responded. A note he writes there is not left for a session to notice by chance: it wakes firstmate once, mechanically, with a durable `check: dashboard-note <card-id>` record - mirroring what an approval does for `needs-review`. Handle that wake as you would any other `check:` wake: read the card and answer him on it in that same turn. An agent's own note publishes no wake, and a wake that could not be published never costs him the note itself - the note is saved either way, and the failure is logged loudly instead.
 - **Needs**: a succinct list of what you need from him, with a link wherever there is one. This is also where a file or a build goes up for his review - attach it as a link here (or via the `link` shorthand), not by writing a path or "see the PR" into the text.
 
 ## Links: how he receives anything to review

@@ -1398,6 +1398,67 @@ test_an_approval_leaves_firstmate_a_wake_record_its_own_reader_can_read() {
   pass "an approval publishes one durable check record through firstmate's own writer, and firstmate's own drain reads it back"
 }
 
+# A note nobody is woken about rots the same way an unwoken approval does -
+# see docs/dashboard.md - so a note he writes has to reach firstmate's wake
+# queue the same mechanical way an approval does.
+test_his_note_leaves_firstmate_a_wake_record() {
+  local id line
+  id=$("$DASH" add --title "Admiral note wakes firstmate" --captain firstmate --prompt "x" | awk '{print $1}')
+  [ -n "$id" ] || fail "could not create the card"
+
+  "$DASH" note "$id" --tab communication --author admiral --text "is this still needing attention?" >/dev/null \
+    || fail "note add failed"
+
+  [ -f "$FM_HOME/state/.wake-queue" ] || fail "his note left no wake queue at all"
+  line=$(grep "dashboard-note:$id" "$FM_HOME/state/.wake-queue" | tail -n1)
+  [ -n "$line" ] || fail "his note published no wake record for the card he wrote on"
+  [ "$(grep -c "dashboard-note:$id" "$FM_HOME/state/.wake-queue")" -eq 1 ] \
+    || fail "one note published more than one wake record"
+  assert_contains "$(printf '%s' "$line" | cut -f5)" "check: dashboard-note $id" \
+    "the wake payload does not name the card he wrote on"
+
+  pass "an admiral note publishes exactly one durable check wake record naming the card"
+}
+
+# The other half of the same rule: only HIS note is an escalation. An agent
+# leaving itself a communication note must not wake firstmate about its own
+# routine update.
+test_an_agent_note_publishes_no_wake() {
+  local id queued
+  id=$("$DASH" add --title "Agent note publishes nothing" --captain firstmate --prompt "x" | awk '{print $1}')
+  [ -n "$id" ] || fail "could not create the card"
+
+  "$DASH" note "$id" --tab communication --author agent --text "routine update, nothing to see" >/dev/null \
+    || fail "note add failed"
+
+  queued=$(grep -c "dashboard-note:$id" "$FM_HOME/state/.wake-queue" 2>/dev/null || true)
+  [ "${queued:-0}" -eq 0 ] || fail "an agent note woke firstmate about a card nobody needs to answer"
+
+  pass "an agent note publishes no wake record"
+}
+
+# The note is his either way: a queue that cannot be written must never cost
+# him the note itself, matching how the approval path treats the same
+# failure.
+test_a_note_is_saved_even_when_the_wake_cannot_be_published() {
+  local id code text
+  id=$("$DASH" add --title "Note survives an unpublishable wake" --captain firstmate --prompt "x" | awk '{print $1}')
+  [ -n "$id" ] || fail "could not create the card"
+
+  chmod 000 "$FM_HOME/state" || fail "could not lock down the state directory for this case"
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/tasks/$id/notes" -H 'Content-Type: application/json' \
+    -d '{"tab":"communication","author":"admiral","text":"still there?"}')
+  chmod 755 "$FM_HOME/state" || fail "could not restore the state directory after this case"
+
+  [ "$code" = "201" ] \
+    || fail "a note failed outright when only the wake publish should have failed (got HTTP $code)"
+  text=$("$DASH" show "$id")
+  assert_contains "$text" "still there?" "the note was not saved when the wake could not be published"
+
+  pass "a note is saved even when the wake queue could not be written to"
+}
+
 # Regression: the CLI and the raw API do not trim a plan, so a plan could be
 # stored with surrounding whitespace while the approval recorded the text as
 # displayed. The two then never compared equal and the card was permanently
@@ -1957,6 +2018,9 @@ test_an_approval_binds_to_the_plan_text_it_was_given_for
 test_his_approval_moves_the_card_out_of_needs_review_and_records_why
 test_an_approval_that_is_refused_or_stale_moves_nothing
 test_an_approval_leaves_firstmate_a_wake_record_its_own_reader_can_read
+test_his_note_leaves_firstmate_a_wake_record
+test_an_agent_note_publishes_no_wake
+test_a_note_is_saved_even_when_the_wake_cannot_be_published
 test_the_plan_and_its_approval_survive_leaving_needs_review
 test_status_refuses_a_plan_for_any_status_but_needs_review
 test_a_plan_can_only_be_created_on_the_path_that_shows_him_the_box
