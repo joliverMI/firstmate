@@ -292,7 +292,13 @@ worker_stop_active_execution() {
 }
 
 worker_shutdown() {
-  trap - HUP INT TERM
+  # Ignore repeats while this shutdown runs: a group TERM reaches the restart
+  # supervisor and this child together, and the supervisor's own shutdown then
+  # re-signals the child. With the default disposition restored here instead,
+  # that repeat killed the child between creating and publishing its
+  # quarantine marker, and the orphaned temp file kept every replacement from
+  # reclaiming the lock. The caller's KILL escalation remains the hard stop.
+  trap '' HUP INT TERM
   worker_publish_quarantine || {
     worker_error "cannot guard worker ownership for shutdown"
     trap worker_shutdown HUP INT TERM

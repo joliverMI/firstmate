@@ -244,6 +244,58 @@ fm_remote_job_worker_identity_matches "$REMOTE_ROOT" "$ACCOUNT_HOME" \
   || fail "the replacement worker did not publish the current code identity"
 pass "ensure replaces a live worker after its code changes"
 
+# A wall-clock step re-renders ps lstart for the instant a worker started (the
+# WSL2 btime drift that disowned a live worker's lock in CI, leaving ensure to
+# start orphan supervisors instead of replacing it). A different TZ re-renders
+# that same instant deterministically, so it stands in for the step without
+# touching the real clock: the recorded owner start must read back under either
+# rendering. POSIX TZ strings need no tzdata, and the two are 24 hours apart, so
+# at most one can match the ambient rendering.
+if [ -r "/proc/$$/stat" ]; then
+  for SHIFTED_TZ in UTC+12 UTC-12; do
+    TZ=$SHIFTED_TZ fm_remote_job_lock_owner_matches_process "$ACCOUNT_HOME" \
+      || fail "a live worker was disowned when ps rendered its start under TZ=$SHIFTED_TZ"
+  done
+  OLD_WORKER_PID=$NEW_WORKER_PID
+  printf '\n' >> "$REMOTE_ROOT/bin/fm-remote-job-worker.sh"
+  TZ=UTC+12 fm_remote_job_ensure_worker "$REMOTE_ROOT" "$ACCOUNT_HOME" \
+    || fail "$FM_REMOTE_JOB_ERROR"
+  NEW_WORKER_PID=$(cat "$STATE_ROOT/worker.pid")
+  [ "$NEW_WORKER_PID" != "$OLD_WORKER_PID" ] \
+    || fail "ensure retained a stale worker once its start rendering shifted"
+  fm_remote_job_worker_identity_matches "$REMOTE_ROOT" "$ACCOUNT_HOME" \
+    || fail "the replacement started under a shifted start rendering did not publish the current code identity"
+  pass "a live worker stays the recognized lock owner when ps re-renders its start time"
+else
+  pass "skipped: the start re-rendering guard needs a Linux-compatible /proc"
+fi
+
+# Stopping a worker tree signals its whole group, so the restart supervisor's
+# own shutdown re-signals a child that is already inside its TERM handler. The
+# handler used to restore TERM's default disposition first, so that repeat
+# killed the child between creating and publishing its quarantine marker, and
+# the orphaned temp file kept every replacement from reclaiming the lock (the
+# CI failure this guards). A forkless burst of repeats lands inside the handler
+# deterministically; the child must still finish, release ownership, and take
+# its supervisor down with it.
+BURST_WORKER_PID=$(cat "$STATE_ROOT/worker.pid")
+BURST_WORKER_PGID=$(fm_remote_job_process_pgid "$BURST_WORKER_PID") \
+  || fail "the repeated-TERM fixture could not resolve its worker process group"
+BURST_DEADLINE=$((SECONDS + 10))
+while kill -TERM "$BURST_WORKER_PID" 2>/dev/null; do
+  [ "$SECONDS" -lt "$BURST_DEADLINE" ] || break
+done
+for _ in $(seq 1 100); do
+  kill -0 -- "-$BURST_WORKER_PGID" 2>/dev/null || break
+  sleep 0.05
+done
+! kill -0 -- "-$BURST_WORKER_PGID" 2>/dev/null \
+  || fail "the worker tree stayed up after its child was re-signalled during shutdown"
+assert_absent "$STATE_ROOT/worker.lock" "a re-signalled shutdown left worker ownership behind"
+fm_remote_job_ensure_worker "$REMOTE_ROOT" "$ACCOUNT_HOME" || fail "$FM_REMOTE_JOB_ERROR"
+NEW_WORKER_PID=$(cat "$STATE_ROOT/worker.pid")
+pass "a worker re-signalled during its TERM shutdown still releases ownership"
+
 RELOCATED_ROOT="$TMP_ROOT/relocated-root"
 cp -R "$REMOTE_ROOT" "$RELOCATED_ROOT"
 OLD_WORKER_PID=$NEW_WORKER_PID
