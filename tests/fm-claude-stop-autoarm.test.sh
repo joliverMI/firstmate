@@ -377,15 +377,16 @@ test_non_rewaking_close_leaves_no_pending_marker() {
 # file behind. They accumulated one per uncleanly ended session; the claiming
 # owner now sweeps its own home's day-old siblings without touching fresh ones.
 test_claim_sweeps_stale_arm_output_temp_files() {
-  local dir status
+  local dir status stale
   dir=$(make_primary_dir "$TMP_ROOT/temp-sweep")
   : > "$dir/state/task.meta"
   write_arm_fixture "$dir" actionable
   : > "$dir/state/.claude-autoarm-output.old1"
   : > "$dir/state/.claude-autoarm-output.old2"
-  touch -d '3 days ago' "$dir/state/.claude-autoarm-output.old1" \
-    "$dir/state/.claude-autoarm-output.old2" 2>/dev/null \
-    || fail "could not backdate the stale temp files"
+  for stale in old1 old2; do
+    fm_test_age_file "$dir/state/.claude-autoarm-output.$stale" $((3 * 86400)) \
+      || fail "could not backdate the stale temp files"
+  done
   : > "$dir/state/.claude-autoarm-output.fresh"
   : > "$dir/state/keep-me"
   run_autoarm "$dir" >/dev/null 2>&1; status=$?

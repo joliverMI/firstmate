@@ -23,9 +23,11 @@
 #
 # So this process lives OUTSIDE the harness process tree - the one narrow
 # exception to Firstmate's rule that the harness owns its hooks' process group -
-# and it exits on its own when the session that owns this home dies or the home
-# has nothing left to supervise. The detached procevent when-runner sailed
-# through the same outage untouched; this is the same structural bet.
+# and it exits on its own when the session that owns this home dies or is
+# replaced by another (a relaunched primary may live in a different pane, and
+# only a deadman started from that session's environment can find it), or when
+# the home has nothing left to supervise. The detached procevent when-runner
+# sailed through the same outage untouched; this is the same structural bet.
 #
 # WHAT IT DOES, every FM_CONTINUITY_DEADMAN_TICK seconds (default 60), when ALL
 # of these hold:
@@ -35,8 +37,14 @@
 #   - fm_supervision_needed is true (bin/fm-supervision-lib.sh)
 #   - no live `autoarm`-role owner holds state/.claude-autoarm.lock, i.e. the
 #     ordinary Stop-owned recovery is NOT already under way
-#   - and either the watcher has been down past FM_GUARD_GRACE, or a delivered
+#   - either the watcher has been down past FM_GUARD_GRACE, or a delivered
 #     rewake has gone unhandled past it (see state/.rewake-pending below)
+#   - and, to OPEN a new episode, firstmate's own pane does not read mid-turn
+#     through the shared busy predicate (bin/fm-supervisor-pane-lib.sh). The
+#     watcher is down by design for the whole of a rewake handling turn, so a
+#     long handling turn satisfies every measure above without being an outage;
+#     the 2026-09-07 shape is an IDLE pane, because the woken turn had died. A
+#     pane this process cannot resolve or read falls back to the measures alone.
 # it, in order:
 #   1. appends ONE durable `check: watcher-continuity-lost` wake per episode, so
 #      the outage is a first-class record at the next drain rather than a memory;
@@ -211,6 +219,10 @@ session_alive() {
   fm_harness_pid_alive "$pid"
 }
 
+session_lock_pid() {
+  tr -d '[:space:]' < "$STATE/.lock" 2>/dev/null || true
+}
+
 # Ordinary Stop-owned recovery already holds this home. Mirrors the turn-end
 # guard's own claim check (bin/fm-turnend-guard.sh autoarm_owns_recovery).
 autoarm_owns_recovery() {
@@ -334,6 +346,17 @@ resolve_inject_pane() {
   return 0
 }
 
+# True only when firstmate's pane is resolvable, exists, and reads mid-turn. The
+# watcher is always down for the whole of a rewake handling turn, so a running
+# turn is the ordinary shape of "watcher down past grace", not an outage; the
+# outage this file exists for left an IDLE pane behind. Anything short of a
+# readable busy pane returns false so the durable measures alone still decide.
+primary_turn_running() {
+  resolve_inject_pane || return 1
+  fm_backend_target_exists "$INJECT_BACKEND" "$INJECT_TARGET" || return 1
+  fm_supervisor_pane_is_busy "$INJECT_TARGET" "$INJECT_BACKEND"
+}
+
 # Hand the encoded input to the pane. FM_CONTINUITY_DEADMAN_INJECT_EXEC replaces
 # this one call so a test can prove the whole decision path without a real
 # submit; unset means production and the real backend primitive runs.
@@ -401,7 +424,9 @@ try_self_recovery() {  # <reason>
 # --- one evaluation ----------------------------------------------------------
 
 DEADMAN_STARTED_AT=0
+DEADMAN_SESSION_PID=
 NEED_ABSENT_SINCE=0
+TURN_DEFERRAL_LOGGED=0
 
 # Returns 0 to keep looping, 1 to exit the loop.
 deadman_tick() {
@@ -414,6 +439,10 @@ deadman_tick() {
       dm_log "exiting: the session that owned this home is gone"
       return 1
     fi
+  fi
+  if [ "$(session_lock_pid)" != "$DEADMAN_SESSION_PID" ]; then
+    dm_log "exiting: the session that owned this home changed (pid $DEADMAN_SESSION_PID -> $(session_lock_pid)); the next arm starts a deadman from the new session"
+    return 1
   fi
 
   if ! fm_supervision_needed "$STATE" "$GRACE"; then
@@ -449,6 +478,14 @@ deadman_tick() {
   fi
 
   if [ ! -e "$ALARM_MARKER" ]; then
+    if primary_turn_running; then
+      if [ "$TURN_DEFERRAL_LOGGED" -eq 0 ]; then
+        dm_log "not an outage yet: $reason, but firstmate's pane is mid-turn (the watcher is down by design during a handling turn)"
+        TURN_DEFERRAL_LOGGED=1
+      fi
+      return 0
+    fi
+    TURN_DEFERRAL_LOGGED=0
     episode_open "$now" "$reason"
     append_continuity_wake "$now" || true
   fi
@@ -461,9 +498,11 @@ deadman_tick() {
 # --- modes -------------------------------------------------------------------
 
 DEADMAN_HOLDS_LOCK=0
+DEADMAN_SLEEPER=
 # shellcheck disable=SC2317,SC2329 # Invoked by the traps below.
 deadman_cleanup() {
   local status=$?
+  [ -z "$DEADMAN_SLEEPER" ] || kill "$DEADMAN_SLEEPER" 2>/dev/null
   [ "$DEADMAN_HOLDS_LOCK" -eq 1 ] && fm_lock_release "$DEADMAN_LOCK"
   exit "$status"
 }
@@ -499,7 +538,8 @@ cmd_run() {
   fi
 
   DEADMAN_STARTED_AT=$(date +%s)
-  dm_log "started pid=$pid grace=${GRACE}s tick=${TICK}s"
+  DEADMAN_SESSION_PID=$(session_lock_pid)
+  dm_log "started pid=$pid session=${DEADMAN_SESSION_PID:-none} grace=${GRACE}s tick=${TICK}s"
   if [ "$once" -eq 1 ]; then
     # One evaluation with no settle window: a single-shot run is a caller asking
     # for the verdict now, not a fresh daemon that might be watching a home whose
@@ -508,9 +548,15 @@ cmd_run() {
     deadman_tick || true
     exit 0
   fi
+  # The sleeper runs in the background and is waited on, because bash defers a
+  # trapped signal until a foreground child returns: a foreground sleep would
+  # make `stop` wait up to a whole tick for the TERM to land.
   while :; do
     deadman_tick || exit 0
-    sleep "$TICK"
+    sleep "$TICK" &
+    DEADMAN_SLEEPER=$!
+    wait "$DEADMAN_SLEEPER" || true
+    DEADMAN_SLEEPER=
   done
 }
 

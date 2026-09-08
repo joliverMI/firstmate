@@ -61,27 +61,18 @@ wait_until() {
   return 1
 }
 
-# age_file <path> <seconds>: backdate a file so a real grace window has passed
-# without the test sleeping through it.
-age_file() {
-  local path=$1 secs=$2 stamp
-  if touch -d "@$(( $(date +%s) - secs ))" "$path" 2>/dev/null; then
-    return 0
-  fi
-  stamp=$(date -r $(( $(date +%s) - secs )) '+%Y%m%d%H%M.%S' 2>/dev/null) || return 1
-  touch -t "$stamp" "$path"
-}
-
 # --- fake session harness ---------------------------------------------------
 FAKEBIN=$(fm_fakebin "$TMP_ROOT/fakebin")
 ln -s /bin/bash "$FAKEBIN/claude"
 
 # start_fake_session <home> -> echoes the pid it wrote into <home>/state/.lock.
 # The trailing `:` matters: without it bash exec-replaces itself with `sleep`
-# and the process stops looking like a harness.
+# and the process stops looking like a harness. Its stdio is detached so a
+# caller may capture this function's output without waiting on the child.
 start_fake_session() {
   local home=$1 pid
-  "$FAKEBIN/claude" -c 'echo $$ > "$1/state/.lock"; sleep 600; :' _ "$home" &
+  # shellcheck disable=SC2016 # $$ must expand inside the fake harness child, not here.
+  "$FAKEBIN/claude" -c 'echo $$ > "$1/state/.lock"; sleep 600; :' _ "$home" >/dev/null 2>&1 </dev/null &
   pid=$!
   wait_until 5 test -s "$home/state/.lock" || fail "fake session never wrote the lock"
   printf '%s\n' "$pid"
@@ -307,7 +298,7 @@ test_unhandled_rewake_is_its_own_trigger() {
   # rewake can fire. Age the marker past the grace window.
   install_live_watcher "$dir"
   : > "$dir/state/.rewake-pending"
-  age_file "$dir/state/.rewake-pending" 3600 || fail "could not backdate the rewake marker"
+  fm_test_age_file "$dir/state/.rewake-pending" 3600 || fail "could not backdate the rewake marker"
   FM_INJECT_LOG="$dir/inject.log" FM_ALARM_LOG="$dir/alarm.log" \
     run_deadman "$dir" run --once || fail "deadman failed on the rewake trigger"
   [ "$(queue_rows "$dir" watcher-continuity-lost)" = 1 ] \
@@ -364,16 +355,67 @@ test_unconfirmed_submit_still_spends_its_backoff_window() {
 test_self_recovery_defers_to_a_busy_pane() {
   local dir
   dir=$(make_home busy-pane)
+  # Open the episode against an idle pane first, then let the pane go busy (the
+  # injected recovery turn itself, say) with the backoff already spent.
+  FM_CONTINUITY_DEADMAN_INJECT_BACKOFF=0 FM_INJECT_LOG="$dir/inject.log" FM_ALARM_LOG="$dir/alarm.log" \
+    run_deadman "$dir" run --once || fail "deadman failed opening the episode"
+  [ "$(grep -c . "$dir/inject.log")" = 1 ] || fail "expected the opening run to inject once"
   printf 'esc to interrupt\n' > "$dir/busy-body"
-  FM_FAKE_PANE_BODY="$dir/busy-body" FM_INJECT_LOG="$dir/inject.log" FM_ALARM_LOG="$dir/alarm.log" \
+  FM_CONTINUITY_DEADMAN_INJECT_BACKOFF=0 FM_FAKE_PANE_BODY="$dir/busy-body" \
+    FM_INJECT_LOG="$dir/inject.log" FM_ALARM_LOG="$dir/alarm.log" \
     run_deadman "$dir" run --once || fail "deadman failed against a busy pane"
-  [ ! -s "$dir/inject.log" ] || fail "the deadman typed into a pane that was mid-turn: $(cat "$dir/inject.log")"
+  [ "$(grep -c . "$dir/inject.log")" = 1 ] \
+    || fail "the deadman typed into a pane that was mid-turn: $(cat "$dir/inject.log")"
   [ "$(queue_rows "$dir" watcher-continuity-lost)" = 1 ] \
-    || fail "a deferred injection must not suppress the durable record"
+    || fail "a deferred injection must not disturb the durable record"
+  [ -f "$dir/state/.continuity-deadman-alarm" ] || fail "a busy pane closed an open episode"
   grep -q 'a turn is already running' "$dir/state/.continuity-deadman.log" \
     || fail "the deferral was not recorded: $(cat "$dir/state/.continuity-deadman.log")"
   stop_home "$dir"
-  pass "self-recovery defers to a running turn and still records the outage"
+  pass "self-recovery defers to a running turn and keeps the open episode's record"
+}
+
+test_long_handling_turn_opens_no_episode() {
+  local dir
+  dir=$(make_home long-handling-turn)
+  # Production grace, a beacon six minutes old, and a pane mid-turn: the shape of
+  # every rewake handling turn that runs long, since the watcher is down by
+  # design for the whole of it.
+  : > "$dir/state/.last-watcher-beat"
+  fm_test_age_file "$dir/state/.last-watcher-beat" 360 || fail "could not backdate the beacon"
+  printf 'esc to interrupt\n' > "$dir/busy-body"
+  FM_GUARD_GRACE=300 FM_FAKE_PANE_BODY="$dir/busy-body" \
+    FM_INJECT_LOG="$dir/inject.log" FM_ALARM_LOG="$dir/alarm.log" \
+    run_deadman "$dir" run --once || fail "deadman failed during a long handling turn"
+  [ "$(queue_rows "$dir")" = 0 ] || fail "a long handling turn queued an outage wake"
+  [ ! -e "$dir/state/.continuity-deadman-alarm" ] || fail "a long handling turn opened an episode"
+  [ ! -s "$dir/alarm.log" ] || fail "a long handling turn fired the active alert: $(cat "$dir/alarm.log")"
+  [ ! -s "$dir/inject.log" ] || fail "a long handling turn was injected into: $(cat "$dir/inject.log")"
+  grep -q 'mid-turn' "$dir/state/.continuity-deadman.log" \
+    || fail "the running turn was not recorded as the reason for silence: $(cat "$dir/state/.continuity-deadman.log")"
+  stop_home "$dir"
+  pass "a six-minute handling turn with the pane mid-turn is not an outage"
+}
+
+test_idle_pane_after_a_dead_turn_still_alarms() {
+  local dir
+  dir=$(make_home idle-dead-turn)
+  # The 2026-09-07 shape at production grace: the rewake was delivered, its turn
+  # died on the API error, the beacon and the marker both aged past grace, and
+  # the pane sits at an idle composer.
+  : > "$dir/state/.last-watcher-beat"
+  fm_test_age_file "$dir/state/.last-watcher-beat" 360 || fail "could not backdate the beacon"
+  : > "$dir/state/.rewake-pending"
+  fm_test_age_file "$dir/state/.rewake-pending" 360 || fail "could not backdate the rewake marker"
+  FM_GUARD_GRACE=300 FM_INJECT_LOG="$dir/inject.log" FM_ALARM_LOG="$dir/alarm.log" \
+    run_deadman "$dir" run --once || fail "deadman failed on the dead-turn shape"
+  [ "$(queue_rows "$dir" watcher-continuity-lost)" = 1 ] \
+    || fail "an idle pane after a dead turn did not raise the outage"
+  [ -f "$dir/state/.continuity-deadman-alarm" ] || fail "no episode was opened for the dead turn"
+  grep -q '^osascript	' "$dir/alarm.log" || fail "the active alert never fired: $(cat "$dir/alarm.log" 2>/dev/null)"
+  [ "$(grep -c . "$dir/inject.log")" = 1 ] || fail "self-recovery did not inject into the idle pane"
+  stop_home "$dir"
+  pass "an idle pane after a dead rewake turn still alarms, records, and self-recovers"
 }
 
 test_self_recovery_defers_to_an_unreadable_composer() {
@@ -457,6 +499,50 @@ test_deadman_exits_when_the_session_is_gone() {
   pass "the deadman retires itself when the session that owned its home is gone"
 }
 
+test_deadman_retires_when_the_session_is_replaced() {
+  local dir pid old_session new_session
+  dir=$(make_home session-replaced)
+  install_live_watcher "$dir"
+  run_deadman "$dir" ensure || fail "ensure exited non-zero"
+  wait_until 5 test -e "$dir/state/.continuity-deadman.lock/pid" \
+    || fail "ensure did not start a deadman"
+  pid=$(cat "$dir/state/.continuity-deadman.lock/pid")
+  old_session=$(session_pid "$dir")
+
+  # A relaunched primary writes its own pid into the same home's lock while the
+  # old harness is still winding down. The deadman was started from the OLD
+  # session's environment, so the pane it would inject into may no longer be
+  # the one running firstmate; only a fresh deadman can learn the new one.
+  new_session=$(start_fake_session "$dir")
+  wait_until 5 sh -c "[ \"\$(cat '$dir/state/.lock')\" = $new_session ]" \
+    || fail "the second session never took over the lock"
+  wait_until 20 sh -c "! kill -0 $pid 2>/dev/null" \
+    || fail "the deadman kept running for a session it was not started from"
+  pid_alive "$old_session" || fail "the old session died on its own, so this case proved nothing"
+  grep -q 'exiting: the session that owned this home changed' "$dir/state/.continuity-deadman.log" \
+    || fail "the exit was not recorded: $(cat "$dir/state/.continuity-deadman.log")"
+  kill "$new_session" 2>/dev/null
+  stop_home "$dir"
+  pass "a deadman retires when a different session takes over its home, so the next arm starts one from that session"
+}
+
+test_stop_is_prompt_inside_a_long_tick() {
+  local dir pid
+  dir=$(make_home stop-prompt)
+  install_live_watcher "$dir"
+  FM_CONTINUITY_DEADMAN_TICK=600 run_deadman "$dir" ensure || fail "ensure exited non-zero"
+  wait_until 5 test -e "$dir/state/.continuity-deadman.lock/pid" \
+    || fail "ensure did not start a deadman"
+  pid=$(cat "$dir/state/.continuity-deadman.lock/pid")
+  # Let the loop settle into its sleep before asking it to stop.
+  sleep 1
+  run_deadman "$dir" stop >/dev/null 2>&1 || fail "stop reported failure while the deadman was inside its tick"
+  ! pid_alive "$pid" || fail "stop returned with the deadman still running"
+  [ ! -e "$dir/state/.continuity-deadman.lock/pid" ] || fail "stop left the lock behind"
+  stop_home "$dir"
+  pass "stop lands immediately even when the deadman is deep inside a production-length tick"
+}
+
 test_ensure_is_inert_outside_a_primary_home() {
   local base worktree
   base="$TMP_ROOT/worktree-base"
@@ -495,9 +581,13 @@ test_unhandled_rewake_is_its_own_trigger
 test_self_recovery_injects_one_typed_input_on_the_backoff
 test_unconfirmed_submit_still_spends_its_backoff_window
 test_self_recovery_defers_to_a_busy_pane
+test_long_handling_turn_opens_no_episode
+test_idle_pane_after_a_dead_turn_still_alarms
 test_self_recovery_defers_to_an_unreadable_composer
 test_episode_closes_when_supervision_returns
 test_ensure_starts_one_detached_singleton
 test_deadman_exits_when_the_session_is_gone
+test_deadman_retires_when_the_session_is_replaced
+test_stop_is_prompt_inside_a_long_tick
 test_ensure_is_inert_outside_a_primary_home
 test_wake_drain_clears_the_delivered_rewake_marker
