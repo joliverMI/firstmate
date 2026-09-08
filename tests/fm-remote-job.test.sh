@@ -275,15 +275,20 @@ fi
 # handler used to restore TERM's default disposition first, so that repeat
 # killed the child between creating and publishing its quarantine marker, and
 # the orphaned temp file kept every replacement from reclaiming the lock (the
-# CI failure this guards). A forkless burst of repeats lands inside the handler
-# deterministically; the child must still finish, release ownership, and take
-# its supervisor down with it.
+# CI failure this guards). Repeats are paced: the handler forks several times
+# before it finishes, so a repeat every 10ms still lands inside it, while an
+# unpaced forkless burst re-enters bash's trap dispatch faster than the handler
+# can reach its first builtin and recurses until bash itself segfaults (seen on
+# bash 5.2), a crash of the stimulus rather than the behavior under test. The
+# child must still finish, release ownership, and take its supervisor down
+# with it.
 BURST_WORKER_PID=$(cat "$STATE_ROOT/worker.pid")
 BURST_WORKER_PGID=$(fm_remote_job_process_pgid "$BURST_WORKER_PID") \
   || fail "the repeated-TERM fixture could not resolve its worker process group"
 BURST_DEADLINE=$((SECONDS + 10))
 while kill -TERM "$BURST_WORKER_PID" 2>/dev/null; do
   [ "$SECONDS" -lt "$BURST_DEADLINE" ] || break
+  sleep 0.01
 done
 for _ in $(seq 1 100); do
   kill -0 -- "-$BURST_WORKER_PGID" 2>/dev/null || break
