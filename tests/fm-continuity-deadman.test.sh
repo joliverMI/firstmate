@@ -199,6 +199,12 @@ cleanup_all() {
 }
 trap cleanup_all EXIT INT TERM
 
+# lock_owner_dirs <home>: the deadman lock's owner directories still on disk.
+# The lock is a symlink to one such directory; a released lock leaves none.
+lock_owner_dirs() {
+  find "$1/state" -maxdepth 1 -name '.continuity-deadman.lock.owner.*' 2>/dev/null
+}
+
 queue_rows() {  # <home> [key]
   local home=$1 key=${2:-}
   if [ -n "$key" ]; then
@@ -544,6 +550,8 @@ test_ensure_replaces_a_superseded_sessions_deadman() {
   FM_CONTINUITY_DEADMAN_TICK=600 run_deadman "$dir" ensure || fail "ensure exited non-zero for the new session"
   ! pid_alive "$old_pid" || fail "ensure left the old session's deadman running"
   pid_alive "$old_session" || fail "the old session died on its own, so this case proved nothing"
+  [ "$(lock_owner_dirs "$dir" | grep -c .)" -le 1 ] \
+    || fail "the retired deadman left its lock owner directory behind: $(lock_owner_dirs "$dir")"
   new_pid=$(cat "$dir/state/.continuity-deadman.lock/pid" 2>/dev/null || true)
   [ -n "$new_pid" ] && [ "$new_pid" != "$old_pid" ] \
     || fail "ensure did not start a deadman for the new session (lock pid: '$new_pid')"
@@ -572,8 +580,10 @@ test_stop_is_prompt_inside_a_long_tick() {
   run_deadman "$dir" stop >/dev/null 2>&1 || fail "stop reported failure while the deadman was inside its tick"
   ! pid_alive "$pid" || fail "stop returned with the deadman still running"
   [ ! -e "$dir/state/.continuity-deadman.lock/pid" ] || fail "stop left the lock behind"
+  [ -z "$(lock_owner_dirs "$dir")" ] \
+    || fail "the released lock left an owner directory behind: $(lock_owner_dirs "$dir")"
   stop_home "$dir"
-  pass "stop lands immediately even when the deadman is deep inside a production-length tick"
+  pass "stop lands immediately even when the deadman is deep inside a production-length tick, and releases its lock completely"
 }
 
 test_ensure_is_inert_outside_a_primary_home() {
