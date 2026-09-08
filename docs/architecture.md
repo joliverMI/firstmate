@@ -88,6 +88,10 @@ On every verified primary harness, tracked hook integration gives the primary se
 The guard covers the main primary and genuinely marked secondmate homes, exempts child crewmate/scout worktrees, is loop-safe per harness, and is documented in [turnend-guard.md](turnend-guard.md).
 Its [Guard predicates](turnend-guard.md#guard-predicates) section owns the exact list of inputs that make a home need supervision, for that backstop and for `bin/fm-guard.sh` alike.
 
+Every layer above is hosted on the primary's own turn boundary, so a persistent API failure that keeps the session alive but stops its Stop hooks takes continuity, failure detection, and the alarm down together.
+`bin/fm-continuity-deadman.sh` is the one supervision process deliberately outside the harness process tree: a detached per-home singleton, started by the arm wrapper and at session start, that records a durable outage wake, raises the pane-independent active alert, and injects one bounded operational input to restart the chain by itself.
+[`watcher-continuity.md`](watcher-continuity.md#continuity-deadman) owns its predicate, its away-mode exclusion, and its limits.
+
 A presence-gated sub-supervisor (`bin/fm-supervise-daemon.sh`) extends this for walk-away supervision: the `/afk` skill starts it through the tracked foreground helper `bin/fm-afk-start.sh`, after which the watcher reverts to daemon-managed one-shot mode and the daemon self-handles routine wakes in bash.
 The watcher and daemon share `bin/fm-classify-lib.sh` for captain-relevant status verbs, declared-external-wait vocabulary, and status-scan primitives.
 Terminal verbs remain captain-relevant, while a nonterminal progress verb cannot become terminal merely because its prose contains a legacy free-text token such as `merged`; bare legacy free-text lines remain compatible.

@@ -688,7 +688,31 @@ fm_remote_job_worker_ready_path() { printf '%s\n' "$FM_REMOTE_JOB_STATE/worker.r
 fm_remote_job_worker_identity_path() { printf '%s\n' "$FM_REMOTE_JOB_STATE/worker.identity"; }
 fm_remote_job_worker_lock_path() { printf '%s\n' "$FM_REMOTE_JOB_STATE/worker.lock"; }
 
+# The instant <pid> started, in a form that reads back identically for as long
+# as the process lives. Where a Linux-compatible /proc exists that is stat field
+# 22, the start in clock ticks since boot: ps lstart renders the same instant
+# through the kernel's current boot-time estimate and the caller's time zone,
+# so a wall-clock step (observed as WSL2 btime drift) or a different TZ makes
+# the rendering of a live worker drift away from the one its lock recorded and
+# disowns it. Mirrors fm_pid_identity in fm-wake-lib.sh, which this standalone
+# remote library cannot source.
 fm_remote_job_process_start() {
+  local pid=$1 stat_line value
+  local -a stat_fields
+  if [ -r "/proc/$pid/stat" ]; then
+    stat_line=$(cat "/proc/$pid/stat" 2>/dev/null) || return 1
+    # After the final comm delimiter, array index 19 is proc stat field 22.
+    read -r -a stat_fields <<< "${stat_line##*)}"
+    [ "${#stat_fields[@]}" -ge 20 ] || return 1
+    value=${stat_fields[19]}
+    case "$value" in ''|*[!0-9]*) return 1 ;; esac
+    printf 'starttime=%s\n' "$value"
+    return 0
+  fi
+  fm_remote_job_process_lstart "$pid"
+}
+
+fm_remote_job_process_lstart() {
   local pid=$1 ps_bin value
   if [ -x /bin/ps ]; then ps_bin=/bin/ps; elif [ -x /usr/bin/ps ]; then ps_bin=/usr/bin/ps; else return 1; fi
   value=$("$ps_bin" -p "$pid" -o lstart= 2>/dev/null) || return 1
@@ -798,7 +822,14 @@ fm_remote_job_lock_owner_matches_process() {
   [ "$pid" -gt 1 ] || return 1
   recorded_start=$(fm_remote_job_read_single_line "$lock/start" 256) || return 1
   actual_start=$(fm_remote_job_process_start "$pid") || return 1
-  [ "$recorded_start" = "$actual_start" ] || return 1
+  if [ "$recorded_start" != "$actual_start" ]; then
+    # A lock written by a worker running the previous library recorded ps
+    # lstart; read it back the same way so the upgrade that replaces that
+    # worker can still recognize it as the owner and stop it.
+    case "$recorded_start" in starttime=*) return 1 ;; esac
+    actual_start=$(fm_remote_job_process_lstart "$pid") || return 1
+    [ "$recorded_start" = "$actual_start" ] || return 1
+  fi
   recorded_command=$(fm_remote_job_read_single_line "$lock/command" 8192) || return 1
   actual_command=$(fm_remote_job_process_command "$pid") || return 1
   [ "$recorded_command" = "$actual_command" ] || return 1

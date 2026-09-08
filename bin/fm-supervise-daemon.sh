@@ -105,25 +105,15 @@
 #                                   undelivered before one normal flush attempt;
 #                                   if that cannot confirm a submit, a wedge
 #                                   alarm fires (default 300; 0 disables)
-#          FM_WEDGE_ALARM_CHANNEL   override config/wedge-alarm with a single
-#                                   active-alert directive for that wedge alarm
-#                                   (off|auto|osascript|herdr|command:<cmd>). An
-#                                   absent file/var means auto: on macOS that is
-#                                   an OS-level notification, so the alarm is
-#                                   never silent. See wedge_alarm_notify below
-#                                   and docs/configuration.md.
-#          FM_WEDGE_ALARM_EXEC      notifier seam: when set, every notifier
-#                                   channel routes through this command as
-#                                   `<cmd> <channel> <summary>` instead of
-#                                   invoking its real notifier; "discard" fires
-#                                   nothing. Unset in production. When SOURCED the
-#                                   daemon defaults this to "discard" so no test
-#                                   can post a real notification (wedge_alarm_emit
-#                                   and the library-mode guard at the foot).
-#          FM_WEDGE_ALARM_TIMEOUT_SECS seconds allowed for each notifier before
-#                                   its watchdog terminates it and continues to the
-#                                   next channel (default 10; invalid/zero uses the
-#                                   default).
+#          FM_WEDGE_ALARM_CHANNEL, FM_WEDGE_ALARM_EXEC,
+#          FM_WEDGE_ALARM_TIMEOUT_SECS, FM_WEDGE_ALARM_TITLE
+#                                   the active-alert channel knobs, owned by
+#                                   bin/fm-wedge-alarm-lib.sh and documented in
+#                                   docs/wedge-alarm.md. The library-mode guard
+#                                   at the foot of this file defaults the
+#                                   FM_WEDGE_ALARM_EXEC notifier seam to
+#                                   "discard" when this daemon is SOURCED, so no
+#                                   test can post a real notification.
 #          FM_INJECT_CONFIRM_RETRIES Enter-retry attempts on a swallowed Enter
 #                                   (default 3); the digest is typed once, only
 #                                   Enter is retried. Composer-empty detection is
@@ -180,6 +170,17 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # shellcheck source=bin/fm-busy-lib.sh
 . "$FM_DAEMON_DIR/fm-busy-lib.sh"
 
+# The single owner of "is firstmate's own pane safe to type into right now?"
+# (busy state and composer emptiness), shared with bin/fm-continuity-deadman.sh.
+# shellcheck source=bin/fm-supervisor-pane-lib.sh
+. "$FM_DAEMON_DIR/fm-supervisor-pane-lib.sh"
+
+# The single owner of the backend-independent active alert channels (config
+# parsing, bounded notifier dispatch, and the FM_WEDGE_ALARM_EXEC test seam),
+# shared with bin/fm-continuity-deadman.sh's attended alarm.
+# shellcheck source=bin/fm-wedge-alarm-lib.sh
+. "$FM_DAEMON_DIR/fm-wedge-alarm-lib.sh"
+
 # --- tunables ---------------------------------------------------------------
 # Supervisor backends this daemon knows how to inject into today. zellij, orca,
 # and cmux are real backends elsewhere in firstmate (bin/fm-backend.sh) but this
@@ -198,9 +199,9 @@ HOUSEKEEPING_TICK_DEFAULT=15
 # the normal flush path and, if that cannot confirm a submit, raises a loud wedge
 # alarm. The escape hatch makes a guard false-positive visible instead of silent.
 MAX_DEFER_SECS_DEFAULT=300
-WEDGE_ALARM_TIMEOUT_SECS_DEFAULT=10
+# WEDGE_ALARM_TIMEOUT_SECS_DEFAULT and WEDGE_ALARM_NOTIFIER_PID are owned by
+# bin/fm-wedge-alarm-lib.sh; only the away-mode rate-limit epoch lives here.
 WEDGE_ALARM_LAST_EPOCH=0
-WEDGE_ALARM_NOTIFIER_PID=
 # The captain-relevant verb set and the status classifiers (last_status_line,
 # status_is_captain_relevant, window_to_task, scan_captain_relevant_statuses) now
 # live in bin/fm-classify-lib.sh, shared with the always-on watcher.
@@ -551,55 +552,18 @@ mark_escalated_seen() {  # <kind> <arg> <state>
   esac
 }
 
-# Busy and composer-empty detection form the injection boundary.
-# These thin wrappers keep the daemon's call sites and unit tests stable.
-#
-# pane_input_pending returns 0 unless the composer is positively proven empty.
-# This includes real unsubmitted text, ambiguous structure, unreadable state,
-# blank or otherwise unidentified rows (the strict container-proof rule owned
-# by bin/fm-composer-lib.sh), and future verdicts. The detector drops
-# dim/faint ghost text and strips the harness's composer box borders, so an
-# aligned ghost-only or idle bordered claude composer ("│ > … │") is correctly
-# proven empty while a modal dialog or dead shell never is.
-# pane_is_busy / pane_input_pending: BACKEND-AWARE (dispatch goes through
-# bin/fm-backend.sh's generic per-backend primitives rather than a hand-rolled
-# case statement here). <backend> defaults to tmux when omitted, so every
-# existing caller/test that passes only <target> is unaffected.
-#
-# This rendered reader applies only to the supervisor pane during away-mode
-# injection. It never classifies a recorded worker task. The detected primary
-# harness selects exactly one signature, so output from another harness cannot
-# make the primary read busy.
-#
-# Resolved lazily and memoized: harness detection walks process ancestry, which
-# is too heavy to pay on every source of this library (the unit tests and the
-# launcher source it purely for its pure functions).
-fm_daemon_primary_harness() {
-  if [ -z "${FM_DAEMON_PRIMARY_HARNESS:-}" ]; then
-    FM_DAEMON_PRIMARY_HARNESS=$("$FM_DAEMON_DIR/fm-harness.sh" 2>/dev/null || printf 'unknown')
-    [ -n "$FM_DAEMON_PRIMARY_HARNESS" ] || FM_DAEMON_PRIMARY_HARNESS=unknown
-  fi
-  printf '%s' "$FM_DAEMON_PRIMARY_HARNESS"
-}
-
+# Busy and composer-empty detection form the injection boundary. Both live in
+# bin/fm-supervisor-pane-lib.sh, which owns that predicate for every caller that
+# types into firstmate's own pane (this daemon while away mode is on,
+# bin/fm-continuity-deadman.sh while it is off). These thin wrappers keep this
+# daemon's call sites and unit tests stable. inject_msg below reads the full
+# composer verdict directly and applies the same positive-proof boundary.
 pane_is_busy() {  # <target> [backend]
-  local target=$1 backend=${2:-tmux} native tail40 harness
-  harness=$(fm_daemon_primary_harness)
-  native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null)
-  case "$native" in
-    busy) return 0 ;;
-  esac
-  tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || return 1
-  printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12 \
-    | fm_busy_lines_match "$harness"
+  fm_supervisor_pane_is_busy "$@"
 }
 
-# pane_input_pending dispatches through fm_backend_composer_state and treats
-# every verdict except exact empty as unsafe. inject_msg reads the full verdict
-# directly and applies the same positive-proof boundary.
 pane_input_pending() {  # <target> [backend]
-  local target=$1 backend=${2:-tmux}
-  [ "$(fm_backend_composer_state "$backend" "$target" 2>/dev/null)" != empty ]
+  fm_supervisor_pane_input_pending "$@"
 }
 
 task_window_backend() {  # <window> <state>
@@ -657,234 +621,11 @@ escalate_flush() {  # <state>
 }
 
 # --- backend-independent active wedge alert ---------------------------------
-# The tmux status-line flash in inject_wedge_alarm below is a cosmetic,
-# client-side OSD with no cross-backend equivalent, so a wedged non-tmux primary
-# (the 2026-07-10 overnight incident: a claude-on-herdr primary) got NO active
-# signal - only the passive state/.subsuper-inject-wedged marker, which nothing
-# surfaces until the next fleet action (that night, 20 escalations sat buffered
-# for 8.5h). These helpers add a configurable active alert that does not depend
-# on any pane or its backend status-line: an OS-level macOS notification, a
-# herdr notification, or a captain-supplied command (push to a phone, etc.).
-# Every channel is best-effort - a missing or failing channel logs and is
-# skipped, never crashing the daemon loop - and the durable marker plus the tmux
-# flash stay exactly as before.
-#
-# Config: config/wedge-alarm (local, gitignored), one channel directive per
-# non-empty, non-comment line. FM_WEDGE_ALARM_CHANNEL overrides the file with a
-# single directive. Directives:
-#   off              disable the active alert entirely, regardless of position
-#                    (marker + flash remain)
-#   auto | default   platform default: macOS -> osascript; otherwise none
-#   osascript        macOS Notification Center banner (backend-independent)
-#   herdr            herdr UI notification (herdr notification show)
-#   command:<cmd>    run <cmd> via `sh -c`, summary on $1 and on stdin
-# An absent config means auto, i.e. default-ON on macOS: the alarm's whole
-# purpose is to never be silent, so the reachable OS channel fires unless the
-# captain explicitly disables it.
-
-# Print the configured channel directives, one per line. FM_WEDGE_ALARM_CHANNEL
-# wins (a single directive); else each non-empty, non-comment line of
-# config/wedge-alarm; else "auto".
-wedge_alarm_configured_channels() {
-  local cfg line found=
-  if [ -n "${FM_WEDGE_ALARM_CHANNEL:-}" ]; then
-    printf '%s\n' "$FM_WEDGE_ALARM_CHANNEL"
-    return 0
-  fi
-  cfg="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/wedge-alarm"
-  if [ -f "$cfg" ]; then
-    while IFS= read -r line || [ -n "$line" ]; do
-      line="${line#"${line%%[![:space:]]*}"}"
-      line="${line%"${line##*[![:space:]]}"}"
-      [ -n "$line" ] || continue
-      case "$line" in '#'*) continue ;; esac
-      printf '%s\n' "$line"
-      found=1
-    done < "$cfg"
-  fi
-  [ -n "$found" ] || printf 'auto\n'
-}
-
-# Resolve the platform's default OS-level channel for `auto`. macOS reaches the
-# captain via an osascript Notification Center banner; other platforms have no
-# built-in OS channel (the captain wires a command: directive), so this prints
-# nothing and wedge_alarm_notify logs that the marker is the only signal.
-wedge_alarm_platform_default() {
-  case "$(uname)" in
-    Darwin) command -v osascript >/dev/null 2>&1 && printf 'osascript' ;;
-    *) : ;;
-  esac
-}
-
-wedge_alarm_run_bounded() {
-  local channel=$1 timeout monitor_was_on=0 pid start elapsed rc
-  shift
-  timeout=${FM_WEDGE_ALARM_TIMEOUT_SECS:-$WEDGE_ALARM_TIMEOUT_SECS_DEFAULT}
-  case "$timeout" in
-    ''|*[!0-9]*) timeout=$WEDGE_ALARM_TIMEOUT_SECS_DEFAULT ;;
-    *) [ "$timeout" -gt 0 ] 2>/dev/null || timeout=$WEDGE_ALARM_TIMEOUT_SECS_DEFAULT ;;
-  esac
-  case $- in *m*) monitor_was_on=1 ;; esac
-  set -m 2>/dev/null || true
-  case $- in
-    *m*) ;;
-    *) log "wedge alarm: ${channel} notifier skipped because its watchdog could not start"; return 125 ;;
-  esac
-  "$@" &
-  pid=$!
-  WEDGE_ALARM_NOTIFIER_PID=$pid
-  start=$SECONDS
-  while kill -0 "-$pid" 2>/dev/null; do
-    elapsed=$((SECONDS - start))
-    if [ "$elapsed" -ge "$timeout" ]; then
-      wedge_alarm_stop_active_notifier
-      [ "$monitor_was_on" -eq 1 ] || set +m 2>/dev/null || true
-      log "wedge alarm: ${channel} notifier timed out after ${elapsed}s (limit ${timeout}s)"
-      return 124
-    fi
-    sleep 0.1
-  done
-  if wait "$pid"; then rc=0; else rc=$?; fi
-  WEDGE_ALARM_NOTIFIER_PID=
-  [ "$monitor_was_on" -eq 1 ] || set +m 2>/dev/null || true
-  return "$rc"
-}
-
-wedge_alarm_stop_active_notifier() {
-  local pid=${WEDGE_ALARM_NOTIFIER_PID:-}
-  [ -n "$pid" ] || return 0
-  WEDGE_ALARM_NOTIFIER_PID=
-  kill -TERM "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
-  sleep 0.2
-  kill -KILL "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
-}
-
-# The single execution seam for every configured notifier channel.
-# FM_WEDGE_ALARM_EXEC, when set, REPLACES the real notifier: the resolved channel
-# name and summary are handed to that command instead of ever invoking osascript
-# or herdr or a captain-supplied command. This is the one injection point the test harness forces to a recorder
-# so no test can post a real desktop notification - the library-mode guard at the
-# foot of this file defaults it to "discard" whenever the daemon is SOURCED
-# rather than executed, which is the only way a test reaches these functions. The
-# special value "discard" fires nothing; unset means production (the executed
-# daemon), so the real channels fire.
-wedge_alarm_os_notifier_override() {  # <channel> <summary>
-  local channel=$1 summary=$2 rc exec_override=${FM_WEDGE_ALARM_EXEC:-}
-  case "$exec_override" in
-    '') return 2 ;;
-    discard) return 0 ;;
-    *)
-      wedge_alarm_run_bounded "$channel" "$exec_override" "$channel" "$summary" >/dev/null 2>&1
-      rc=$?
-      [ "$rc" -eq 0 ] && return 0
-      log "wedge alarm: notifier override exited $rc for channel '$channel'"
-      return 1 ;;
-  esac
-}
-
-# Post a macOS Notification Center banner. `display notification` is OS-level,
-# independent of any terminal pane or multiplexer status-line. The summary is
-# passed as an argv item (never interpolated into the AppleScript source) so its
-# text can never break the script. Best-effort: logs and returns 1 on failure.
-wedge_alarm_via_osascript() {  # <summary>
-  local summary=$1 rc
-  wedge_alarm_os_notifier_override osascript "$summary"
-  rc=$?
-  case "$rc" in
-    0) return 0 ;;
-    1) return 1 ;;
-  esac
-  command -v osascript >/dev/null 2>&1 || {
-    log "wedge alarm: osascript not found; cannot post a macOS notification"; return 1; }
-  wedge_alarm_run_bounded osascript osascript -e 'on run argv' \
-    -e 'display notification (item 1 of argv) with title "firstmate: away-mode escalations WEDGED" sound name "Basso"' \
-    -e 'end run' "$summary" >/dev/null 2>&1 && return 0
-  log "wedge alarm: osascript notification failed"
-  return 1
-}
-
-# Post a herdr UI notification - herdr's own surface, separate from the pane and
-# its status-line. Best-effort: logs and returns 1 on failure.
-wedge_alarm_via_herdr() {  # <summary>
-  local summary=$1 rc
-  wedge_alarm_os_notifier_override herdr "$summary"
-  rc=$?
-  case "$rc" in
-    0) return 0 ;;
-    1) return 1 ;;
-  esac
-  command -v herdr >/dev/null 2>&1 || {
-    log "wedge alarm: herdr not found; cannot post a herdr notification"; return 1; }
-  wedge_alarm_run_bounded herdr herdr notification show "firstmate: away-mode escalations WEDGED" \
-    --body "$summary" --sound request >/dev/null 2>&1 && return 0
-  log "wedge alarm: herdr notification failed"
-  return 1
-}
-
-# Run a captain-supplied command with the summary on $1 and on stdin, so an
-# alert can reach a phone/pager (ntfy, Slack, SMS) even when the captain is away
-# from the machine entirely. Best-effort: logs and returns 1 on failure.
-wedge_alarm_via_command() {  # <cmd> <summary>
-  local cmd=$1 summary=$2 rc
-  if [ "${WEDGE_ALARM_EMIT_ACTIVE:-}" != 1 ]; then
-    wedge_alarm_emit command "$summary" "$cmd"
-    return $?
-  fi
-  [ -n "$cmd" ] || { log "wedge alarm: empty command: channel; nothing to run"; return 1; }
-  wedge_alarm_run_bounded command sh -c "$cmd" fm-wedge-alarm "$summary" \
-    <<< "$summary" >/dev/null 2>&1
-  rc=$?
-  [ "$rc" -eq 0 ] && return 0
-  log "wedge alarm: command channel exited $rc (command redacted)"
-  return 1
-}
-
-wedge_alarm_emit() {  # <channel> <summary>
-  local channel=$1 summary=$2 cmd=${3:-} rc exec_override=${FM_WEDGE_ALARM_EXEC:-} WEDGE_ALARM_EMIT_ACTIVE=1
-  case "$exec_override" in
-    '') ;;
-    discard) return 0 ;;
-    *)
-      wedge_alarm_run_bounded "$channel" "$exec_override" "$channel" "$summary" >/dev/null 2>&1
-      rc=$?
-      [ "$rc" -eq 0 ] && return 0
-      log "wedge alarm: notifier override exited $rc for channel '$channel'"
-      return 1 ;;
-  esac
-  case "$channel" in
-    osascript) wedge_alarm_via_osascript "$summary" ;;
-    herdr) wedge_alarm_via_herdr "$summary" ;;
-    command) wedge_alarm_via_command "$cmd" "$summary" ;;
-  esac
-}
-
-# Fire every configured active-alert channel, best-effort. Always returns 0: a
-# channel failure can never abort inject_wedge_alarm or the daemon loop. Any
-# `off` directive disables the alert, regardless of position; an unresolvable
-# `auto` (no OS channel on this platform) logs that the durable marker is the
-# only signal. Every notifier routes through the test-forced recorder seam.
-wedge_alarm_notify() {  # <summary> <marker>
-  local summary=$1 marker=$2 ch
-  local -a channels=()
-  while IFS= read -r ch; do
-    [ -n "$ch" ] || continue
-    channels+=("$ch")
-  done < <(wedge_alarm_configured_channels)
-  for ch in "${channels[@]}"; do
-    [ "$ch" = off ] && return 0
-  done
-  for ch in "${channels[@]}"; do
-    case "$ch" in auto|default) ch=$(wedge_alarm_platform_default) ;; esac
-    case "$ch" in
-      '') log "wedge alarm: no OS-level alert channel on $(uname); durable marker $marker is the only signal - set config/wedge-alarm (e.g. a command: directive)" ;;
-      osascript|herdr) wedge_alarm_emit "$ch" "$summary" || true ;;
-      command:*) wedge_alarm_emit command "$summary" "${ch#command:}" || true ;;
-      *) log "wedge alarm: unrecognized active-alert channel directive (redacted); marker still written" ;;
-    esac
-  done
-  return 0
-}
+# Every channel helper (wedge_alarm_configured_channels, wedge_alarm_emit,
+# wedge_alarm_notify, and the FM_WEDGE_ALARM_EXEC notifier seam) lives in
+# bin/fm-wedge-alarm-lib.sh, sourced at the top of this file, so the attended
+# continuity deadman can raise the same alert. This daemon keeps only the
+# away-mode policy below: when to alarm, its durable marker, and its tmux flash.
 
 # Raise a loud, rate-limited alarm when escalations cannot be delivered after
 # max-defer (the supervisor pane is genuinely busy/wedged, or the submit's Enter
@@ -896,6 +637,9 @@ wedge_alarm_notify() {  # <summary> <marker>
 # wake-queue both survive - but the stall stops being invisible.
 inject_wedge_alarm() {  # <state> <age-seconds>
   local state=$1 age=$2 marker target backend max_defer now notify=1
+  # Name this alert explicitly rather than inheriting the shared library's
+  # default, so the away-mode title stays owned here beside the away-mode policy.
+  local FM_WEDGE_ALARM_TITLE="firstmate: away-mode escalations WEDGED"
   marker="$state/.subsuper-inject-wedged"
   max_defer="${FM_MAX_DEFER_SECS:-$MAX_DEFER_SECS_DEFAULT}"
   # Re-alarm at most once per max-defer window so a long wedge does not spam.

@@ -473,6 +473,7 @@ tests/fm-wake-queue.test.sh
 tests/fm-subagent-pretool-check.test.sh
 tests/fm-claude-stop-autoarm.test.sh
 tests/fm-turnend-guard.test.sh
+tests/fm-continuity-deadman.test.sh
 ```
 
 ## Wedge-alarm channels
@@ -491,6 +492,9 @@ Argv-safe Notification Center command:
 ```
 
 Observed output: no stdout, exit 0, and one banner with the supplied body.
+
+`bin/fm-wedge-alarm-lib.sh` now passes the TITLE as `item 2 of argv` too, because each caller supplies its own (`FM_WEDGE_ALARM_TITLE`).
+That form is not covered by the 2026-07-10 run above; refresh this record with the current two-argv form when next verifying on macOS.
 
 Herdr command:
 

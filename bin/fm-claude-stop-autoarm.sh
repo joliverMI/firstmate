@@ -40,6 +40,13 @@
 #     exit 2 to guarantee the next Stop-owned retry without repeating notice,
 #     until the synchronous guard has consumed its attended fail-open.
 #
+# A delivered rewake is not a handled one. Before every exit-2 rewake this hook
+# touches state/.rewake-pending, which bin/fm-wake-drain.sh clears at the top of
+# the handling turn; bin/fm-continuity-deadman.sh reads an aged marker as proof
+# that the woken turn never ran. The claiming owner also sweeps
+# state/.claude-autoarm-output.* siblings older than a day, the temp files an
+# owner killed mid-arm leaves behind.
+#
 # The epoch ledger state/.claude-autoarm-epoch records the latest claim and
 # outcome so the synchronous Stop guard (bin/fm-turnend-guard.sh --claude) can
 # allow a stop whose recovery this hook already owns, instead of forcing a
@@ -65,6 +72,7 @@ OWNER_LOCK="$STATE/.claude-autoarm.lock"
 EPOCH="$STATE/.claude-autoarm-epoch"
 FAILURE_NOTICE="$STATE/.claude-autoarm-failure-notified"
 FAILURE_ALARM="$STATE/.claude-autoarm-failure-alarmed"
+REWAKE_PENDING="$STATE/.rewake-pending"
 AUTOARM_ATTEMPTS=${FM_CLAUDE_AUTOARM_ATTEMPTS:-2}
 case "$AUTOARM_ATTEMPTS" in
   1|2|3) : ;;
@@ -142,6 +150,13 @@ if ! fm_lock_set_role "$OWNER_LOCK" autoarm; then
   exit 0
 fi
 trap 'fm_lock_release "$OWNER_LOCK"' EXIT
+
+# An owner killed mid-arm by process-group teardown leaves its arm-output temp
+# file behind, roughly one per uncleanly ended session. Harmless but unbounded,
+# so the owner that just claimed the home sweeps siblings older than a day. Only
+# this single-flight owner does it, and only to this home's own state dir.
+find "$STATE" -maxdepth 1 -name '.claude-autoarm-output.*' -type f -mtime +0 \
+  -exec rm -f {} + 2>/dev/null || true
 
 write_epoch() {  # <outcome>
   local outcome=$1 seq tmp
@@ -239,6 +254,13 @@ fi
 
 if [ "$ACTIONABLE" -eq 1 ]; then
   write_epoch rewake
+  # A rewake is DELIVERED here but only HANDLED by the turn it wakes, and on
+  # 2026-09-07 that woken turn died on an API error whose Stop skipped every
+  # hook. This marker separates the two: bin/fm-wake-drain.sh clears it at the
+  # top of the handling turn, so a marker that outlives the grace window is
+  # direct evidence the handling turn never ran, which is the crisp predicate
+  # bin/fm-continuity-deadman.sh checks alongside a stale watcher beacon.
+  : > "$REWAKE_PENDING" 2>/dev/null || true
   {
     printf 'firstmate watcher wake - one supervision event needs a handling turn now.\n'
     [ -n "$OUT" ] && grep -E '^(signal:|stale:|check:|heartbeat)' "$OUT" 2>/dev/null | head -8

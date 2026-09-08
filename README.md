@@ -205,7 +205,7 @@ Firstmate's skills live in two separate places with different audiences:
 - [docs/dashboard.md](docs/dashboard.md) - current setup, reachability, persistence, and the drift-risk tradeoff behind the Admiral's Fleet Dashboard task board.
 - [docs/remote-secondmates.md](docs/remote-secondmates.md) - current setup, routing, transfer, recovery, and safety behavior for whole-home remote second mates.
 - [docs/calm.md](docs/calm.md) - current Pi `/calm` behavior and supported presentation limits.
-- [docs/wedge-alarm.md](docs/wedge-alarm.md) - configure the active alert for an away-mode escalation delivery that gets stuck.
+- [docs/wedge-alarm.md](docs/wedge-alarm.md) - configure the active alert firstmate raises when an away-mode escalation gets stuck or supervision stops running here.
 - [docs/tmux-backend.md](docs/tmux-backend.md) - current setup and limits for the tmux reference backend.
 - [docs/herdr-backend.md](docs/herdr-backend.md) - current setup, safety boundaries, and limits for the experimental Herdr backend.
 - [docs/zellij-backend.md](docs/zellij-backend.md) - current setup and limits for the experimental Zellij backend.

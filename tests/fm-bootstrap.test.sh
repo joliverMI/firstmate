@@ -881,6 +881,58 @@ test_routine_bootstrap_contract_runs_under_system_bash() {
   pass "bootstrap routine contract runs under system /bin/bash"
 }
 
+# Session start is the earliest caller with the right environment to start the
+# home's continuity deadman (bin/fm-continuity-deadman.sh), and it is gated with
+# the mutating sweeps: a lock-refused read-only session start must start nothing.
+# A real `claude`-named process owns the session lock so the started deadman
+# stays up long enough to be observed; a production-length tick keeps it out of
+# any evaluation, and both action seams are discarded.
+test_bootstrap_starts_the_continuity_deadman_only_when_mutating() {
+  local case_dir fixture root home fakebin session_pid deadman_pid out
+  for case_dir in "$TMP_ROOT/deadman-mutating" "$TMP_ROOT/deadman-detect-only"; do
+    fixture=$(make_routine_bootstrap_fixture "$case_dir")
+    root=${fixture%%|*}
+    fixture=${fixture#*|}
+    home=${fixture%%|*}
+    fakebin=${fixture#*|}
+    ln -s /bin/bash "$fakebin/claude"
+    # shellcheck disable=SC2016 # $$ must expand inside the fake harness child, not here.
+    "$fakebin/claude" -c 'echo $$ > "$1/state/.lock"; sleep 120; :' _ "$home" >/dev/null 2>&1 </dev/null &
+    session_pid=$!
+    sleep 0.3
+    [ -s "$home/state/.lock" ] || fail "fake session never wrote the lock"
+    case "$case_dir" in
+      *detect-only)
+        out=$(PATH="$fakebin:$BASE_PATH" FM_BACKEND=tmux FM_HOME="$home" FM_ROOT_OVERRIDE="$root" \
+          FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_BOOTSTRAP_DETECT_ONLY=1 FM_CONTINUITY_DEADMAN_TICK=600 \
+          FM_WEDGE_ALARM_EXEC=discard FM_CONTINUITY_DEADMAN_INJECT_EXEC=discard \
+          bash "$ROOT/bin/fm-bootstrap.sh" 2>&1)
+        sleep 1
+        [ ! -e "$home/state/.continuity-deadman.lock" ] \
+          || fail "a detect-only (lock-refused) session start started a continuity deadman"
+        pkill -P "$session_pid" 2>/dev/null; kill "$session_pid" 2>/dev/null
+        ;;
+      *)
+        out=$(PATH="$fakebin:$BASE_PATH" FM_BACKEND=tmux FM_HOME="$home" FM_ROOT_OVERRIDE="$root" \
+          FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_CONTINUITY_DEADMAN_TICK=600 \
+          FM_WEDGE_ALARM_EXEC=discard FM_CONTINUITY_DEADMAN_INJECT_EXEC=discard \
+          bash "$ROOT/bin/fm-bootstrap.sh" 2>&1)
+        [ -z "$out" ] || fail "starting the deadman must stay silent in a routine bootstrap, got: $out"
+        deadman_pid=$(cat "$home/state/.continuity-deadman.lock/pid" 2>/dev/null || true)
+        if [ -z "$deadman_pid" ] || ! kill -0 "$deadman_pid" 2>/dev/null; then
+          fail "a mutating session start did not leave a live continuity deadman (lock pid: '$deadman_pid')"
+        fi
+        [ "$(ps -o pgid= -p "$deadman_pid" | tr -d '[:space:]')" != "$(ps -o pgid= -p $$ | tr -d '[:space:]')" ] \
+          || fail "the bootstrap-started deadman shares the session's process group and would die with it"
+        FM_HOME="$home" FM_ROOT_OVERRIDE="$root" "$ROOT/bin/fm-continuity-deadman.sh" stop >/dev/null 2>&1 \
+          || fail "could not stop the bootstrap-started deadman"
+        pkill -P "$session_pid" 2>/dev/null; kill "$session_pid" 2>/dev/null
+        ;;
+    esac
+  done
+  pass "bootstrap starts the continuity deadman detached only when it holds the lock, never in detect-only mode"
+}
+
 # FM_BOOTSTRAP_NETWORK splits one bootstrap run into its local and network
 # halves so a session start can compose its digest from the local half alone and
 # run the network half concurrently. The property that has to hold is that the
@@ -1218,6 +1270,7 @@ test_fleet_sync_timeout_empty_override_uses_default
 test_fleet_sync_timeout_is_computed_before_launch
 test_routine_bootstrap_confirmations_are_silent
 test_routine_bootstrap_contract_runs_under_system_bash
+test_bootstrap_starts_the_continuity_deadman_only_when_mutating
 test_network_phase_partitions_the_run
 test_network_sweeps_recheck_lock_ownership
 test_network_phases_record_per_step_elapsed_times

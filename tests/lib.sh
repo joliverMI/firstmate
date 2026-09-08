@@ -82,6 +82,19 @@ FM_TEST_OWNER_IDENTITY=$(fm_test_pid_identity "$$") || {
   return 1
 }
 
+# fm_test_age_file <path> <seconds>: backdate a file's mtime so a real grace or
+# sweep window has passed without the test sleeping through it. GNU touch takes
+# an epoch via -d "@N"; BSD touch (macOS) has no -d, so fall back to -t with a
+# stamp formatted by BSD date's -r <epoch>.
+fm_test_age_file() {
+  local path=$1 secs=$2 stamp
+  if touch -d "@$(( $(date +%s) - secs ))" "$path" 2>/dev/null; then
+    return 0
+  fi
+  stamp=$(date -r $(( $(date +%s) - secs )) '+%Y%m%d%H%M.%S' 2>/dev/null) || return 1
+  touch -t "$stamp" "$path"
+}
+
 fm_test_cleanup() {
   local d
   for d in "${FM_TEST_CLEANUP_DIRS[@]:-}"; do
