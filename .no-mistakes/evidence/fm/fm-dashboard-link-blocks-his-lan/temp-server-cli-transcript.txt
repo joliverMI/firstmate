@@ -1,0 +1,59 @@
+$ fm-dashboard.sh add --title 'Wire the LAN links' --captain vlad --prompt 'Put Spectra, Home Assistant and Forgejo on the board.' --agent crew-lan
+wire-the-lan-links-rz48	not_started	captain_vlad	-	Wire the LAN links
+
+# Links his phone reaches on the LAN / tailnet - must be ACCEPTED
+$ fm-dashboard.sh link wire-the-lan-links-rz48 --url http://192.168.40.145:8000 --label 'Spectra'
+wire-the-lan-links-rz48: note added to needs
+  -> exit 0
+$ fm-dashboard.sh link wire-the-lan-links-rz48 --url http://192.168.40.16:8123 --label 'Home Assistant'
+wire-the-lan-links-rz48: note added to needs
+  -> exit 0
+$ fm-dashboard.sh link wire-the-lan-links-rz48 --url http://homeassistant.lan:8123 --label 'Home Assistant (.lan)'
+wire-the-lan-links-rz48: note added to needs
+  -> exit 0
+$ fm-dashboard.sh link wire-the-lan-links-rz48 --url http://192.168.40.145:3000 --label 'Forgejo'
+wire-the-lan-links-rz48: note added to needs
+  -> exit 0
+
+# Local-only / GitHub links - must still be REFUSED
+$ fm-dashboard.sh link wire-the-lan-links-rz48 --url 'http://localhost:8123' --label refused
+fm-dashboard.sh: server refused (400): link host is local-only and will not open on his phone: 'http://localhost:8123'
+  -> exit 1
+$ fm-dashboard.sh link wire-the-lan-links-rz48 --url 'http://127.0.0.1:8000' --label refused
+fm-dashboard.sh: server refused (400): link host is local-only and will not open on his phone: 'http://127.0.0.1:8000'
+  -> exit 1
+$ fm-dashboard.sh link wire-the-lan-links-rz48 --url 'http://0.0.0.0:3000' --label refused
+fm-dashboard.sh: server refused (400): link host is local-only and will not open on his phone: 'http://0.0.0.0:3000'
+  -> exit 1
+$ fm-dashboard.sh link wire-the-lan-links-rz48 --url 'http://[::1]:8123' --label refused
+fm-dashboard.sh: server refused (400): link host is local-only and will not open on his phone: 'http://[::1]:8123'
+  -> exit 1
+$ fm-dashboard.sh link wire-the-lan-links-rz48 --url 'http://169.254.1.1/x' --label refused
+fm-dashboard.sh: server refused (400): link host is local-only and will not open on his phone: 'http://169.254.1.1/x'
+  -> exit 1
+$ fm-dashboard.sh link wire-the-lan-links-rz48 --url 'http://[fe80::1]/x' --label refused
+fm-dashboard.sh: server refused (400): link host is local-only and will not open on his phone: 'http://[fe80::1]/x'
+  -> exit 1
+$ fm-dashboard.sh link wire-the-lan-links-rz48 --url 'https://github.com/joliverMI/firstmate' --label refused
+fm-dashboard.sh: server refused (400): never a GitHub or pull-request link to the Admiral (standing order 17) - report the outcome in words instead: 'https://github.com/joliverMI/firstmate'
+  -> exit 1
+$ fm-dashboard.sh link wire-the-lan-links-rz48 --url 'https://github.com/joliverMI/firstmate/pull/37' --label refused
+fm-dashboard.sh: server refused (400): never a GitHub or pull-request link to the Admiral (standing order 17) - report the outcome in words instead: 'https://github.com/joliverMI/firstmate/pull/37'
+  -> exit 1
+
+$ fm-dashboard.sh show wire-the-lan-links-rz48
+id:       wire-the-lan-links-rz48
+title:    Wire the LAN links
+status:   not_started
+captain:  captain_vlad
+agent:    crew-lan
+starred:  false
+
+--- prompt ---
+Put Spectra, Home Assistant and Forgejo on the board.
+
+--- needs ---
+[agent 2026-09-08T10:13:30Z]  -> http://192.168.40.145:8000
+[agent 2026-09-08T10:13:30Z]  -> http://192.168.40.16:8123
+[agent 2026-09-08T10:13:30Z]  -> http://homeassistant.lan:8123
+[agent 2026-09-08T10:13:30Z]  -> http://192.168.40.145:3000

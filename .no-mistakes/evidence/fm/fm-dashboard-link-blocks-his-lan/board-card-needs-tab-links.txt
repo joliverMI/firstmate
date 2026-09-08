@@ -1,0 +1,5 @@
+rendered note links on the Needs tab:
+  Spectra  ->  http://192.168.40.145:8000/
+  Home Assistant  ->  http://192.168.40.16:8123/
+  Home Assistant (.lan)  ->  http://homeassistant.lan:8123/
+  Forgejo  ->  http://192.168.40.145:3000/
