@@ -95,7 +95,8 @@
 #
 # Files, all under this home's state directory:
 #   .continuity-deadman.lock    the singleton lock (bin/fm-wake-lib.sh's portable
-#                               lock, same shape as .watch.lock)
+#                               lock, same shape as .watch.lock) plus session-pid,
+#                               the session lock pid the holder was started under
 #   .continuity-deadman-alarm   the durable episode record; present exactly while
 #                               an outage episode is open
 #   .continuity-deadman.log     bounded diagnostic log; never a dependency
@@ -202,6 +203,26 @@ deadman_live_pid() {
   current_identity=$(fm_pid_identity "$pid") || return 1
   [ "$current_identity" = "$lock_identity" ] || return 1
   printf '%s' "$pid"
+}
+
+# The session-lock pid the live deadman was started under. A deadman only knows
+# the pane of the session whose environment spawned it, so `ensure` from a later
+# session treats a holder recorded under a different pid as not-this-session.
+deadman_session_pid() {
+  tr -d '[:space:]' < "$DEADMAN_LOCK/session-pid" 2>/dev/null || true
+}
+
+# Retire this home's live deadman from a caller that does not own it, and wait
+# for its lock to clear. Returns 0 once no live holder remains.
+retire_live_deadman() {  # <pid>
+  local pid=$1 i=0
+  kill -TERM "$pid" 2>/dev/null || true
+  while [ "$i" -lt 50 ]; do
+    deadman_live_pid >/dev/null 2>&1 || return 0
+    sleep 0.1
+    i=$((i + 1))
+  done
+  ! deadman_live_pid >/dev/null 2>&1
 }
 
 # --- predicates --------------------------------------------------------------
@@ -456,6 +477,7 @@ deadman_tick() {
   fi
 
   if ! continuity_lost; then
+    TURN_DEFERRAL_LOGGED=0
     if [ -e "$ALARM_MARKER" ]; then
       if [ -e "$STATE/.afk" ]; then
         dm_log "episode closed: away mode now owns supervision here"
@@ -529,8 +551,10 @@ cmd_run() {
   # would spawn another doomed child and `status` would report nothing running -
   # so stand down instead and leave the next arm a clean attempt.
   identity=$(fm_pid_identity "$pid" 2>/dev/null || true)
+  DEADMAN_SESSION_PID=$(session_lock_pid)
   if [ -z "$identity" ] \
     || ! printf '%s\n' "$FM_HOME" > "$DEADMAN_LOCK/fm-home" 2>/dev/null \
+    || ! printf '%s\n' "$DEADMAN_SESSION_PID" > "$DEADMAN_LOCK/session-pid" 2>/dev/null \
     || ! printf '%s\n' "$identity" > "$DEADMAN_LOCK/pid-identity" 2>/dev/null \
     || [ "$(cat "$DEADMAN_LOCK/pid-identity" 2>/dev/null || true)" != "$identity" ]; then
     dm_log "standing down: this home's deadman lock could not record a verifiable identity"
@@ -538,7 +562,6 @@ cmd_run() {
   fi
 
   DEADMAN_STARTED_AT=$(date +%s)
-  DEADMAN_SESSION_PID=$(session_lock_pid)
   dm_log "started pid=$pid session=${DEADMAN_SESSION_PID:-none} grace=${GRACE}s tick=${TICK}s"
   if [ "$once" -eq 1 ]; then
     # One evaluation with no settle window: a single-shot run is a caller asking
@@ -591,13 +614,26 @@ spawn_detached() {
 
 # Always silent, always exit 0: this runs on every arm and at session start, and
 # a diagnostic printed here would land in the arm's classified output. A failure
-# to start is recorded in the deadman log and reported by `status`.
+# to start is recorded in the deadman log and reported by `status`. A live
+# deadman started under a different session-lock pid is retired and replaced
+# here rather than left to notice at its own next tick, because a deadman knows
+# only the pane of the session that spawned it and the new session's bootstrap
+# and first arm are the earliest callers with the right environment.
 cmd_ensure() {
-  local i=0
+  local i=0 live recorded current
   [ "$#" -eq 0 ] || usage
   fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
   [ -e "$STATE/.afk" ] && exit 0
-  deadman_live_pid >/dev/null && exit 0
+  if live=$(deadman_live_pid); then
+    recorded=$(deadman_session_pid)
+    current=$(session_lock_pid)
+    [ -n "$current" ] && [ "$recorded" != "$current" ] || exit 0
+    if ! retire_live_deadman "$live"; then
+      dm_log "ensure: deadman pid=$live from session ${recorded:-none} would not retire; session $current stays with it"
+      exit 0
+    fi
+    dm_log "ensure: retired deadman pid=$live from session ${recorded:-none}; starting one for session $current"
+  fi
   spawn_detached
   while [ "$i" -lt 30 ]; do
     deadman_live_pid >/dev/null && exit 0

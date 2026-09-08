@@ -526,6 +526,39 @@ test_deadman_retires_when_the_session_is_replaced() {
   pass "a deadman retires when a different session takes over its home, so the next arm starts one from that session"
 }
 
+test_ensure_replaces_a_superseded_sessions_deadman() {
+  local dir old_pid new_pid old_session new_session
+  dir=$(make_home session-superseded)
+  install_live_watcher "$dir"
+  FM_CONTINUITY_DEADMAN_TICK=600 run_deadman "$dir" ensure || fail "ensure exited non-zero"
+  wait_until 5 test -e "$dir/state/.continuity-deadman.lock/pid" \
+    || fail "ensure did not start a deadman"
+  old_pid=$(cat "$dir/state/.continuity-deadman.lock/pid")
+  old_session=$(session_pid "$dir")
+
+  # The new session's bootstrap runs `ensure` the moment it holds the lock; the
+  # old deadman is deep inside a tick and cannot notice the change on its own.
+  new_session=$(start_fake_session "$dir")
+  wait_until 5 sh -c "[ \"\$(cat '$dir/state/.lock')\" = $new_session ]" \
+    || fail "the second session never took over the lock"
+  FM_CONTINUITY_DEADMAN_TICK=600 run_deadman "$dir" ensure || fail "ensure exited non-zero for the new session"
+  ! pid_alive "$old_pid" || fail "ensure left the old session's deadman running"
+  pid_alive "$old_session" || fail "the old session died on its own, so this case proved nothing"
+  new_pid=$(cat "$dir/state/.continuity-deadman.lock/pid" 2>/dev/null || true)
+  [ -n "$new_pid" ] && [ "$new_pid" != "$old_pid" ] \
+    || fail "ensure did not start a deadman for the new session (lock pid: '$new_pid')"
+  pid_alive "$new_pid" || fail "the replacement deadman is not running"
+  run_deadman "$dir" status | grep -q "running pid=$new_pid" \
+    || fail "status does not report the replacement deadman"
+
+  FM_CONTINUITY_DEADMAN_TICK=600 run_deadman "$dir" ensure || fail "third ensure exited non-zero"
+  [ "$(cat "$dir/state/.continuity-deadman.lock/pid")" = "$new_pid" ] \
+    || fail "ensure replaced a deadman that already belonged to the current session"
+  kill "$new_session" 2>/dev/null
+  stop_home "$dir"
+  pass "ensure retires a deadman started under a superseded session and starts one for the current session at once"
+}
+
 test_stop_is_prompt_inside_a_long_tick() {
   local dir pid
   dir=$(make_home stop-prompt)
@@ -588,6 +621,7 @@ test_episode_closes_when_supervision_returns
 test_ensure_starts_one_detached_singleton
 test_deadman_exits_when_the_session_is_gone
 test_deadman_retires_when_the_session_is_replaced
+test_ensure_replaces_a_superseded_sessions_deadman
 test_stop_is_prompt_inside_a_long_tick
 test_ensure_is_inert_outside_a_primary_home
 test_wake_drain_clears_the_delivered_rewake_marker
