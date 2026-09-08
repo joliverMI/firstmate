@@ -1,0 +1,46 @@
+ok - server-status reports the running, reachable server
+ok - add/list/show round-trip works through the CLI
+ok - status, title, and captain updates persist through the CLI
+ok - testing and review are separate, independently settable statuses
+ok - waiting status carries its target card and reason
+ok - interpretation tab stays absent until something real is recorded
+ok - link policy rejects GitHub/PR and local-only links, accepts a real one
+ok - needs-action status carries a reason and sorts above every other status
+ok - needs-action refuses a missing or report-shaped reason, on both status and add, and the server enforces both independently of the CLI
+ok - no path - either spelling, a blank reason, or PATCH - can put a card in needs-action without a real ask
+ok - needs-attention is accepted as an input alias for needs-action, enforced the same way, and never emitted
+ok - needs-review refuses a missing, blank, or absent plan on every writer, and accepts one the card already holds
+ok - an approval binds to the verbatim plan it was given for, is refused against any other text, and never drifts onto an edited plan
+ok - his approval takes the card out of needs_review to not_started, with the transition and its reason on the card's own history
+ok - a refused or stale approval moves nothing and wakes nobody, and an approval on a card that has moved on records consent without dragging it back
+ok - an approval publishes one durable check record through firstmate's own writer, and firstmate's own drain reads it back
+ok - an admiral note publishes exactly one durable check wake record naming the card
+ok - an agent note publishes no wake record
+ok - a note is saved, and the failure is written down, even when the wake queue could not be written to
+ok - a card's recommended plan and his approval of it survive the status change, so the fleet can still read its authority while acting
+ok - status refuses a --plan for every status but needs-review, exactly as add does
+ok - a plan can only be created by the path that shows him the approval box, while a card already through it still accepts a correction
+ok - correcting a plan on a card that has left needs-review still breaks the binding and keeps both texts readable
+ok - a plan is stored under one normalization, so approving it exactly as displayed binds cleanly while different wording still reads stale
+ok - plan refuses an unquoted multi-word plan instead of recording its first word
+ok - needs-action sorts above needs-review, and both sort above ordinary work
+ok - the needs-attention split migrates every card to needs-action, keeping its reason, notes, history, and blocked-age, and runs once
+ok - a report phrase buried mid-clause does not refuse a genuine ask
+ok - add refuses a --reason no status but needs-action can carry, instead of dropping it
+ok - the catch, miss, and false-positive rates documented for the reason guard are the ones it actually achieves
+ok - audit-log, audit-run, and audit-interval work end to end
+ok - invalid input fails loudly with a non-zero exit, not a silent success
+ok - --help prints the header through its final exit-code block
+ok - every dashboard call is bounded, so a board that never answers fails fast instead of hanging
+ok - a zero timeout override is refused and replaced by the default, so the bound cannot be handed back
+ok - a board-answered missing id and an unreachable board are distinguishable by exit code
+ok - the testing-to-review split migration converts only pre-existing testing cards, and runs at most once
+ok - a start that cannot bind leaves the migration pending, and stop waits for the port
+ok - restart brings the board back from a crash, from stopped, and from healthy
+ok - the lifecycle commands refuse a recycled pid instead of signalling it
+ok - starring persists and delete requires --confirm
+ok - the CLI, the server and the page the browser loads all name the same captains
+ok - start defaults its bind host to the address recorded in config/dashboard-url, and an explicit FM_DASHBOARD_HOST still wins
+ok - start keeps waiting for a slow but healthy bind instead of killing it
+ok - start refuses an address something else already answers on, leaving it alone and no pidfile behind
+ok - start stops the process and fails loudly, naming the failure, when the API never answers after it comes up
