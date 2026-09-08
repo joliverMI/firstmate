@@ -232,7 +232,8 @@ def validate_review_plan(plan: str | None) -> None:
 
 def _is_blocked_ip_literal(host: str) -> bool:
     """True if host is an IP literal that never opens on his phone: loopback,
-    link-local (169.254/16, fe80::/10), or unspecified. A plain RFC1918
+    link-local (169.254/16, fe80::/10), or unspecified, including the
+    IPv4-mapped IPv6 spellings of those (::ffff:127.0.0.1). A plain RFC1918
     private literal (10/8, 172.16/12, 192.168/16) is NOT blocked here - his
     phone reaches those addresses directly on the LAN or over the tailnet.
     """
@@ -240,6 +241,9 @@ def _is_blocked_ip_literal(host: str) -> bool:
         addr = ipaddress.ip_address(host)
     except ValueError:
         return False
+    mapped = getattr(addr, "ipv4_mapped", None)
+    if mapped is not None:
+        addr = mapped
     return addr.is_loopback or addr.is_link_local or addr.is_unspecified
 
 

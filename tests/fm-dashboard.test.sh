@@ -466,6 +466,9 @@ REFUSED = [
     "http://0.0.0.0/thing",
     "http://[::1]/thing",
     "http://169.254.1.1/thing",
+    "http://[fe80::1]/thing",
+    "http://[::ffff:127.0.0.1]/thing",
+    "http://[::ffff:169.254.1.1]/thing",
     "https://github.com/joliverMI/firstmate",
     "https://github.com/joliverMI/firstmate/pull/1",
 ]
