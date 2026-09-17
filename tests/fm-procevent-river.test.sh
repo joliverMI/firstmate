@@ -45,7 +45,9 @@ trap river_teardown EXIT
 # service's contract. Every served or acked request is appended to a request log,
 # which is how the ack-before-next-read ordering is observed from the outside.
 # Acks for ids listed in the ack-fail file are refused, which is how the
-# at-least-once boundary is exercised without crashing a poll mid-flight.
+# at-least-once boundary is exercised without crashing a poll mid-flight: a
+# line holding just an id refuses every ack of it, and a line holding an id
+# and a count refuses only that many acks before letting one land.
 cat > "$TMP_ROOT/fake-river.py" <<'PY'
 import os, sys, time, json, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -58,6 +60,7 @@ EXPECTED = open(sys.argv[3]).read().strip()
 REQLOG = sys.argv[4]
 ACKFAIL = sys.argv[5]
 LOCK = threading.Lock()
+REFUSED = {}
 
 
 def log(line):
@@ -93,9 +96,21 @@ def retire(item_id):
 def ack_refused(item_id):
     try:
         with open(ACKFAIL) as fh:
-            return item_id in fh.read().split()
+            lines = fh.read().splitlines()
     except OSError:
         return False
+    for line in lines:
+        parts = line.split()
+        if not parts or parts[0] != item_id:
+            continue
+        limit = int(parts[1]) if len(parts) > 1 else None
+        with LOCK:
+            seen = REFUSED.get(item_id, 0)
+            if limit is not None and seen >= limit:
+                return False
+            REFUSED[item_id] = seen + 1
+        return True
+    return False
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -215,10 +230,27 @@ queue_raw() {  # <complete json object>
   printf '%s\n' "$1" > "$QUEUE/$(printf '%06d' "$FSEQ").json"
 }
 
+item_json() {  # <phrase> <id> -> one contract-shaped item
+  printf '{"id": "%s", "phrase": "%s"}' "$2" "$1"
+}
+
 queue_item() {  # <phrase> -> queues a contract-shaped item, setting LAST_ID
   next_id
-  queue_raw "{\"id\": \"$LAST_ID\", \"phrase\": \"$1\"}"
+  queue_raw "$(item_json "$1" "$LAST_ID")"
 }
+
+# Queue an item after a delay, from a background job. The id and the queue
+# slot are taken HERE, in the parent, so the increments are never lost to the
+# subshell and ids stay unique across the whole run.
+queue_item_later() {  # <seconds> <phrase> -> sets LAST_ID and LATER_PID
+  local delay=$1 phrase=$2 id
+  next_id
+  id=$LAST_ID
+  FSEQ=$((FSEQ + 1))
+  ( sleep "$delay"; item_json "$phrase" "$id" > "$QUEUE/$(printf '%06d' "$FSEQ").json" ) &
+  LATER_PID=$!
+}
+LATER_PID=
 
 new_home() {  # <dir> [base-url]
   local home=$1 base=${2-$BASE}
@@ -292,49 +324,92 @@ assert not set(first) & set(second), (first, second)
 PY
 pass "an acked takeover is never served again, so two successive polls share no item"
 
-# --- the at-least-once boundary: a failed ack re-serves the item ------------
-# The service refuses this item's ack, so it stays pending. The item was still
-# captured, so it must be emitted; and the drain must stop rather than spin on
-# an item the service keeps re-serving.
-queue_item ack-fails; ID_STUCK=$LAST_ID
+# --- a still-failing ack is one outage per window, not a wake per cycle ------
+# The service serves this item but refuses every ack of it. The poll must retry
+# the ack, and when it still fails, back off and re-read INSIDE the same poll
+# rather than emitting the item: emitting it would wake firstmate on the same
+# unretired item on every watch cycle, which is the failure this adapter exists
+# to remove. After the unreachable window the outage is reported once, naming
+# the item, and the item stays pending service-side.
+queue_item ack-refused; ID_STUCK=$LAST_ID
 queue_item behind-the-stuck-one; ID_BEHIND=$LAST_ID
 printf '%s\n' "$ID_STUCK" > "$ACKFAIL"
 : > "$REQLOG"
 STUCK1="$TMP_ROOT/stuck-1.json"
-FM_HOME="$HOME_A" FM_RIVER_WAIT=5 "$ADAPTER" poll > "$STUCK1"
-expect_code 0 "$?" "a poll whose captured item could not be acked"
-python3 - "$STUCK1" "$ID_STUCK" <<'PY' || fail "an item whose ack failed was not emitted, or the drain ran past it"
-import json, sys
-data = json.load(open(sys.argv[1]))
-assert [d["id"] for d in data] == [sys.argv[2]], data
-PY
-[ "$(grep -c "^next " "$REQLOG")" -eq 1 ] \
-  || fail "the poll kept reading after an ack failure instead of emitting what it had"
-pass "an ack failure still emits the captured item and stops the drain instead of spinning"
+STUCK_START=$SECONDS
+FM_HOME="$HOME_A" FM_RIVER_WAIT=5 FM_RIVER_UNREACHABLE_WINDOW=3 FM_RIVER_RETRY_BACKOFF=1 \
+  "$ADAPTER" poll > "$STUCK1"
+expect_code 0 "$?" "a poll whose captured item could never be acked"
+STUCK_ELAPSED=$((SECONDS - STUCK_START))
+[ "$STUCK_ELAPSED" -ge 3 ] \
+  || fail "the poll gave up on the unacked item after ${STUCK_ELAPSED}s, before the unreachable window"
+CLASSIFIED=$(river "$HOME_A" classify "$STUCK1")
+[ "$CLASSIFIED" = service-error ] \
+  || fail "a still-failing ack classified as '$CLASSIFIED' instead of an outage: $(cat "$STUCK1")"
+assert_grep "$ID_STUCK" "$STUCK1" "the outage result does not name the item that could not be retired"
+[ "$(grep -c "^next $ID_STUCK" "$REQLOG")" -ge 2 ] \
+  || fail "the poll exited on the unacked item instead of re-reading it inside the same poll"
+[ "$(grep -c "^ack $ID_STUCK refused" "$REQLOG")" -ge 4 ] \
+  || fail "the poll did not retry the refused ack before giving up"
+[ "$(grep -c "^next $ID_BEHIND" "$REQLOG")" -eq 0 ] \
+  || fail "the poll read past an item the service still holds"
+pass "a still-failing ack retries, then reports one outage per window instead of a wake per cycle"
 
-# Now let the ack through: the still-pending item is served again, which is the
-# at-least-once boundary stated in the adapter's header.
+# Now let the ack through: the item the service kept holding is served again,
+# with the one queued behind it, which is the at-least-once boundary stated in
+# the adapter's header, asserted rather than described.
 : > "$ACKFAIL"
 STUCK2="$TMP_ROOT/stuck-2.json"
 FM_HOME="$HOME_A" FM_RIVER_WAIT=5 "$ADAPTER" poll > "$STUCK2"
 expect_code 0 "$?" "the poll that re-serves the unacked item"
-python3 - "$STUCK2" "$ID_STUCK" "$ID_BEHIND" <<'PY' || fail "the unacked item was not re-served on the next poll"
+python3 - "$STUCK2" "$ID_STUCK" "$ID_BEHIND" <<'PY' || fail "the unacked item was not re-served once acks landed"
 import json, sys
 ids = [d["id"] for d in json.load(open(sys.argv[1]))]
 assert ids == [sys.argv[2], sys.argv[3]], ids
 PY
-pass "an item captured but not acked is re-served on the next poll, never dropped"
+pass "an item read but never acked is re-served once acks land, never dropped"
+
+# --- a transient ack failure is absorbed by the retry, with no duplicate -----
+# The first ack of this item is refused and the second lands. The poll must
+# retry in place, keep draining, and deliver the item once: neither dropped,
+# nor doubled, nor re-served on the following poll.
+queue_item ack-once-refused; ID_FLAKY=$LAST_ID
+queue_item behind-the-flaky-one; ID_AFTER=$LAST_ID
+printf '%s 1\n' "$ID_FLAKY" > "$ACKFAIL"
+: > "$REQLOG"
+FLAKY1="$TMP_ROOT/flaky-1.json"
+FM_HOME="$HOME_A" FM_RIVER_WAIT=5 FM_RIVER_RETRY_BACKOFF=0 "$ADAPTER" poll > "$FLAKY1"
+expect_code 0 "$?" "a poll whose first ack attempt was refused"
+python3 - "$FLAKY1" "$ID_FLAKY" "$ID_AFTER" <<'PY' || fail "a transient ack failure dropped, doubled, or reordered the burst"
+import json, sys
+ids = [d["id"] for d in json.load(open(sys.argv[1]))]
+assert ids == [sys.argv[2], sys.argv[3]], ids
+PY
+SEQUENCE=$(grep -E "$ID_FLAKY|$ID_AFTER" "$REQLOG" \
+  | sed -e "s/$ID_FLAKY/1/" -e "s/$ID_AFTER/2/" | tr '\n' ' ')
+[ "$SEQUENCE" = "next 1 ack 1 refused ack 1 retired next 2 ack 2 retired " ] \
+  || fail "the refused ack was not retried in place before the next read: $SEQUENCE"
+: > "$ACKFAIL"
+queue_item after-the-flaky-one; ID_LATER=$LAST_ID
+FLAKY2="$TMP_ROOT/flaky-2.json"
+FM_HOME="$HOME_A" FM_RIVER_WAIT=5 "$ADAPTER" poll > "$FLAKY2"
+expect_code 0 "$?" "the poll after a retried ack"
+python3 - "$FLAKY2" "$ID_LATER" <<'PY' || fail "an item whose ack landed on retry was served again"
+import json, sys
+ids = [d["id"] for d in json.load(open(sys.argv[1]))]
+assert ids == [sys.argv[2]], ids
+PY
+pass "a transient ack failure is retried in place, so the item is delivered once with no duplicate"
 
 # --- the grace window batches a takeover that arrives just behind the burst --
 GRACE_OUT="$TMP_ROOT/grace.json"
 queue_item grace-first
-( sleep 0.4; queue_item grace-second ) &
-GRACE_BG=$!
+queue_item_later 0.4 grace-second
 GRACE_START=$SECONDS
 FM_HOME="$HOME_A" FM_RIVER_WAIT=5 FM_RIVER_BURST_GRACE_MS=2000 "$ADAPTER" poll > "$GRACE_OUT"
 expect_code 0 "$?" "a poll spanning the burst grace window"
 GRACE_ELAPSED=$((SECONDS - GRACE_START))
-wait "$GRACE_BG" 2>/dev/null || true
+wait "$LATER_PID" 2>/dev/null || true
 python3 - "$GRACE_OUT" <<'PY' || fail "the grace window did not batch the takeover that arrived just behind the first"
 import json, sys
 phrases = [d["phrase"] for d in json.load(open(sys.argv[1]))]
@@ -348,11 +423,10 @@ pass "a takeover arriving inside the grace window joins the same wake"
 BOUND1="$TMP_ROOT/bound-1.json"
 BOUND2="$TMP_ROOT/bound-2.json"
 queue_item bound-first
-( sleep 1.5; queue_item bound-late ) &
-BOUND_BG=$!
+queue_item_later 1.5 bound-late
 FM_HOME="$HOME_A" FM_RIVER_WAIT=5 FM_RIVER_BURST_GRACE_MS=100 "$ADAPTER" poll > "$BOUND1"
 expect_code 0 "$?" "a poll with a short grace window"
-wait "$BOUND_BG" 2>/dev/null || true
+wait "$LATER_PID" 2>/dev/null || true
 FM_HOME="$HOME_A" FM_RIVER_WAIT=5 FM_RIVER_BURST_GRACE_MS=100 "$ADAPTER" poll > "$BOUND2"
 expect_code 0 "$?" "the poll that collects the late arrival"
 python3 - "$BOUND1" "$BOUND2" <<'PY' || fail "the grace window did not bound how long the first capture stayed open"
@@ -369,11 +443,11 @@ pass "an arrival past the grace window becomes its own capture, so the window st
 # are pinned, so the drain must stop mid-burst. Every queued item must come
 # back exactly once across the two captures, and each captured array must fit
 # the budget.
-pad_item() {  # <phrase> <id> -> one 160-character contract-shaped JSON object
-  python3 - "$1" "$2" <<'PY'
+pad_item() {  # <phrase> <id> [size=160] -> one contract-shaped JSON object of exactly that many characters
+  python3 - "$1" "$2" "${3:-160}" <<'PY'
 import json, sys
 obj = {"id": sys.argv[2], "phrase": sys.argv[1], "pad": ""}
-obj["pad"] = "x" * (160 - len(json.dumps(obj, separators=(",", ":"))))
+obj["pad"] = "x" * (int(sys.argv[3]) - len(json.dumps(obj, separators=(",", ":"))))
 print(json.dumps(obj, separators=(",", ":")))
 PY
 }
@@ -401,16 +475,52 @@ assert len(set(ids)) == 4, ids
 PY
 pass "an over-budget burst splits into two captures, every item delivered exactly once"
 
+# --- an oversized item is retired unread and reported, never a wedge ---------
+# The per-item read cap is shrunk through its env override and one item is
+# padded past it. That item can never be delivered, but nothing retires it
+# except an ack, so the poll must learn its id anyway, retire it, and report it
+# by id and size; the ordinary item queued behind it must then come through on
+# the following poll instead of being blocked forever.
+next_id; ID_BIG=$LAST_ID
+BIG_JSON=$(pad_item too-big-to-read "$ID_BIG" 600)
+queue_raw "$BIG_JSON"
+queue_item behind-the-big-one; ID_SMALL=$LAST_ID
+: > "$REQLOG"
+BIG1="$TMP_ROOT/big-1.json"
+BIG2="$TMP_ROOT/big-2.json"
+FM_HOME="$HOME_A" FM_RIVER_WAIT=5 FM_RIVER_MAX_BYTES=300 "$ADAPTER" poll > "$BIG1"
+expect_code 0 "$?" "a poll meeting an oversized item at the head of the queue"
+CLASSIFIED=$(river "$HOME_A" classify "$BIG1")
+[ "$CLASSIFIED" = service-error ] \
+  || fail "an oversized item classified as '$CLASSIFIED' instead of an error report: $(cat "$BIG1")"
+python3 - "$BIG1" "$ID_BIG" "$(( ${#BIG_JSON} + 1 ))" <<'PY' || fail "the oversized item was not reported by id and size: $(cat "$BIG1")"
+import json, sys
+obj = json.load(open(sys.argv[1]))
+assert obj["item_id"] == sys.argv[2], obj
+assert obj["bytes"] == int(sys.argv[3]), obj
+assert obj["limit"] == 300, obj
+assert "too-big-to-read" not in json.dumps(obj), obj
+PY
+[ "$(grep -c "^ack $ID_BIG retired" "$REQLOG")" -eq 1 ] \
+  || fail "the oversized item was reported but not retired"
+FM_HOME="$HOME_A" FM_RIVER_WAIT=5 FM_RIVER_MAX_BYTES=300 "$ADAPTER" poll > "$BIG2"
+expect_code 0 "$?" "the poll behind the retired oversized item"
+python3 - "$BIG2" "$ID_SMALL" <<'PY' || fail "the item queued behind the oversized one was not delivered"
+import json, sys
+ids = [d["id"] for d in json.load(open(sys.argv[1]))]
+assert ids == [sys.argv[2]], ids
+PY
+pass "an oversized item is retired unread and reported by id and size, and the queue advances past it"
+
 # --- 204 re-poll ------------------------------------------------------------
 # Nothing is queued, so the first request times out with 204; the adapter must
 # poll again rather than exit, and return the item that arrives afterwards.
 : > "$AUTHLOG"
 OUT2="$TMP_ROOT/repoll.json"
-( sleep 1.5; queue_item late ) &
-LATE=$!
+queue_item_later 1.5 late
 FM_HOME="$HOME_A" FM_RIVER_WAIT=1 "$ADAPTER" poll > "$OUT2"
 expect_code 0 "$?" "a poll that had to wait through an empty window"
-wait "$LATE" 2>/dev/null || true
+wait "$LATER_PID" 2>/dev/null || true
 assert_grep '"late"' "$OUT2" "the adapter did not return the item that arrived after an empty window"
 [ "$(grep -c . "$AUTHLOG")" -ge 2 ] || fail "the adapter did not re-poll after a 204 timeout"
 pass "an empty long-poll window re-polls instead of ending the source"
@@ -528,6 +638,7 @@ assert_contains "$help_out" "ALWAYS exits non-zero" "the published help does not
 assert_contains "$help_out" "config/river-service" "the published help does not name the per-home configuration"
 assert_contains "$help_out" "PEEK UNTIL ACK" "the published help does not state the peek-until-ack service contract"
 assert_contains "$help_out" "AT LEAST ONCE" "the published help does not state the at-least-once boundary"
+assert_contains "$help_out" "OVERSIZED ITEM" "the published help does not state what becomes of an oversized item"
 assert_contains "$help_out" "FM_RIVER_BURST_GRACE_MS" "the published help does not document the grace window"
 pass "the published interface owns the adapter's mechanics"
 

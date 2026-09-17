@@ -52,15 +52,26 @@
 # how a burst of three phrases once became one result holding sixty-four copies
 # of the first; and a continuous source that never acked would re-capture and
 # re-wake on that item forever. The ack is idempotent by the service's own
-# contract, so a retried or duplicated ack is an ordinary success, never an error.
+# contract, so a retried or duplicated ack is an ordinary success, never an
+# error, and an ack that fails is retried up to two more times,
+# FM_RIVER_RETRY_BACKOFF seconds apart, before it counts as failed.
 #
-# AT LEAST ONCE, NOT EXACTLY ONCE. The gap between capturing an item and its ack
-# landing is real. If this poll dies in that gap, or if the ack itself fails, the
-# service still holds the item and serves it again on the next poll. The item is
-# emitted either way, because it was already captured: a possible duplicate is
-# the price of never dropping a takeover, and it is the same at-least-once
-# boundary the runner already documents. An ack failure also ENDS the drain,
-# because every further read would return that same unretired item.
+# AT LEAST ONCE is the SERVICE's side of this handoff: an item is retired only
+# by an ack that lands, so an item this poll read but did not manage to ack is
+# still held by the service and is served again, to this poll or to the next
+# one. Such an item is never emitted: it is delayed until an ack lands rather
+# than delivered twice. When the ack of the FIRST item of a burst still fails
+# after its retries, the failure is handled like any other outage below: the
+# poll backs off and re-reads instead of emitting, so a service that serves
+# items but refuses acks is reported once per FM_RIVER_UNREACHABLE_WINDOW
+# rather than waking firstmate on the same unretired item every cycle. When the
+# ack of a LATER item of the burst fails, the drain ends and the items already
+# acked are emitted; the next poll meets the unacked item at the head of the
+# queue. The gap runs the other way too: an item whose ack landed but that this
+# poll had not yet emitted when it died is retired service-side and is not
+# delivered. Neither this adapter nor the runner is lossless; the runner's own
+# durability boundary is documented in bin/fm-procevent.sh and is not restated
+# here.
 #
 # BURST BATCHING is load-bearing. Several phrases spoken in one burst must
 # produce ONE captured result and therefore ONE wake, not one wake per phrase.
@@ -76,8 +87,19 @@
 # result open indefinitely; the remainder is still queued and returns at once.
 # Only the zero-wait drain calls are gated by the byte budget: the first item of
 # a burst is already captured and acked by the time its size is known, so it is
-# always emitted even if it alone exceeds the budget, which keeps an oversized
-# item from wedging the source.
+# always emitted even if it alone exceeds the budget.
+#
+# AN OVERSIZED ITEM IS RETIRED UNREAD, so it cannot wedge the queue. A read is
+# capped at FM_RIVER_MAX_BYTES, and curl refuses an item over that cap before
+# its body, and so its id, is seen. Nothing but an ack retires it, so left alone
+# it would sit at the head of the queue and block every takeover behind it for
+# good. So the poll reads that head item again, uncapped but cut to a short
+# prefix, which by the contract's key order carries the id; acks it; and emits
+# {"error": "oversized item retired unread", "item_id": ..., "bytes": ...} in
+# place of the item, so firstmate learns that a takeover was dropped for size
+# instead of never hearing of it. Its text is never delivered. If even that
+# prefix yields no id to ack, the condition is reported through the outage path
+# below rather than retried in a tight loop.
 #
 # OUTAGES ARE LOUD. A connection failure, an unreadable configuration, or a
 # rejected credential is retried with backoff, and every retry is shell work with
@@ -91,12 +113,14 @@
 #   FM_RIVER_WAIT (280)                 long-poll wait seconds per request
 #   FM_RIVER_UNREACHABLE_WINDOW (1800)  seconds of continuous failure before the
 #                                       poll reports the outage as a result
-#   FM_RIVER_RETRY_BACKOFF (5)          first retry sleep, doubling to 60
+#   FM_RIVER_RETRY_BACKOFF (5)          first retry sleep, doubling to 60; also
+#                                       the pause between retries of one ack
 #   FM_RIVER_MAX_BURST (64)             items drained into one result
 #   FM_RIVER_BURST_GRACE_MS (500)       idle milliseconds the drain keeps reading
 #                                       after the queue empties, before emitting;
 #                                       0 emits as soon as the queue reads empty
-#   FM_RIVER_MAX_BYTES (262144)         bytes accepted for one item
+#   FM_RIVER_MAX_BYTES (262144)         bytes accepted for one item; a bigger
+#                                       item is retired unread and reported
 #   FM_RIVER_MAX_BATCH_BYTES (1048576)  byte budget for one emitted batch,
 #                                       counted over the whole emitted array
 #                                       including the JSON framing this adapter
@@ -108,10 +132,8 @@
 #                                       a batch this poll emits is never
 #                                       truncated in the captured result.
 #
-# Durability boundary: see bin/fm-procevent.sh, and the at-least-once paragraph
-# above for this adapter's own side of it. An item this poll captured but did not
-# manage to ack is still held by the service and is served again, so a takeover
-# survives a crash of this poll and may be delivered twice.
+# Durability boundary: this adapter's own side is the AT LEAST ONCE paragraph
+# above; the runner's side is documented in bin/fm-procevent.sh.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -137,8 +159,17 @@ GRACE_TICK_MS=100
 # no long-poll semantics, so this only has to be generous enough for a stall.
 ACK_TIMEOUT=20
 
+# Attempts made to retire one item before its ack counts as failed. The ack is
+# idempotent, so every retry is safe; the bound keeps a dead ack endpoint from
+# holding a captured burst open indefinitely.
+ACK_ATTEMPTS=3
+
+# Bytes read of an item that exceeded FM_RIVER_MAX_BYTES, just enough to carry
+# its id (the object's first member by contract) so it can be retired.
+OVERSIZED_PROBE_BYTES=4096
+
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,114p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,136p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 require_number() {  # <name> <value>
   case "$2" in ''|*[!0-9]*) die "$1 must be a nonnegative integer: $2" ;; esac
@@ -265,23 +296,63 @@ item_id_raw() {  # <item-file>
   ' < "$1"
 }
 
+ACK_ERROR=
+
 # Retire one captured item, so the next read returns the NEXT item rather than
 # this one again. Idempotent by the service's contract: a repeat of an ack that
-# already landed is a success, which is why a lost ack response is safe to let
-# the next poll resolve. Non-zero means the item is still pending service-side.
+# already landed is a success, which is why a lost ack response is simply
+# retried here. Non-zero means the item is still pending service-side after
+# ACK_ATTEMPTS tries, with the reason left in ACK_ERROR (a variable, not stdout,
+# for the same subshell reason load_config gives).
 river_ack() {  # <item-file> <ack-body-file>
-  local id code
-  id=$(item_id_raw "$1") || return 1
-  [ -n "$id" ] || return 1
-  printf '{"id": "%s"}' "$id" > "$2" 2>/dev/null || return 1
-  code=$(curl -s -o /dev/null -w '%{http_code}' \
+  local id code rc attempt=1
+  ACK_ERROR=
+  id=$(item_id_raw "$1")
+  if [ -z "$id" ]; then
+    ACK_ERROR="a captured item carried no usable id, so it cannot be retired"
+    return 1
+  fi
+  if ! printf '{"id": "%s"}' "$id" > "$2" 2>/dev/null; then
+    ACK_ERROR="cannot stage the ack body for item $id"
+    return 1
+  fi
+  while :; do
+    code=$(curl -s -o /dev/null -w '%{http_code}' \
+      -m "$ACK_TIMEOUT" \
+      -H "@$AUTH_FILE" \
+      -H 'Content-Type: application/json' \
+      --data-binary "@$2" \
+      "$BASE/ack" 2>/dev/null); rc=$?
+    if [ "$rc" -eq 0 ] && [ "$code" = 200 ]; then
+      return 0
+    fi
+    if [ "$rc" -ne 0 ]; then
+      ACK_ERROR="the ack of item $id could not reach the River service (curl exit $rc)"
+    else
+      ACK_ERROR="the River service answered HTTP $code to the ack of item $id"
+    fi
+    [ "$attempt" -lt "$ACK_ATTEMPTS" ] || return 1
+    attempt=$((attempt + 1))
+    [ "$RETRY_BACKOFF" -eq 0 ] || sleep "$RETRY_BACKOFF"
+  done
+}
+
+# Read the head item again with no size cap, keeping only a short prefix so its
+# id can be extracted and acked. The response headers land in <header-file> so
+# the item's declared size can be reported.
+oversized_probe() {  # <prefix-file> <header-file>
+  : > "$1"
+  : > "$2"
+  curl -s -D "$2" -o - \
     -m "$ACK_TIMEOUT" \
     -H "@$AUTH_FILE" \
-    -H 'Content-Type: application/json' \
-    --data-binary "@$2" \
-    "$BASE/ack" 2>/dev/null) || return 1
-  [ "$code" = 200 ] || return 1
-  return 0
+    -H 'Accept: application/json' \
+    "$BASE/next?wait=0" 2>/dev/null | head -c "$OVERSIZED_PROBE_BYTES" > "$1"
+}
+
+# The declared body size from a saved response header block, or nothing.
+response_length() {  # <header-file>
+  tr -d '\r' < "$1" | awk 'tolower($1) == "content-length:" { n = $2 } END { if (n != "") print n }'
 }
 
 # Emit one JSON array of the drained item bodies, exactly one captured result for
@@ -300,6 +371,16 @@ emit_items() {  # <item-file>...
 emit_service_error() {  # <since-iso8601> <detail>
   printf '{"error": "service unreachable since %s", "source": "%s", "detail": "%s"}\n' \
     "$1" "$SOURCE_ID" "$(printf '%s' "$2" | tr -d '\042\134' | tr -d '\000-\037')"
+}
+
+# The result emitted in place of an item too big to read: its id (already in
+# raw JSON string form) and its declared size, or null when the service sent no
+# Content-Length.
+emit_oversized_error() {  # <item-id-raw> <bytes>
+  local bytes=$2
+  case "$bytes" in ''|*[!0-9]*) bytes=null ;; esac
+  printf '{"error": "oversized item retired unread", "source": "%s", "item_id": "%s", "bytes": %s, "limit": %s}\n' \
+    "$SOURCE_ID" "$1" "$bytes" "$MAX_BYTES"
 }
 
 cmd_poll() {
@@ -364,6 +445,18 @@ cmd_poll() {
       continue
     fi
     code=$(river_get "$WAIT" "$body"); rc=$?
+    if [ "$rc" -eq 63 ]; then
+      # The head item is over the read cap, and nothing but an ack retires it.
+      # Learn its id from a short uncapped prefix, retire it, and report it in
+      # place of delivering it, so the takeovers behind it are not blocked.
+      oversized_probe "$work/item.0" "$work/headers"
+      if river_ack "$work/item.0" "$work/ack"; then
+        emit_oversized_error "$(item_id_raw "$work/item.0")" "$(response_length "$work/headers")"
+        exit 0
+      fi
+      note_failure "an item over FM_RIVER_MAX_BYTES ($MAX_BYTES) heads the queue and could not be retired: $ACK_ERROR" || exit 0
+      continue
+    fi
     if [ "$rc" -ne 0 ]; then
       note_failure "the River service could not be reached (curl exit $rc)" || exit 0
       continue
@@ -388,38 +481,42 @@ cmd_poll() {
     # An item arrived: ack it, then burst-batch everything else already queued
     # with zero-wait calls, so one burst of speech is one wake. Every captured
     # item is acked before the next read, because an unacked item is simply
-    # served again. The drain only continues while even a maximum-size next item
-    # would still fit the batch byte budget, so nothing is taken that the emitted
-    # array cannot carry, and an ack failure ends the drain rather than letting
-    # it spin on an item the service still holds.
-    items=(); count=0; n=0
+    # served again, and an item joins the batch only once its ack has landed. A
+    # first item whose ack still fails after its retries is an outage: the poll
+    # backs off and re-reads rather than emitting an item the service will
+    # serve again on every cycle. The drain only continues while even a
+    # maximum-size next item would still fit the batch byte budget, so nothing
+    # is taken that the emitted array cannot carry, and an ack failure there
+    # ends the drain rather than letting it spin on an item the service still
+    # holds.
     cp -- "$body" "$work/item.0" || die "cannot stage the captured item"
-    items+=("$work/item.0")
-    count=1
-    batch_bytes=$((3 + $(wc -c < "$work/item.0")))
-    if river_ack "$work/item.0" "$work/ack"; then
-      grace_left=$BURST_GRACE_MS
-      while [ "$count" -lt "$MAX_BURST" ]; do
-        [ "$((batch_bytes + 1 + MAX_BYTES))" -le "$MAX_BATCH_BYTES" ] || break
-        code=$(river_get 0 "$body") || break
-        if [ "$code" = 200 ] && [ -s "$body" ]; then
-          n=$count
-          cp -- "$body" "$work/item.$n" || break
-          items+=("$work/item.$n")
-          count=$((count + 1))
-          batch_bytes=$((batch_bytes + 1 + $(wc -c < "$work/item.$n")))
-          river_ack "$work/item.$n" "$work/ack" || break
-          grace_left=$BURST_GRACE_MS
-          continue
-        fi
-        # Nothing pending. Linger for the rest of the grace window so a phrase
-        # spoken just behind this burst lands in the same wake; any other answer
-        # ends the drain and the batch is emitted as it stands.
-        [ "$code" = 200 ] || [ "$code" = 204 ] || break
-        [ "$grace_left" -gt 0 ] || break
-        grace_sleep
-      done
+    if ! river_ack "$work/item.0" "$work/ack"; then
+      note_failure "$ACK_ERROR" || exit 0
+      continue
     fi
+    items=("$work/item.0"); count=1; n=0
+    batch_bytes=$((3 + $(wc -c < "$work/item.0")))
+    grace_left=$BURST_GRACE_MS
+    while [ "$count" -lt "$MAX_BURST" ]; do
+      [ "$((batch_bytes + 1 + MAX_BYTES))" -le "$MAX_BATCH_BYTES" ] || break
+      code=$(river_get 0 "$body") || break
+      if [ "$code" = 200 ] && [ -s "$body" ]; then
+        n=$count
+        cp -- "$body" "$work/item.$n" || break
+        river_ack "$work/item.$n" "$work/ack" || break
+        items+=("$work/item.$n")
+        count=$((count + 1))
+        batch_bytes=$((batch_bytes + 1 + $(wc -c < "$work/item.$n")))
+        grace_left=$BURST_GRACE_MS
+        continue
+      fi
+      # Nothing pending. Linger for the rest of the grace window so a phrase
+      # spoken just behind this burst lands in the same wake; any other answer
+      # ends the drain and the batch is emitted as it stands.
+      [ "$code" = 200 ] || [ "$code" = 204 ] || break
+      [ "$grace_left" -gt 0 ] || break
+      grace_sleep
+    done
     emit_items "${items[@]}"
     exit 0
   done
