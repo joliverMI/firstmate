@@ -59,8 +59,9 @@
 # AT LEAST ONCE is the SERVICE's side of this handoff: an item is retired only
 # by an ack that lands, so an item this poll read but did not manage to ack is
 # still held by the service and is served again, to this poll or to the next
-# one. Such an item is never emitted: it is delayed until an ack lands rather
-# than delivered twice. When the ack of the FIRST item of a burst still fails
+# one. An item that cannot be acked is withheld and reported as an outage
+# naming its id and the length of its text, rather than delivered, so a
+# takeover is never delivered twice. When the ack of the FIRST item still fails
 # after its retries, the failure is handled like any other outage below: the
 # poll backs off and re-reads instead of emitting, so a service that serves
 # items but refuses acks is reported once per FM_RIVER_UNREACHABLE_WINDOW
@@ -169,7 +170,7 @@ ACK_ATTEMPTS=3
 OVERSIZED_PROBE_BYTES=4096
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,136p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,137p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 require_number() {  # <name> <value>
   case "$2" in ''|*[!0-9]*) die "$1 must be a nonnegative integer: $2" ;; esac
@@ -296,6 +297,34 @@ item_id_raw() {  # <item-file>
   ' < "$1"
 }
 
+# The length in characters of the item's "text" member, decoded, or nothing
+# when the item carries no such member. Only the length ever leaves this
+# function: an outage report must say how much was withheld, never what.
+item_text_length() {  # <item-file>
+  perl -e '
+    local $/;
+    my $text = <STDIN>;
+    $text = "" unless defined $text;
+    if ($text =~ /"text"\s*:\s*"((?:[^"\\]|\\.)*)"/) {
+      my $t = $1;
+      $t =~ s/\\u([0-9a-fA-F]{4})/chr(hex($1))/ge;
+      $t =~ s/\\(.)/$1/g;
+      print length($t);
+    }
+  ' < "$1"
+}
+
+# What an outage report says about an item this poll is holding back: which
+# item, by id, and how much text it carries, never the text itself.
+withheld_item_detail() {  # <item-file>
+  local id len
+  id=$(item_id_raw "$1")
+  len=$(item_text_length "$1")
+  if [ -n "$id" ]; then id="item $id"; else id="an item whose id could not be extracted"; fi
+  if [ -n "$len" ]; then len="text length $len"; else len="text length unknown"; fi
+  printf 'withholding %s (%s)' "$id" "$len"
+}
+
 ACK_ERROR=
 
 # Retire one captured item, so the next read returns the NEXT item rather than
@@ -355,6 +384,11 @@ response_length() {  # <header-file>
   tr -d '\r' < "$1" | awk 'tolower($1) == "content-length:" { n = $2 } END { if (n != "") print n }'
 }
 
+# The final HTTP status from a saved response header block, or nothing.
+response_status() {  # <header-file>
+  tr -d '\r' < "$1" | awk '$1 ~ /^HTTP\// { s = $2 } END { if (s != "") print s }'
+}
+
 # Emit one JSON array of the drained item bodies, exactly one captured result for
 # the whole burst.
 emit_items() {  # <item-file>...
@@ -404,6 +438,7 @@ cmd_poll() {
 
   local body="$work/body"
   local fail_since='' fail_since_iso='' backoff=$RETRY_BACKOFF code rc
+  local probe_status='' probe_length=''
   local items=() count=0 n=0 batch_bytes=0 grace_left=0
 
   # One failed attempt. Reports the outage as a result once the whole
@@ -450,8 +485,21 @@ cmd_poll() {
       # Learn its id from a short uncapped prefix, retire it, and report it in
       # place of delivering it, so the takeovers behind it are not blocked.
       oversized_probe "$work/item.0" "$work/headers"
+      probe_status=$(response_status "$work/headers")
+      probe_length=$(response_length "$work/headers")
+      case "$probe_status" in
+        200) ;;
+        204) clear_failure; continue ;;
+        *)
+          note_failure "the River service answered HTTP ${probe_status:-none} to the re-read of an item over FM_RIVER_MAX_BYTES ($MAX_BYTES)" || exit 0
+          continue
+          ;;
+      esac
+      if [ -n "$probe_length" ] && [ "$probe_length" -le "$MAX_BYTES" ]; then
+        continue
+      fi
       if river_ack "$work/item.0" "$work/ack"; then
-        emit_oversized_error "$(item_id_raw "$work/item.0")" "$(response_length "$work/headers")"
+        emit_oversized_error "$(item_id_raw "$work/item.0")" "$probe_length"
         exit 0
       fi
       note_failure "an item over FM_RIVER_MAX_BYTES ($MAX_BYTES) heads the queue and could not be retired: $ACK_ERROR" || exit 0
@@ -491,7 +539,7 @@ cmd_poll() {
     # holds.
     cp -- "$body" "$work/item.0" || die "cannot stage the captured item"
     if ! river_ack "$work/item.0" "$work/ack"; then
-      note_failure "$ACK_ERROR" || exit 0
+      note_failure "$ACK_ERROR; $(withheld_item_detail "$work/item.0")" || exit 0
       continue
     fi
     items=("$work/item.0"); count=1; n=0

@@ -231,7 +231,7 @@ queue_raw() {  # <complete json object>
 }
 
 item_json() {  # <phrase> <id> -> one contract-shaped item
-  printf '{"id": "%s", "phrase": "%s"}' "$2" "$1"
+  printf '{"id": "%s", "text": "%s"}' "$2" "$1"
 }
 
 queue_item() {  # <phrase> -> queues a contract-shaped item, setting LAST_ID
@@ -281,7 +281,7 @@ python3 - "$OUT" <<'PY' || fail "the burst was not emitted as one JSON array of 
 import json, sys
 data = json.load(open(sys.argv[1]))
 assert isinstance(data, list), data
-assert [d["phrase"] for d in data] == ["one", "two", "three"], data
+assert [d["text"] for d in data] == ["one", "two", "three"], data
 ids = [d["id"] for d in data]
 assert len(set(ids)) == 3, ids
 PY
@@ -331,7 +331,8 @@ pass "an acked takeover is never served again, so two successive polls share no 
 # unretired item on every watch cycle, which is the failure this adapter exists
 # to remove. After the unreachable window the outage is reported once, naming
 # the item, and the item stays pending service-side.
-queue_item ack-refused; ID_STUCK=$LAST_ID
+STUCK_TEXT="turn on the porch light please"
+queue_item "$STUCK_TEXT"; ID_STUCK=$LAST_ID
 queue_item behind-the-stuck-one; ID_BEHIND=$LAST_ID
 printf '%s\n' "$ID_STUCK" > "$ACKFAIL"
 : > "$REQLOG"
@@ -346,7 +347,14 @@ STUCK_ELAPSED=$((SECONDS - STUCK_START))
 CLASSIFIED=$(river "$HOME_A" classify "$STUCK1")
 [ "$CLASSIFIED" = service-error ] \
   || fail "a still-failing ack classified as '$CLASSIFIED' instead of an outage: $(cat "$STUCK1")"
-assert_grep "$ID_STUCK" "$STUCK1" "the outage result does not name the item that could not be retired"
+python3 - "$STUCK1" "$ID_STUCK" "${#STUCK_TEXT}" "$STUCK_TEXT" <<'PY' || fail "the outage result does not name the withheld item and its text length, or leaks its text: $(cat "$STUCK1")"
+import json, sys
+obj = json.load(open(sys.argv[1]))
+detail = obj["detail"]
+assert sys.argv[2] in detail, detail
+assert "text length %s" % sys.argv[3] in detail, detail
+assert sys.argv[4] not in json.dumps(obj), obj
+PY
 [ "$(grep -c "^next $ID_STUCK" "$REQLOG")" -ge 2 ] \
   || fail "the poll exited on the unacked item instead of re-reading it inside the same poll"
 [ "$(grep -c "^ack $ID_STUCK refused" "$REQLOG")" -ge 4 ] \
@@ -412,7 +420,7 @@ GRACE_ELAPSED=$((SECONDS - GRACE_START))
 wait "$LATER_PID" 2>/dev/null || true
 python3 - "$GRACE_OUT" <<'PY' || fail "the grace window did not batch the takeover that arrived just behind the first"
 import json, sys
-phrases = [d["phrase"] for d in json.load(open(sys.argv[1]))]
+phrases = [d["text"] for d in json.load(open(sys.argv[1]))]
 assert phrases == ["grace-first", "grace-second"], phrases
 PY
 [ "$GRACE_ELAPSED" -le 10 ] || fail "the graced poll ran for ${GRACE_ELAPSED}s, well past its window"
@@ -431,8 +439,8 @@ FM_HOME="$HOME_A" FM_RIVER_WAIT=5 FM_RIVER_BURST_GRACE_MS=100 "$ADAPTER" poll > 
 expect_code 0 "$?" "the poll that collects the late arrival"
 python3 - "$BOUND1" "$BOUND2" <<'PY' || fail "the grace window did not bound how long the first capture stayed open"
 import json, sys
-first = [d["phrase"] for d in json.load(open(sys.argv[1]))]
-second = [d["phrase"] for d in json.load(open(sys.argv[2]))]
+first = [d["text"] for d in json.load(open(sys.argv[1]))]
+second = [d["text"] for d in json.load(open(sys.argv[2]))]
 assert first == ["bound-first"], first
 assert second == ["bound-late"], second
 PY
@@ -446,7 +454,7 @@ pass "an arrival past the grace window becomes its own capture, so the window st
 pad_item() {  # <phrase> <id> [size=160] -> one contract-shaped JSON object of exactly that many characters
   python3 - "$1" "$2" "${3:-160}" <<'PY'
 import json, sys
-obj = {"id": sys.argv[2], "phrase": sys.argv[1], "pad": ""}
+obj = {"id": sys.argv[2], "text": sys.argv[1], "pad": ""}
 obj["pad"] = "x" * (int(sys.argv[3]) - len(json.dumps(obj, separators=(",", ":"))))
 print(json.dumps(obj, separators=(",", ":")))
 PY
@@ -468,7 +476,7 @@ first = json.load(open(sys.argv[1]))
 second = json.load(open(sys.argv[2]))
 assert isinstance(first, list) and isinstance(second, list)
 assert first and second, (first, second)
-phrases = [d["phrase"] for d in first + second]
+phrases = [d["text"] for d in first + second]
 assert sorted(phrases) == ["split-a", "split-b", "split-c", "split-d"], phrases
 ids = [d["id"] for d in first + second]
 assert len(set(ids)) == 4, ids
