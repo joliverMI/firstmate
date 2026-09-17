@@ -1,0 +1,49 @@
+=== BEFORE (adapter at base commit 847881e) ===
+queue: three phrases posted concurrently; /next peeks the head until it is acked
+poll exit: 0
+  items in capture : 64
+  distinct ids     : 1
+  turn on the porch light      x64
+  items still pending service-side after the poll: 3
+  ack requests seen by the service: 0
+
+=== AFTER (adapter at HEAD b83d235) ===
+poll exit: 0
+  items in capture : 3
+  distinct ids     : 3
+  turn on the porch light      x1
+  lock the front door          x1
+  what is the weather          x1
+  items still pending service-side after the poll: 0
+  service request log (ack lands before the next read):
+    next 00000000000000000001-0000000000000000000000009e3779b1
+    ack 00000000000000000001-0000000000000000000000009e3779b1 retired
+    next 00000000000000000002-0000000000000000000000013c6ef362
+    ack 00000000000000000002-0000000000000000000000013c6ef362 retired
+    next 00000000000000000003-000000000000000000000001daa66d13
+    ack 00000000000000000003-000000000000000000000001daa66d13 retired
+    next -
+    next -
+    next -
+    next -
+    next -
+    next -
+
+emitted capture after the fix:
+[{"id": "00000000000000000001-0000000000000000000000009e3779b1", "text": "turn on the porch light", "conversation_id": "c1", "device_id": "kitchen", "language": "en", "ts": 1789999999, "received_at": 1789999999},{"id": "00000000000000000002-0000000000000000000000013c6ef362", "text": "lock the front door", "conversation_id": "c1", "device_id": "kitchen", "language": "en", "ts": 1789999999, "received_at": 1789999999},{"id": "00000000000000000003-000000000000000000000001daa66d13", "text": "what is the weather", "conversation_id": "c1", "device_id": "kitchen", "language": "en", "ts": 1789999999, "received_at": 1789999999}]
+
+=== grace window: second phrase 0.4s behind the first joins the same wake ===
+poll wall time with the default 500ms grace: 999 ms
+[{"id": "00000000000000000011-0000000000000000000000000000000b", "text": "first phrase"},{"id": "00000000000000000012-0000000000000000000000000000000c", "text": "second phrase, a beat later"}]
+  items in capture : 2
+  distinct ids     : 2
+  first phrase                 x1
+  second phrase, a beat later  x1
+
+=== at-least-once: an item whose ack is refused is withheld, then re-served ===
+poll 1 (acks refused) emitted:
+{"error": "service unreachable since 2026-09-17T19:48:17Z", "source": "river-takeover-stream", "detail": "the River service answered HTTP 503 to the ack of item 00000000000000000021-00000000000000000000000000000015; withholding item 00000000000000000021-00000000000000000000000000000015 (text length 17)"}
+items still pending service-side: 1
+poll 2 (acks allowed) emitted:
+[{"id": "00000000000000000021-00000000000000000000000000000015", "text": "unackable for now"}]
+items still pending service-side: 0
