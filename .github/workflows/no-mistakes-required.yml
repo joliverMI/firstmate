@@ -47,7 +47,12 @@ jobs:
             parse_ok=0
             case "$body" in
               *"$prefix"*)
-                rest="${body#*"$prefix"}"
+                # Use the LAST occurrence of the marker, not the first: the PR
+                # body's own evidence sections may quote this script's source
+                # (including this literal prefix string), which would
+                # otherwise be mistaken for the real attestation comment that
+                # the pipeline always appends at the end of the body.
+                rest="${body##*"$prefix"}"
                 case "$rest" in
                   *"$suffix"*)
                     json="${rest%%"$suffix"*}"
