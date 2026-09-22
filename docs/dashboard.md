@@ -82,7 +82,7 @@ Every surface fails closed on an unknown captain rather than filing a card under
 
 ## Why the board owns its own records
 
-The dashboard does not read or scrape `data/backlog.md`, any secondmate's backlog, or decision-hold records, and it does not write to them either. It keeps its own SQLite tables, populated only through explicit `bin/fm-dashboard.sh` calls.
+The dashboard does not read or scrape `data/backlog.md`, any secondmate's backlog, or captain-hold state, and it does not write to them either. It keeps its own SQLite tables, populated only through explicit `bin/fm-dashboard.sh` calls.
 
 This was a deliberate choice among three options - read live from the backlog, own separate records, or both - made for two reasons:
 
