@@ -895,30 +895,13 @@ else
   # verdict preserves the loud refusal boundary. Only LOCAL targets reach this
   # block: remote text rides the inbox leg above, and remote --key exits
   # earlier.
+  # A remote target never reaches this block: TARGET_BACKEND=remote is only ever
+  # set together with TARGET_SELECTOR=1, which routes every remote text through
+  # the remote inbox leg above, and remote --key exits earlier. That leg is the
+  # single owner of remote delivery, including its own idempotent retry and its
+  # do-not-resend reporting, so no remote branch is kept here to duplicate it.
   send_rc=0
-  REMOTE_DELIVERY_NOTICE=0
-  if [ "$TARGET_BACKEND" = remote ]; then
-    # The remote leg is this same script running host-locally against the
-    # recorded Herdr pane (cmd_send in fm-remote-secondmate-control.sh), so its
-    # submit verification IS the local one, and fm-on/the remote worker relay
-    # its exit status unchanged. Exit 3 is the delivered-unconfirmed contract
-    # (see this script's header) crossing the ssh boundary: the text reached
-    # the live verified pane and Enter was sent; only the synchronous read-back
-    # stayed unconfirmed. The remote stderr is held back and replayed only for
-    # a real failure, so a delivered outcome does not surface the inner leg's
-    # diagnostics as alarm.
-    remote_err=$("$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" fm-remote-secondmate-control.sh send "$TARGET_REMOTE_ID" "$MESSAGE" < /dev/null 2>&1 >/dev/null) || send_rc=$?
-    if [ "$send_rc" -eq 0 ]; then
-      verdict=empty
-    elif [ "$send_rc" -eq 3 ]; then
-      verdict=empty
-      send_rc=0
-      REMOTE_DELIVERY_NOTICE=1
-    else
-      verdict=send-failed
-      [ -z "$remote_err" ] || printf '%s\n' "$remote_err" >&2
-    fi
-  elif verdict=$(fm_backend_send_text_submit "$TARGET_BACKEND" "$T" "$MESSAGE" "$retries" "$sleep_s" "$settle" "$EXPECTED_LABEL" "$TARGET_KIND"); then
+  if verdict=$(fm_backend_send_text_submit "$TARGET_BACKEND" "$T" "$MESSAGE" "$retries" "$sleep_s" "$settle" "$EXPECTED_LABEL" "$TARGET_KIND"); then
     :
   else
     send_rc=$?
