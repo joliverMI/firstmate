@@ -1,0 +1,14 @@
+=== bin/fm-test-run.sh --list --changed --base 1c35d3f ===
+
+--- BEFORE fix (bin/fm-test-run.sh checked out at d1ee926, the raw upstream merge) ---
+fm-test-run: no changed-test mapping for source path: .greptile/rules.md
+exit code: 2
+
+--- AFTER fix (bin/fm-test-run.sh at HEAD, 7647832) ---
+tests/fm-watch-arm.test.sh
+tests/fm-watch-checkpoint.test.sh
+tests/fm-watch-recovery-loop.test.sh
+tests/fm-watch-triage.test.sh
+tests/fm-watcher-lock.test.sh
+... (32 test scripts selected total)
+exit code: 0

@@ -1,0 +1,10 @@
+=== tests/fm-public-followup.test.sh ===
+
+--- BEFORE fix (test file at d1ee926, seeds fixed calendar dates 2026-08-28/2026-10-01) ---
+not ok - rechain failed: 
+exit code: 0
+
+--- AFTER fix (test file at HEAD, 7647832, anchored to run clock) ---
+exit code: 0
+ok assertions: 52
+no failures
