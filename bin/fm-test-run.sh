@@ -1154,7 +1154,9 @@ families_for_changed_path() {
     tests/*)
       printf '%s\n' "__unmapped__:$path"
       ;;
-    README.md|LICENSE|assets/*|docs/*|.gitignore)
+    README.md|LICENSE|assets/*|docs/*|.gitignore|.greptile/*)
+      # .greptile/ is reviewer-configuration prose with no runtime behaviour,
+      # so no suite consumes it and none is selected for it.
       ;;
     *)
       families_for_test_reference "$path" \
