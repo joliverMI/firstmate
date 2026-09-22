@@ -28,6 +28,15 @@ DASHLIB="$ROOT/bin/fm-dashboard-link-lib.sh"
 # shellcheck source=bin/fm-dashboard-link-lib.sh
 . "$DASHLIB"
 TMP_ROOT=$(fm_test_tmproot fm-dashboard-card-link)
+# A suite-wide fake tmux for the handoff cases' receiver wake. The spawn and
+# teardown cases prepend their own fakebin, so this one only answers where no
+# case brings its own.
+HANDOFF_FAKEBIN=$(make_fake_tmux "$TMP_ROOT/handoff-fake")
+PATH="$HANDOFF_FAKEBIN:$PATH"
+export PATH
+export FM_FAKE_TMUX_LOG="$TMP_ROOT/handoff-fake/tmux.log"
+export FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/handoff-fake/pane.txt"
+export FM_SEND_SETTLE=0 FM_SEND_SLEEP=0 FM_SEND_RETRIES=1
 
 # --- shared dashboard server -------------------------------------------------
 # One real server for the whole file, exactly like tests/fm-dashboard.test.sh.
@@ -991,6 +1000,11 @@ test_teardown_with_unreachable_dashboard_still_succeeds_and_warns() {
 # item itself is never rewritten, which these tests assert directly: the
 # secondmate's backlog must carry the item exactly as the main backlog held it.
 
+# Every handoff now also wakes the receiving endpoint, and a handoff whose
+# receiver cannot be woken fails with the delivered backlog intact
+# (bin/fm-backlog-handoff.sh). The card link these cases are about only happens
+# on a handoff that gets that far, so each fixture secondmate needs a recorded
+# endpoint the suite-wide fake tmux above answers for.
 setup_handoff_homes() {  # <main-home> <secondmate-home> [<secondmate-id>]
   local home=$1 sub=$2 id=${3:-design} sub_abs
   mkdir -p "$home/data" "$home/state"
@@ -998,6 +1012,17 @@ setup_handoff_homes() {  # <main-home> <secondmate-home> [<secondmate-id>]
   sub_abs=$(cd "$sub" && pwd -P)
   printf -- '- %s - feature work (home: %s; scope: feature work; projects: alpha; added 2026-07-09)\n' \
     "$id" "$sub_abs" > "$home/data/secondmates.md"
+  cat > "$home/state/$id.meta" <<EOF
+window=firstmate:fm-$id
+kind=secondmate
+harness=claude
+backend=tmux
+home=$sub_abs
+worktree=$sub_abs
+EOF
+  # The fake's live window inventory, which is what the recorded target above
+  # has to resolve against for the receiver doorbell to land.
+  export FM_FAKE_TMUX_WINDOW="firstmate:fm-$id"
 }
 
 test_handoff_links_card_and_advances_not_started_to_working() {
@@ -1976,7 +2001,8 @@ setup_remote_route() {
   cp "$ROOT/bin/fm-remote-entrypoint.sh" "$ROOT/bin/fm-remote-job-lib.sh" \
     "$ROOT/bin/fm-remote-job-worker.sh" "$ROOT/bin/fm-remote-file.sh" \
     "$ROOT/bin/fm-backlog-receive.sh" "$ROOT/bin/fm-tasks-axi-lib.sh" \
-    "$ROOT/bin/fm-wake-lib.sh" "$REMOTE_ROOT/bin/"
+    "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-remote-secondmate-control.sh" \
+    "$REMOTE_ROOT/bin/"
   ln -s "$(command -v tasks-axi)" "$REMOTE_ROOT/bin/tasks-axi"
   ln -s "$(command -v node)" "$REMOTE_ROOT/bin/node"
   chmod +x "$REMOTE_ROOT/bin"/*.sh
@@ -1985,6 +2011,21 @@ setup_remote_route() {
   git -C "$REMOTE_ROOT" commit -qm 'tracked remote fixture'
   printf 'fixture\n' > "$REMOTE_SM_HOME/AGENTS.md"
   printf '%s\n' "$REMOTE_SM" > "$REMOTE_SM_HOME/.fm-secondmate-home"
+  # The parent's own route record, which the receiver wake reads before it
+  # crosses to the host. The wake's remote leg itself is answered at the ssh
+  # boundary below: remote steering has its own end-to-end coverage in
+  # tests/fm-send-remote-delivery.test.sh, and re-staging that rig here would
+  # only re-test it around this suite's subject, the card link.
+  cat > "$REMOTE_PARENT/state/$REMOTE_SM.meta" <<EOF
+window=firstmate:fm-$REMOTE_SM
+kind=secondmate
+harness=claude
+backend=tmux
+remote_host=remote-mac
+remote_root=$REMOTE_ROOT
+home=$REMOTE_SM_HOME
+worktree=$REMOTE_SM_HOME
+EOF
   printf -- '- %s - remote delivery (host: remote-mac; root: %s; home: %s; scope: remote work; projects: alpha; added 2026-08-02)\n' \
     "$REMOTE_SM" "$REMOTE_ROOT" "$REMOTE_SM_HOME" > "$REMOTE_PARENT/data/secondmates.md"
   cat > "$REMOTE_FAKEBIN/fake-ssh" <<'SH'
@@ -2003,6 +2044,18 @@ shift 2
 [ "$host" = remote-mac ] || exit 91
 [ "$entry" = fm-remote-entrypoint.sh ] || exit 92
 [ "${FM_FAKE_SSH_MODE:-normal}" != unreachable ] || exit 255
+# The receiver wake's host-local leg. Answering it here keeps this suite's remote
+# fixture about the card link; leg exit 0 is what the parent reads as a durable
+# remote steering record. bin/fm-on.sh base64-encodes the argv it forwards, so
+# the decision has to read the decoded command, not the wire words.
+_argv=$(printf '%s' "${4:-}" | base64 -d 2>/dev/null || true)
+case "$_argv" in
+  *fm-remote-secondmate-control.sh*send*)
+    [ -z "${FM_FAKE_REMOTE_WAKE_LOG:-}" ] || printf '%s\n' "$_argv" >> "$FM_FAKE_REMOTE_WAKE_LOG"
+    [ "${FM_FAKE_REMOTE_WAKE_FAIL:-0}" = 1 ] && exit 1
+    exit 0
+    ;;
+esac
 exec "$FM_FAKE_REMOTE_ENTRYPOINT" "$@"
 SH
   chmod +x "$REMOTE_FAKEBIN/fake-ssh"
@@ -2082,40 +2135,56 @@ test_resume_pending_links_the_card_recorded_in_the_staged_outbox() {
 # item in the pending outbox by handing it off to an unreachable remote, the
 # state a failed delivery genuinely leaves behind.
 stage_unreachable_card_item() {
-  local key=$1 card=$2 rc
+  local key=$1 card=$2 rc outbox="$REMOTE_PARENT/data/handoff/$REMOTE_SM.outbox.md"
+  # From a clean route: a fresh handoff is no longer staged beside an
+  # undelivered batch, and an earlier case may deliberately leave one stuck, so
+  # a scenario that means to stage its own item must start without that residue.
+  rm -f -- "$outbox" "$REMOTE_PARENT/state/.backlog-handoff-$REMOTE_SM.wake-pending"
   write_remote_parent_backlog "- [ ] $key - staged before the remote came back (repo: alpha)"
   FM_FAKE_SSH_MODE=unreachable run_remote_handoff "$REMOTE_SM" "$key" --card "$card" >/dev/null && rc=0 || rc=$?
   [ "$rc" -ne 0 ] || fail "handoff to an unreachable remote claimed success"
-  assert_present "$REMOTE_PARENT/data/handoff/$REMOTE_SM.outbox.md" "the unreachable handoff lost its outbox"
+  assert_present "$outbox" "the unreachable handoff lost its outbox"
+  assert_grep "$key" "$outbox" "the unreachable handoff did not stage its own item"
 }
 
 # The remote twin of the non-empty-destination case: staging into an outbox
 # that already holds an item is the shape a body-rewriting card store failed
 # in, and a card lost there can never be recovered once delivery deletes the
 # outbox.
-test_remote_handoff_into_a_non_empty_outbox_links_both_cards() {
+# A fresh handoff is no longer staged beside an undelivered batch: the older
+# batch's receipt, receiver wake and cleanup finish first, and while the remote
+# is unreachable that means the new item stays dispatchable in main
+# (bin/fm-backlog-handoff.sh). Neither card may be lost across that refusal -
+# the one still staged, nor the one whose item never moved - and both must link
+# once the remote is back.
+test_remote_handoff_refusing_to_stage_beside_an_undelivered_batch_loses_no_card() {
   local first second out
   first=$(add_card "Non-empty outbox first")
   second=$(add_card "Non-empty outbox second")
   stage_unreachable_card_item remote-item-r7 "$first"
 
-  write_remote_parent_backlog '- [ ] remote-item-r8 - staged beside an item already in the outbox (repo: alpha)'
-  out=$(FM_FAKE_SSH_MODE=unreachable run_remote_handoff "$REMOTE_SM" remote-item-r8 --card "$second") || true
+  write_remote_parent_backlog '- [ ] remote-item-r8 - offered while the older batch is still undelivered (repo: alpha)'
+  out=$(FM_FAKE_SSH_MODE=unreachable run_remote_handoff "$REMOTE_SM" remote-item-r8 --card "$second") && \
+    fail "staging beside an undelivered batch claimed success: $out"
   assert_grep 'remote-item-r7' "$REMOTE_PARENT/data/handoff/$REMOTE_SM.outbox.md" "the outbox lost its first item"
-  assert_grep 'remote-item-r8' "$REMOTE_PARENT/data/handoff/$REMOTE_SM.outbox.md" "the second item was not staged"
+  assert_not_contains "$(cat "$REMOTE_PARENT/data/handoff/$REMOTE_SM.outbox.md")" 'remote-item-r8' \
+    "the refused item was staged into the undelivered batch anyway"
+  assert_grep 'remote-item-r8' "$REMOTE_PARENT/data/backlog.md" "the refused item was not left dispatchable in main"
 
-  out=$(run_remote_handoff --resume-pending)
-  expect_code 0 "$?" "resuming the two-item outbox should succeed" "$out"
+  # With the remote back, the same command completes the older batch and stages
+  # and delivers the refused item, and both cards land.
+  out=$(run_remote_handoff "$REMOTE_SM" remote-item-r8 --card "$second")
+  expect_code 0 "$?" "the retry once the remote is back should succeed" "$out"
   assert_grep 'remote-item-r7' "$REMOTE_SM_HOME/data/backlog.md" "the first item was not delivered"
   assert_grep 'remote-item-r8' "$REMOTE_SM_HOME/data/backlog.md" "the second item was not delivered"
 
   [ "$(card_field "$first" backlog_ref)" = "$REMOTE_SM:remote-item-r7" ] \
     || fail "the card staged first was not linked"
   [ "$(card_field "$second" backlog_ref)" = "$REMOTE_SM:remote-item-r8" ] \
-    || fail "the card staged into an already-occupied outbox was not linked"
+    || fail "the card whose staging was first refused was not linked on the retry"
   [ "$(card_status "$first")" = working ] || fail "the first card never advanced to working"
   [ "$(card_status "$second")" = working ] || fail "the second card never advanced to working"
-  pass "staging into an outbox that already holds an item records and links both cards"
+  pass "a refusal to stage beside an undelivered batch loses neither card, and both link on the retry"
 }
 
 # Regression: an outbox is transferred and deleted as a WHOLE, so a later
@@ -2333,7 +2402,7 @@ if command -v tasks-axi >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
   setup_remote_route
   test_remote_handoff_links_card_only_after_confirmed_delivery
   test_resume_pending_links_the_card_recorded_in_the_staged_outbox
-  test_remote_handoff_into_a_non_empty_outbox_links_both_cards
+  test_remote_handoff_refusing_to_stage_beside_an_undelivered_batch_loses_no_card
   test_remote_handoff_links_every_card_its_delivery_lands
   test_card_less_remote_handoff_completes_a_link_its_delivery_lands
   test_resume_pending_links_a_landed_pair_while_a_later_delivery_is_still_stuck
