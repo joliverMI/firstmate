@@ -160,6 +160,7 @@ family_for_basename() {
     fm-session-lock-ancestry.test.sh|fm-cursor-primary.test.sh|\
     fm-supervision-events.test.sh|fm-turnend-guard.test.sh|fm-wake-daemon-lifecycle-e2e.test.sh|\
     fm-wake-drain-unread-status.test.sh|\
+    fm-tool-update-check.test.sh|\
     fm-wake-queue.test.sh|fm-watch-arm.test.sh|fm-watch-checkpoint.test.sh|fm-watch-recovery-loop.test.sh|\
     fm-watch-triage.test.sh|\
     fm-watcher-lock.test.sh|fm-inactive-reconcile.test.sh)
@@ -504,6 +505,7 @@ tests/fm-teardown.test.sh 75453
 tests/fm-test-fixture-cleanup.test.sh 1032
 tests/fm-test-isolation-proof.test.sh 531
 tests/fm-tmux-agent-liveness.test.sh 1411
+tests/fm-tool-update-check.test.sh 12846
 tests/fm-trace-context-lib.test.sh 164
 tests/fm-trace-context-spawn.test.sh 36324
 tests/fm-turnend-guard.test.sh 16348
@@ -1152,7 +1154,9 @@ families_for_changed_path() {
     tests/*)
       printf '%s\n' "__unmapped__:$path"
       ;;
-    README.md|LICENSE|assets/*|docs/*|.gitignore)
+    README.md|LICENSE|assets/*|docs/*|.gitignore|.greptile/*)
+      # .greptile/ is reviewer-configuration prose with no runtime behaviour,
+      # so no suite consumes it and none is selected for it.
       ;;
     *)
       families_for_test_reference "$path" \

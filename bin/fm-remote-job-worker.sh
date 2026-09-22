@@ -291,6 +291,15 @@ worker_stop_active_execution() {
   WORKER_ACTIVE_JOB=
 }
 
+# Ignore, rather than restore the default disposition for, the signals this
+# handler answers. A replacement stops a Linux worker by signalling its whole
+# isolated group, and the supervisor in that group forwards a second stop signal
+# to this same serving child, so a repeat is the normal case and not an
+# exception. Restoring the default let that second signal kill the shutdown part
+# way through, which left the ownership lock behind holding a half-written temp
+# file that no later worker could clear, so every replacement then failed to
+# report ready. A shutdown that hangs is still stopped: the caller escalates to
+# KILL, which no disposition can block.
 worker_shutdown() {
   # Ignore repeats while this shutdown runs: a group TERM reaches the restart
   # supervisor and this child together, and the supervisor's own shutdown then

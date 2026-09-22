@@ -66,7 +66,10 @@ Each shard is still strictly serial in itself, and separate runners mean no two 
 Assignment is longest-processing-time bin packing over per-script duration hints embedded in `bin/fm-test-run.sh`.
 The hints came from PR #43 CI run [35765705010](https://github.com/joliverMI/firstmate/actions/runs/35765705010) on 2026-09-22, where the lane ran 128 scripts in 2811359 ms of serial work (the `portable-serial-1of4` shard timed out mid-run on stale/missing hints, so `tests/fm-backend-tmux-smoke.test.sh` was measured locally instead of from that shard's timing artifact).
 A script with no hint gets the conservative `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` default.
+`tests/fm-tool-update-check.test.sh` arrived with the upstream merge after that run, so its 12846 ms hint is upstream's own measurement, and `tests/fm-voice-relay.test.sh` arrived unmeasured and carries the default until the next refresh.
 Hints only affect balance: the coverage guard keeps the partition complete and disjoint whatever they say, so a stale hint costs a slower shard rather than lost coverage.
+Balance is still worth keeping current, because enough unmeasured scripts let one shard carry more than twice another shard's real work and reach the job cap while another runner sits idle.
+Refresh the hints whenever the serial lane gains scripts, rather than waiting for a shard to time out.
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|

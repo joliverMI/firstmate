@@ -1792,6 +1792,23 @@ const hooks = await mod.FmPrimaryWatchArm({
   directory: process.env.WORKTREE,
   worktree: process.env.WORKTREE,
 });
+const event = { event: { type: "session.idle", properties: { sessionID: "session-test" } } };
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
+await hooks.event(event);
+// The hook starts its attempt without awaiting it, and the plugin answers a
+// second attempt from the one already in flight. Join that attempt through the
+// coordinator rather than waiting a fixed span: refusing an unowned lock walks
+// git and ps probes that can outlast any such span, and the owned-lock event
+// below would then be answered from the refusal instead of arming.
+const refusal = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+if (refusal !== "read-only") {
+  console.error(`expected a read-only refusal without the session lock, got ${refusal}`);
+  process.exit(1);
+}
+if (existsSync(process.env.FM_ARM_LOG)) {
+  console.error("watch arm ran without owning the session lock");
+  process.exit(1);
+}
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
 const markerLogged = () => existsSync(process.env.FM_ARM_LOG)
