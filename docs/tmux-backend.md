@@ -89,7 +89,8 @@ The supervisor guard selects only the detected primary harness's signature rathe
 It types a message once and retries Enter only until the composer clears.
 Only a proven empty composer is a positive delivery acknowledgement.
 Text left in established structure remains `pending`, text in ambiguous structure remains unproven, and unreadable or unsafe state remains unknown.
-`fm-send.sh` never retypes or assumes a confirmed submit for an unconfirmed verdict; its header owns the distinct delivered-unconfirmed exit status and operator response.
+An ordinary local `fm-send.sh` text steer and every remote text steer no longer ride this verified submit at all: they become durable steering-inbox records plus best-effort constant doorbell lines (`bin/fm-task-inbox-lib.sh`).
+The verdicts above are delivery-critical only for the local typed plane - harness-native invocations and explicit backend targets - where `fm-send.sh` still never retypes or assumes a confirmed submit for an unconfirmed verdict; its header owns the distinct delivered-unconfirmed exit status and operator response.
 
 Crew messaging, window destruction, and the recovery-grade agent-state read are all delivered only to an exactly resolved endpoint.
 tmux resolves a bare `session:window` target by prefix, so the target of a destroyed window is answered by any live window whose name merely extends it: with `sess:fm-1` gone and `sess:fm-10` live, an unpinned `send-keys -t sess:fm-1` delivers into `fm-10`'s pane, and prefix-colliding task ids are routine.
