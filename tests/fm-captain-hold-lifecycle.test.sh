@@ -972,7 +972,33 @@ case "${1:-}" in
     for a in "$@"; do case "$a" in *cursor_y*) printf '1\n'; exit 0 ;; esac; done
     printf 'fakepane\n'; exit 0 ;;
   capture-pane) printf '╭────╮\n│    │\n╰────╯\n'; exit 0 ;;
-  list-windows) exit 0 ;;
+  list-windows)
+    # The recorded-target send resolves through an exact-NAME match: it asks
+    # -t "=<session>" for '#{window_id} #{window_name}' and compares the NAME
+    # half before addressing the ID half. Model "the recorded task endpoints
+    # are live" from the home's meta records, pairing each name with a
+    # synthetic @N id that is deliberately NOT the name.
+    fm_fake_ses=
+    fm_fake_prev=
+    fm_fake_fmt=name
+    for fm_fake_arg in "$@"; do
+      [ "$fm_fake_prev" = -t ] && fm_fake_ses=${fm_fake_arg#=}
+      fm_fake_prev=$fm_fake_arg
+      case "$fm_fake_arg" in *'#{window_id}'*) fm_fake_fmt=id ;; esac
+    done
+    [ "$fm_fake_fmt" = id ] || exit 0
+    fm_fake_ses=${fm_fake_ses%%:*}
+    fm_fake_n=0
+    for fm_fake_meta in "${FM_STATE_OVERRIDE:-${FM_HOME:-/nonexistent}/state}"/*.meta; do
+      [ -f "$fm_fake_meta" ] || continue
+      fm_fake_win=$(sed -n 's/^window=//p' "$fm_fake_meta" | head -1)
+      case "$fm_fake_win" in "$fm_fake_ses":*) ;; *) continue ;; esac
+      fm_fake_win=${fm_fake_win#*:}
+      case "$fm_fake_win" in *:*|'') continue ;; esac
+      fm_fake_n=$((fm_fake_n + 1))
+      printf '@%s %s\n' "$fm_fake_n" "$fm_fake_win"
+    done
+    exit 0 ;;
 esac
 exit 0
 SH
