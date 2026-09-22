@@ -128,7 +128,7 @@ seed_commitment() {
 
   tasks_in "$home" public-followup add "$obligation" \
     --request-context-file "$home/request.json" --purpose promised-final \
-    --expected-final-file "$home/expected.json" --expires-at 2026-10-01T00:00:00Z >/dev/null \
+    --expected-final-file "$home/expected.json" --expires-at "$SEED_COMMITMENT_EXPIRES_AT" >/dev/null \
     || fail "could not create the public commitment"
   tasks_in "$home" public-followup bind-work "$obligation" \
     --relation-file "$home/relation.json" >/dev/null \
@@ -166,6 +166,11 @@ REPRO_RECEIVED_AT=$(repro_iso_utc $(( REPRO_FOLLOWUP_EXPIRES_EPOCH - 7 * 24 * 36
 REPRO_FOLLOWUP_EXPIRES_AT=$(repro_iso_utc "$REPRO_FOLLOWUP_EXPIRES_EPOCH")
 # Upstream held the commitment's own expiry 34 days past the thread window.
 REPRO_COMMITMENT_EXPIRES_AT=$(repro_iso_utc $(( REPRO_FOLLOWUP_EXPIRES_EPOCH + 34 * 24 * 3600 )))
+
+# seed_commitment's obligation expiry was a fixed calendar date that silently
+# rots into the past and turns the production unreachable-thread guard into a
+# spurious test failure. Anchor it to the run's own clock instead.
+SEED_COMMITMENT_EXPIRES_AT=$(repro_iso_utc $(( $(date -u +%s) + 30 * 24 * 3600 )))
 
 # The pi-rearm shape: a report-ready promised-final bound to a secondmate.
 seed_repro_commitment() {   # <home> <obligation> <request> <work-home> <work-id>
