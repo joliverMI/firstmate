@@ -1120,6 +1120,12 @@ families_for_changed_path() {
     .agents/skills/*/SKILL.md)
       printf '%s\n' pure-contract-unit
       ;;
+    skills/*/SKILL.md)
+      # The public installer-facing skills. No suite loads them the way the
+      # internal ones are loaded, but they are classified prose, so the
+      # documentation-audience check in this family is what consumes them.
+      printf '%s\n' pure-contract-unit
+      ;;
     .github/workflows/ci.yml|.no-mistakes.yaml)
       printf '%s\n' pure-contract-unit
       printf '%s\n' real-herdr-gated
