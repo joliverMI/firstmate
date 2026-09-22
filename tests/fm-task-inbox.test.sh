@@ -85,7 +85,36 @@ case "${1:-}" in
       printf '╭────╮\n│    │\n╰────╯\n'
     fi
     exit 0 ;;
-  list-windows) exit 0 ;;
+  list-windows)
+    # The exact-NAME resolver behind every recorded-target send asks
+    # `-t "=<session>"` for '#{window_id} #{window_name}' and then addresses the
+    # ID half (bin/backends/tmux.sh fm_backend_tmux_exact_target_named), so a
+    # stub that answers nothing makes every doorbell refuse to resolve. Model
+    # the session's own window inventory from this home's recorded task
+    # windows, which is what this stub's unconditional pane answers already
+    # assume is live; a window no task recorded stays correctly absent. Any
+    # other format is a bare-selector lookup this fixture never makes.
+    ses=
+    prev=
+    win_fmt=name
+    for arg in "$@"; do
+      [ "$prev" = -t ] && ses=${arg#=}
+      prev=$arg
+      case "$arg" in *'#{window_id}'*) win_fmt=id ;; esac
+    done
+    [ "$win_fmt" = id ] || exit 0
+    ses=${ses%%:*}
+    n=0
+    for m in "${FM_STATE_OVERRIDE:-${FM_HOME:-/nonexistent}/state}"/*.meta; do
+      [ -f "$m" ] || continue
+      w=$(sed -n 's/^window=//p' "$m" | head -1)
+      case "$w" in "$ses":*) ;; *) continue ;; esac
+      w=${w#*:}
+      case "$w" in *:*|'') continue ;; esac
+      n=$((n + 1))
+      printf '@%s %s\n' "$n" "$w"
+    done
+    exit 0 ;;
 esac
 exit 0
 SH
