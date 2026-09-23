@@ -12,18 +12,18 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-sessionstart-run.sh` | Route a native session-open hook to the full digest, a context re-emit, or the nudge |
 | `fm-operational-input.sh` | Construct and parse the canonical cross-language operational-input protocol |
 | `fm-bootstrap.sh`        | Detect toolchain and fleet problems, run the locked session-start sweeps, and install approved tools |
-| `fm-startup-network.sh`  | Run session start's network checks off its blocking path, retaining every report while waking only for actionable results |
+| `fm-startup-network.sh`  | Run session start's network checks and inactive-outcome scan off its blocking path, retaining reports and durable findings |
 | `fm-fleet-sync.sh`       | Refresh project clones with safe fast-forwards, self-heals, `STUCK:` reports, branch pruning, and bounded recovery from an orphaned `.git/packed-refs.lock` |
-| `fm-fleet-snapshot.sh`   | Print the read-only structured fleet snapshot JSON (schema `fm-fleet-snapshot.v1`)   |
+| `fm-fleet-snapshot.sh`   | Print structured fleet snapshot JSON and refresh only its parent-side remote-ledger cache (schema `fm-fleet-snapshot.v1`) |
 | `fm-home-summary-refresh.sh` | Atomically publish this home's structured summary ledger                         |
 | `fm-fleet-view.sh`       | Render the fleet snapshot as a human Markdown view                                   |
-| `fm-bearings-snapshot.sh` | Project the fleet snapshot to the compact TOON bearings view; local-only unless `--include-prs` |
+| `fm-bearings-snapshot.sh` | Project the bounded remote-ledger fleet snapshot to compact TOON; `--include-prs` adds live GitHub enrichment |
 | `fm-status-board.sh`     | Render the bearings classification and fleet snapshot detail into the captain's five-section web status board |
 | `fm-dashboard.sh`        | The only agent-facing command surface for the Admiral's Fleet Dashboard task board and its server process ([dashboard.md](dashboard.md)) |
 | `fm-fleet-audit-tick.sh` | The fleet auditor's host-cron timer: heartbeats every invocation, sweeps when the dashboard's own interval setting says it is due ([dashboard.md](dashboard.md#the-timer)) |
 | `fm-fleet-audit-sweep.sh` | One fleet-auditor sweep - claims the dashboard's sweep lock, runs the mechanical checks, records the result; used by both the timer and the Force Audit button |
 | `fm-bearings-board.sh`   | Build and arm the stable interactive `/bearings lavish` fleet board                  |
-| `fm-secondmate-reconcile.sh` | Ask each secondmate to reconcile an inventory mismatch through its durable inbox, limited by a per-home cooldown |
+| `fm-secondmate-reconcile.sh` | Queue Bearings reconcile requests for later supervision delivery and ask each mismatched home through its durable inbox with a per-home cooldown |
 | `fm-update.sh`           | Fast-forward-only self-update of firstmate and local or remote secondmate homes       |
 | `fm-on.sh`               | Execute one tracked Firstmate command in a configured remote secondmate home, using its job worker except for the doctor bootstrap |
 | `fm-remote-job-lib.sh`   | Shared bounded remote job queue, worker readiness, LaunchAgent contract, and filesystem-composed PATH |
@@ -111,13 +111,13 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-quota-axi-lib.sh`    | Shared `quota-axi` compatibility floor and quota snapshot schema validation           |
 | `fm-quota-choose.sh`     | Choose the first candidate with known positive quota from an ordered harness:model list |
 | `fm-vendor-auth-probe.sh`| Run one hard-bounded, non-destructive authentication probe of a named vendor CLI and report the fact |
-| `fm-wake-drain.sh`       | Present and acknowledge the current actor's claimed wake rows alongside status, decision, divergence, recovery, and supervision checks |
+| `fm-wake-drain.sh`       | Present and acknowledge the current actor's claimed wake rows alongside status, outcome-backstop, decision, divergence, recovery, and supervision checks |
 | `fm-wake-grant.sh`       | Serialize Pi supervision-branch wake-row claim activation, publication, release, and deactivation |
 | `fm-wake-lib.sh`         | Shared durable wake queue, recovery generations, portable locks, and watcher identity/health helpers |
-| `fm-classify-lib.sh`     | Shared wake-classification vocabulary, durable keyed-decision folds and scans, and unread informational status-line selection |
+| `fm-classify-lib.sh`     | Shared wake classification, durable keyed-decision folds and scans, unread status selection, and bounded latest-event snapshots |
 | `fm-send.sh`             | Steer a task via a durable inbox record plus doorbell, or send a supported key or typed harness invocation through the recorded backend |
 | `fm-branch-prompt.sh`    | Emit the Pi supervision branch's byte-stable system prompt ([pi-supervision-branch.md](pi-supervision-branch.md)) |
-| `fm-branch-outcome.sh`   | Own the supervision branch's append-only outcome store, read cursor, and session-start replay |
+| `fm-branch-outcome.sh`   | Own the supervision branch's append-only outcome store, cursors, bounded status-coverage indexes, and session-start replay |
 | `fm-lease.sh`            | Claim, release, inspect, and sweep per-task supervision leases                       |
 | `fm-lease-lib.sh`        | One owner of the supervision lease contract and the main-only role-partition guards  |
 | `fm-control.sh`          | Agent lifecycle control plane: allowlisted `interrupt`, `exit`, and transactional `relaunch` verbs for an exact task id ([agent-control.md](agent-control.md)) |
@@ -136,6 +136,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-pr-merge.sh`         | Record PR metadata, merge a task's canonical full GitHub or GitLab URL, then refuse an outcome it cannot prove landed or queued |
 | `fm-pr-destination-guard.sh` | Pin and verify gh's pull-request destination for a project checkout and its no-mistakes gate, or print that destination for a caller that must name it |
 | `fm-merge-outcome-lib.sh` | Publish a confirmed merge's durable, role-routed supervision outcome                 |
+| `fm-parent-channel-lib.sh` | Resolve a secondmate home's parent channel and append a captain-facing outcome line to it at most once |
 | `fm-promote.sh`          | Promote a scout task in place to a protected ship task with an explicit delivery mode, and write the ship instructions carrying that mode's definition of done |
 | `fm-teardown.sh`         | Fail-closed teardown: return landed ship worktrees, require completed scout deliverables, retire secondmate homes |
 | `fm-harness.sh`          | Detect the running harness and resolve crew or secondmate harness, model, and effort |
@@ -148,7 +149,8 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-x-followup.sh`       | Detect, post, and cap completion follow-ups for a Relay-linked task                  |
 | `fm-public-followup-lib.sh` | Shared Relay gate, open-loop registry state, expiry classification, locking, and private transport paths |
 | `fm-public-followup.sh`  | Reconcile and deliver typed public commitments, then rechain or explicitly retire their retained loops |
-| `fm-public-followup-emit.sh` | Report one typed terminal work result into the home that owes the public reply    |
+| `fm-public-followup-emit.sh` | Report one typed terminal work result into the home that owes the public reply, or stage it when that home is on another machine |
+| `fm-public-followup-collect.sh` | Read and retire the typed terminal results a remote work home staged for the home that owes the public reply |
 | `fm-inbox.sh`            | The captain's out-of-band capture surface: queue a note, dictate one, read status, ask a side question |
 | `fm-voice-relay.py`      | Hold the spoken conversation on this host, answer from the records, and hand real work to `fm-inbox.sh` ([voice-relay.md](voice-relay.md)) |
 | `fm-voice-client.py`     | The laptop end of the spoken interface: capture, playback, and turn timing over SSH; audio devices unverified |

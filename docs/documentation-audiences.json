@@ -378,6 +378,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/secondmate-parent-channel.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/scripts.md",
       "audience": "operator-current"
     },
@@ -447,6 +451,10 @@
     },
     {
       "path": "docs/verification/public-followup.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "docs/verification/secondmate-parent-channel.md",
       "audience": "maintainer-verification"
     },
     {

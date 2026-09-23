@@ -129,17 +129,18 @@ jobs:
   tests-portable-serial:
     name: Behavior portable serial ${{ matrix.shard }}
     runs-on: ubuntu-latest
-    # Measured whole remainder is ~57.3 min of serial CI work (116 of the lane's
-    # 137 scripts timed on runners; docs/fm-test-portable-shards.md), so the
-    # balanced shards are ~14.3 min each and no four-way split fits a 15-minute
-    # cap with margin. Cap is a hang tripwire, not the expected healthy end of
-    # the lane, so it is set well above the balanced shard rather than beside it.
+    # Measured whole remainder is ~64.3 min of serial CI work (150 of the
+    # lane's 151 scripts timed on PR 49's green shards; the modelled 5-way
+    # split balances to ~12.9 min per shard, but the prior 4-way split's
+    # modelled ~12.7 min ran up to 15 min on real runners, so the cap stays
+    # well above the balanced shard rather than beside it until a green
+    # 5-shard CI run gives a real measured ceiling (docs/fm-test-portable-shards.md).
     timeout-minutes: 25
     strategy:
       # Every shard reports so one failure never hides another shard's result.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -379,16 +380,16 @@ jobs:
           snapshot_output=$(/bin/bash tests/fm-fleet-snapshot-view.test.sh)
           printf '%s\n' "$snapshot_output"
           snapshot_count=$(printf '%s\n' "$snapshot_output" | grep -c '^ok - ')
-          [ "$snapshot_count" -eq 15 ] || {
-            echo "::error::expected 15 snapshot/fleet-view tests, got $snapshot_count"
+          [ "$snapshot_count" -eq 16 ] || {
+            echo "::error::expected 16 snapshot/fleet-view tests, got $snapshot_count"
             exit 1
           }
 
           bearings_output=$(/bin/bash tests/fm-bearings-snapshot.test.sh)
           printf '%s\n' "$bearings_output"
           bearings_count=$(printf '%s\n' "$bearings_output" | grep -c '^ok - ')
-          [ "$bearings_count" -eq 42 ] || {
-            echo "::error::expected 42 Bearings tests, got $bearings_count"
+          [ "$bearings_count" -eq 45 ] || {
+            echo "::error::expected 45 Bearings tests, got $bearings_count"
             exit 1
           }
 

@@ -114,6 +114,10 @@ write_cross_home_fixture() {  # <home>
 ## Done
 - [x] mate-landed - Secondmate-managed fix https://github.com/kunchenguid/firstmate/pull/50 (repo: alpha) (kind: ship) (merged 2026-08-01)
 EOF
+  # The board reads each local secondmate's published state/home-summary.json
+  # rather than invoking fm-fleet-snapshot.sh live, so the fixture must
+  # publish one for real before the board can see the landed item.
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$mate" "$ROOT/bin/fm-home-summary-refresh.sh" >/dev/null 2>&1
 }
 
 test_cross_home_detail_is_honest_not_a_dead_pointer() {
