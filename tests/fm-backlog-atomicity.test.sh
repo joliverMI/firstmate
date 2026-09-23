@@ -58,8 +58,39 @@ make_home() {  # <name> [task-id...]
 
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
+# The fork's named-target send refuses any target that does not resolve to
+# exactly one live endpoint: it asks -t "=<session>" for
+# '#{window_id} #{window_name}' and matches the NAME half before addressing the
+# ID half. Remember every window this fake was asked to create, and report those
+# names back with synthetic ids, so a spawned task's own endpoint resolves.
+fm_fake_windows=${0%/*}/../tmux-windows
 case "$*" in *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;; esac
-case "${1:-}" in display-message) printf 'firstmate\n'; exit 0 ;; esac
+case "${1:-}" in
+  display-message) printf 'firstmate\n'; exit 0 ;;
+  new-window)
+    fm_fake_prev=
+    fm_fake_name=
+    for fm_fake_arg in "$@"; do
+      [ "$fm_fake_prev" = -n ] && fm_fake_name=$fm_fake_arg
+      fm_fake_prev=$fm_fake_arg
+    done
+    [ -z "$fm_fake_name" ] || printf '%s\n' "$fm_fake_name" >> "$fm_fake_windows"
+    printf '@%s\n' "$(wc -l < "$fm_fake_windows" 2>/dev/null | tr -d ' ')"
+    exit 0 ;;
+  list-windows)
+    fm_fake_fmt=name
+    for fm_fake_arg in "$@"; do
+      case "$fm_fake_arg" in *'#{window_id}'*) fm_fake_fmt=id ;; esac
+    done
+    [ "$fm_fake_fmt" = id ] || exit 0
+    fm_fake_n=0
+    while IFS= read -r fm_fake_win; do
+      [ -n "$fm_fake_win" ] || continue
+      fm_fake_n=$((fm_fake_n + 1))
+      printf '@%s %s\n' "$fm_fake_n" "$fm_fake_win"
+    done < "$fm_fake_windows" 2>/dev/null
+    exit 0 ;;
+esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
