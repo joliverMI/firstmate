@@ -191,6 +191,9 @@ For a local route, the helper resolves and validates the secondmate home from `d
 For a remote route, the same helper first moves the dependency-closed set atomically from the main backlog into `data/handoff/<id>.outbox.md`, then transfers that backlog-format outbox through `fm-on.sh` and lets the remote home's `fm-backlog-receive.sh` move every not-already-present key under the destination lock.
 The outbox is the whole recovery record for the item move: its presence means delivery is unfinished, `--resume-pending` safely re-delivers it, and confirmed receipt removes it.
 A `--card <card-id>` dashboard link recorded by a handoff of either route keeps its own pending record that the same `--resume-pending` completes; `docs/dashboard.md` "The mechanical card link" owns it.
+After a new local placement or a remote outbox receipt becomes durable, the helper sends one marked routed-work instruction through the receiving secondmate's recorded endpoint; missing or failed delivery makes the command fail loudly with the moved work intact, and the same handoff command retries known-undelivered wake intent without moving an already-present item again.
+An unresolved delivery attempt is never blindly resent.
+For a remote route, the outbox remains until both backlog receipt and receiver wake are confirmed; `--resume-pending` retries unfinished outboxes, while the script header owns its stable wake-correlation recovery state.
 There is no two-phase handoff journal and no tasks-axi release beyond the already-required atomic `mv` capability.
 Bootstrap retries both kinds of pending handoff state - undelivered outbox and unfinished card link - when mutation is authorized, and emits a `SECONDMATE_HANDOFF:` line for each kind that remains.
 This delegated route remains required when `config/backlog-backend=manual`, which controls only routine firstmate backlog edits.
