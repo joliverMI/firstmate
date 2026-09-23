@@ -397,6 +397,7 @@ PY
   timeout_script=tests/fm-calm-pi-extension.test.sh
   mkdir -p "$timeout_repo/bin" "$timeout_repo/tests"
   cp "$RUNNER" "$timeout_repo/bin/fm-test-run.sh"
+  cp "$ROOT/bin/fm-dev-remote-lib.sh" "$timeout_repo/bin/fm-dev-remote-lib.sh"
   cat >"$timeout_repo/bin/fm-timeout-lib.sh" <<'SH'
 fm_run_timed() {
   [ "$1" -eq 900 ] || return 99
@@ -924,6 +925,7 @@ test_per_script_timeout_bounds_a_hang() {
   mkdir -p "$repo/bin" "$repo/tests"
   cp "$RUNNER" "$runner"
   cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+  cp "$ROOT/bin/fm-dev-remote-lib.sh" "$repo/bin/fm-dev-remote-lib.sh"
   grandchild_pid="$tmp/grandchild.pid"
   cat >"$repo/$hang" <<'SH'
 #!/usr/bin/env bash
@@ -986,6 +988,7 @@ test_max_wall_ms_is_a_result_not_advice() {
   fast=tests/fm-budget-fixture.test.sh
   mkdir -p "$repo/bin" "$repo/tests"
   cp "$RUNNER" "$runner"
+  cp "$ROOT/bin/fm-dev-remote-lib.sh" "$repo/bin/fm-dev-remote-lib.sh"
   cat >"$repo/$fast" <<'SH'
 #!/usr/bin/env bash
 sleep 1
