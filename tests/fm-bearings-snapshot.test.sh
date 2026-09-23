@@ -2291,7 +2291,11 @@ EOF
   printf 'working: old generation\n' > "$home/state/generation-race.status"
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
-if [ "${1:-}" = display-message ]; then
+# fm_backend_tmux_exact_target resolves this fixture's colon-bearing,
+# dot-free target ("fixture:fm-generation-race") through its plain
+# session:window arm, which probes with `list-panes`, never
+# `display-message`; that is the call this race hook rides.
+if [ "${1:-}" = list-panes ]; then
   if mkdir "$RACE_ONCE" 2>/dev/null; then
     tmp="$RACE_META.tmp.$$"
     cat > "$tmp" <<EOF

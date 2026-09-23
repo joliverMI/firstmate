@@ -365,7 +365,12 @@ test_relaunch_serializes_concurrent_durable_metadata_publication() {
     FM_FAKE_TRACE_RELEASE="$launch_release" \
     run_control "$dir" rl28 relaunch --note "continue after publication" > "$dir/control.out" &
   control_pid=$!
-  while [ ! -e "$prepare" ] && [ "$i" -lt 200 ]; do
+  # A non-secondmate claude relaunch now pre-registers Claude workspace trust
+  # (bin/fm-claude-trust.sh, upstream) before reaching the trace-delivery hook;
+  # that real git+node work lands well inside this budget but past the 2s the
+  # pre-registration step's own history predates, so this waits longer than the
+  # other polls in this file.
+  while [ ! -e "$prepare" ] && [ "$i" -lt 600 ]; do
     /bin/sleep 0.01
     i=$((i + 1))
   done

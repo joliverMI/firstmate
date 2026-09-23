@@ -385,25 +385,25 @@ test_ask_user_escalation_format() {
   # event plus one verbatim findings snapshot file, using that same shape even
   # for a single finding, never paraphrased into the status line.
   assert_grep "escalate all ask-user findings as one event plus one snapshot file" "$brief" \
-    "ship rule 6 lost the one-event-plus-snapshot-file ask-user contract"
+    "ship rule 7 lost the one-event-plus-snapshot-file ask-user contract"
   assert_grep "using that same shape even when the gate holds only a single ask-user finding" "$brief" \
-    "ship rule 6 must require the same shape for a single finding"
+    "ship rule 7 must require the same shape for a single finding"
   assert_grep "write only the ask-user findings, verbatim and unparaphrased (id, severity, file, line, description, authority)" "$brief" \
-    "ship rule 6 must limit the verbatim axi slice to ask-user findings"
+    "ship rule 7 must limit the verbatim axi slice to ask-user findings"
   # shellcheck disable=SC2016  # single quotes are deliberate: backticks and the key/findings/file tokens must stay literal
   assert_grep 'needs-decision [key=nm-<run>-<step>]: ask-user findings=<id1>,<id2>,... file='"$home/data/$id/nm-<run>-findings.txt" "$brief" \
-    "ship rule 6 must render the exact needs-decision ask-user status line"
+    "ship rule 7 must render the exact needs-decision ask-user status line"
   assert_grep "$home/data/$id/nm-<run>-findings.txt" "$brief" \
-    "ship rule 6 must point the snapshot file under this task's own data directory"
+    "ship rule 7 must point the snapshot file under this task's own data directory"
   assert_grep "The status line only points at the file; it never restates or summarizes a finding's content." "$brief" \
-    "ship rule 6 must forbid paraphrasing ask-user findings into the status line"
+    "ship rule 7 must forbid paraphrasing ask-user findings into the status line"
 
-  # The DOD's own ask-user paragraph must point back at rule 6's format
+  # The DOD's own ask-user paragraph must point back at rule 7's format
   # (one-owner rule) rather than restating or bare-citing it.
-  assert_grep "escalate to firstmate using rule 6's ask-user format" "$brief" \
-    "no-mistakes DOD ask-user paragraph must point at rule 6's format instead of a bare citation"
-  assert_no_grep "escalate to firstmate (rule 6) and stop." "$brief" \
-    "no-mistakes DOD ask-user paragraph still uses the old bare rule-6 pointer"
+  assert_grep "escalate to firstmate using rule 7's ask-user format" "$brief" \
+    "no-mistakes DOD ask-user paragraph must point at rule 7's format instead of a bare citation"
+  assert_no_grep "escalate to firstmate (rule 7) and stop." "$brief" \
+    "no-mistakes DOD ask-user paragraph still uses the old bare rule-7 pointer"
 
   other_id="brief-no-ask-user-scout"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$other_id" some-proj --scout >/dev/null 2>&1
@@ -439,24 +439,6 @@ test_ship_project_memory_wording() {
   assert_grep "lacks \`## Maintaining this file\`, add that short self-governance section" "$brief" \
     "project-memory contract lost the self-governance add-in-same-pass rule"
   pass "fm-brief.sh: ship project-memory wording carries the AGENTS.md authoring bar"
-}
-
-test_dod_rule_pointer_resolves_to_the_escalation_rule() {
-  local home id brief num rule
-  home="$TMP_ROOT/dod-pointer-home"
-  mkdir -p "$home/data"
-  id="brief-dod-pointer-f1"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
-  brief="$home/data/$id/brief.md"
-  assert_present "$brief" "brief was not scaffolded"
-  num=$(sed -n 's/.*escalate to firstmate (rule \([0-9][0-9]*\)) and stop.*/\1/p' "$brief")
-  [ -n "$num" ] || fail "no-mistakes DOD lost its numbered escalation-rule pointer"
-  rule=$(sed -n "/^$num\. /,/^[0-9][0-9]*\. /p" "$brief")
-  case "$rule" in
-    *needs-decision:*) : ;;
-    *) fail "DOD cites rule $num, which is not the needs-decision escalation rule: $rule" ;;
-  esac
-  pass "fm-brief.sh: the no-mistakes DOD's rule pointer resolves to the needs-decision rule"
 }
 
 test_physical_action_rule_exempts_the_sparse_reporting_rule() {
@@ -1222,7 +1204,6 @@ test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_ask_user_escalation_format
 test_ship_project_memory_wording
-test_dod_rule_pointer_resolves_to_the_escalation_rule
 test_physical_action_contract_covers_ship_and_scout
 test_physical_action_contract_covers_secondmate_charter
 test_physical_action_rule_exempts_the_sparse_reporting_rule

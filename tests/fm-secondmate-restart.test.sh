@@ -159,7 +159,7 @@ add_local_mate() {
     echo "home=$smhome"
     [ -z "$backend" ] || echo "backend=$backend"
   } > "$home/state/$id.meta"
-  printf '%s\n' "fm-$id" > "$dir/fake/windows"
+  printf '%s\n' "fm-$id" >> "$dir/fake/windows"
   printf '%s' "$smhome" > "$dir/fake/cwd"
 }
 

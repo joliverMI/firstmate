@@ -53,7 +53,7 @@ case "${1:-}" in
   display-message)
     target=
     for arg in "$@"; do
-      case "$arg" in main:fm-*) target=$arg ;; esac
+      case "$arg" in *fm-*) target=$arg ;; esac
     done
     case "${*: -1}" in
       *pane_current_command*)

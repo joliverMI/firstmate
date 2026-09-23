@@ -487,7 +487,7 @@ $RULE1
    During an announced physical action, break any extended silence with a \`working:\` line saying what is currently happening, even "still working"; never fold these events into your next routine line.
    Before any status line that asks the captain for his time, presence, or consent, re-check the most recent thing that failed at its effect, not its configuration, immediately before the ask (section 9 of \`$FM_ROOT/AGENTS.md\`); this catches recurrence only, so say so plainly if the failure that actually blocks you is a first-time one this check would not have caught.
 6. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
-7. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
+7. If a decision belongs above the implementation worker (product choices, destructive actions),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
 $ASK_USER_BLOCK
    A decision or blocker you opened stays open until a \`resolved\` line carrying its exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.

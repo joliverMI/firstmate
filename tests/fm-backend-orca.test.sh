@@ -644,7 +644,7 @@ test_spawn_refuses_orca_worktree_owned_by_another_task_without_reclaiming_it() {
   config="$TMP_ROOT/collision-spawn-config"
   fm_git_worktree "$proj" "$wt" "fm/holder"
   mkdir -p "$data/$id" "$state" "$config"
-  printf 'brief\n' > "$data/$id/brief.md"
+  write_spawn_brief "$data" "$id"
   touch "$state/.last-watcher-beat"
   fm_write_meta "$state/orcaholderz9.meta" \
     "window=fm-orcaholderz9" \
