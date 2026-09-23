@@ -180,7 +180,8 @@ family_for_basename() {
     fm-remote-reply.test.sh|fm-remote-secondmate-lifecycle-e2e.test.sh|\
     fm-remote-secondmate-trace-context.test.sh|fm-remote-update-follows-fork.test.sh|\
     fm-secondmate-harness.test.sh|fm-secondmate-lifecycle-e2e.test.sh|\
-    fm-secondmate-liveness.test.sh|fm-secondmate-safety.test.sh|fm-secondmate-sync.test.sh|\
+    fm-secondmate-liveness.test.sh|fm-secondmate-reconcile.test.sh|\
+    fm-secondmate-safety.test.sh|fm-secondmate-sync.test.sh|\
     fm-startup-memory-budget.test.sh|fm-stow-cascade.test.sh|\
     fm-send-secondmate-marker.test.sh|fm-shared-captain-inheritance.test.sh)
       printf '%s\n' secondmate
@@ -226,7 +227,8 @@ family_for_basename() {
     fm-afk-inject-e2e.test.sh|fm-afk-return.test.sh)
       printf '%s\n' afk
       ;;
-    fm-bearings-snapshot.test.sh|fm-fleet-snapshot-view.test.sh)
+    fm-bearings-board-render.test.sh|fm-bearings-snapshot.test.sh|\
+    fm-fleet-snapshot-view.test.sh)
       printf '%s\n' snapshot-bearings
       ;;
     fm-backend-cmux.test.sh|fm-backend-cmux-smoke.test.sh)
@@ -530,7 +532,6 @@ tests/fm-watch-checkpoint.test.sh 5413
 tests/fm-watch-recovery-loop.test.sh 59238
 tests/fm-watch-triage.test.sh 144608
 tests/fm-watcher-lock.test.sh 103377
-tests/no-mistakes-required-workflow.test.sh 85
 EOF
 }
 
@@ -1169,6 +1170,16 @@ families_for_changed_path() {
       # A deleted script has no consuming suite left to select, the same rule
       # the fixture case above applies. Refusing on its absent mapping would
       # make every retirement branch unable to select its changed tests.
+      if [ -e "$path" ]; then
+        families_for_test_reference "$(basename "$path")" \
+          || printf '%s\n' "__unmapped__:$path"
+      fi
+      ;;
+    tests/assets/*)
+      # A shared test asset belongs to whichever suite names it, found by the
+      # same reference scan the fixtures and bin/ cases use. Keyed on the
+      # basename because that is how a suite refers to it. A removed asset has
+      # no consuming suite left to select.
       if [ -e "$path" ]; then
         families_for_test_reference "$(basename "$path")" \
           || printf '%s\n' "__unmapped__:$path"

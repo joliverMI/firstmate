@@ -581,6 +581,427 @@ EOF
   pass "Pi dispatcher branch offer owns accepted wakes and falls back to main"
 }
 
+test_pi_branch_offer_flags_heartbeat() {
+  local repo home plugin log stop out status
+  repo="$TMP_ROOT/pi-branch-heartbeat-root"
+  home="$TMP_ROOT/pi-branch-heartbeat-home"
+  log="$TMP_ROOT/pi-branch-heartbeat.log"
+  stop="$TMP_ROOT/pi-branch-heartbeat.stop"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --handling-delivered ]; then
+  printf 'confirmed generation=%s watcher=%s\n' "$2" "$4" >> "${FM_ARM_LOG:?}"
+  exit 0
+fi
+printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+count=$(grep -c '^arm=' "$FM_ARM_LOG")
+if [ "$count" -eq 1 ]; then
+  printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+  printf 'heartbeat\n'
+  exit 0
+fi
+printf 'watcher: started pid=%s (beacon fresh) recovery-generation=fixture-generation\n' "$$"
+trap 'exit 0' TERM INT
+while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  # A bare heartbeat is the real wake emitted after the cheap bash scan flags
+  # a fleet pass as possibly captain-relevant. It has no task-scoped queue row,
+  # so branch eligibility must remain independent of project resolution.
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const offers = [];
+const handlers = new Map();
+const bus = {
+  on(channel, handler) {
+    handlers.set(channel, [...(handlers.get(channel) ?? []), handler]);
+    return () => {};
+  },
+  emit(channel, data) {
+    for (const handler of handlers.get(channel) ?? []) handler(data);
+  },
+};
+bus.on("fm-branch-supervision:dispatch", (offer) => {
+  offers.push({ message: offer.message, projects: offer.projects, heartbeat: offer.heartbeat, eligible: offer.eligible });
+  offer.accept();
+});
+let tool = null;
+const pi = {
+  on() {},
+  events: bus,
+  registerCommand() {},
+  registerTool(candidate) {
+    if (candidate.name === "fm_watch_arm_pi") tool = candidate;
+  },
+  sendUserMessage: async () => {},
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.wake-queue`, "1\t1\theartbeat\theartbeat\theartbeat\n");
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await tool.execute("tool-call-branch-heartbeat", {}, undefined, undefined, {});
+for (let i = 0; i < 250 && offers.length === 0; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (offers.length !== 1) throw new Error(`expected one branch offer, got ${offers.length}`);
+if (offers[0].message !== "heartbeat") {
+  throw new Error(`offer changed the bare heartbeat wake reason: ${offers[0].message}`);
+}
+if (offers[0].heartbeat !== true || offers[0].eligible !== true) throw new Error(`heartbeat offer was not eligible: ${JSON.stringify(offers[0])}`);
+if (JSON.stringify(offers[0].projects) !== JSON.stringify([])) {
+  throw new Error(`heartbeat offer unexpectedly carried scoped projects: ${JSON.stringify(offers[0].projects)}`);
+}
+writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+process.exit(0);
+EOF
+  )
+  status=$?
+  expect_code 0 "$status" "Pi dispatcher must flag a heartbeat offer independent of task scoping"
+  [ -z "$out" ] || fail "Pi branch-heartbeat test printed output: $out"
+  pass "Pi dispatcher flags a fleet-wide heartbeat offer as branch-eligible"
+}
+
+test_pi_heartbeat_is_not_ridden_into_main_by_a_co_present_check() {
+  local repo home plugin log stop out status
+  repo="$TMP_ROOT/pi-heartbeat-mixed-queue-root"
+  home="$TMP_ROOT/pi-heartbeat-mixed-queue-home"
+  log="$TMP_ROOT/pi-heartbeat-mixed-queue.log"
+  stop="$TMP_ROOT/pi-heartbeat-mixed-queue.stop"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --handling-delivered ]; then exit 0; fi
+printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+count=$(grep -c '^arm=' "$FM_ARM_LOG")
+if [ "$count" -eq 1 ]; then
+  printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+  printf 'heartbeat\n'
+  exit 0
+fi
+printf 'watcher: started pid=%s (beacon fresh) recovery-generation=fixture-generation\n' "$$"
+trap 'exit 0' TERM INT
+while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const offers = [];
+let prompt = "";
+let tool = null;
+const handlers = new Map();
+const bus = {
+  on(channel, handler) {
+    handlers.set(channel, [...(handlers.get(channel) ?? []), handler]);
+    return () => {};
+  },
+  emit(channel, data) {
+    for (const handler of handlers.get(channel) ?? []) handler(data);
+  },
+};
+bus.on("fm-branch-supervision:dispatch", (offer) => {
+  offers.push({ message: offer.message, heartbeat: offer.heartbeat, eligible: offer.eligible });
+  if (offer.eligible) offer.accept();
+});
+const pi = {
+  on() {},
+  events: bus,
+  registerCommand() {},
+  registerTool(candidate) {
+    if (candidate.name === "fm_watch_arm_pi") tool = candidate;
+  },
+  sendUserMessage: async (message) => {
+    prompt = message;
+  },
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(
+  `${process.env.FM_HOME}/state/.wake-queue`,
+  "1\t1\theartbeat\theartbeat\theartbeat\n2\t2\tcheck\tx-inbox\tcheck: pending x mention\n",
+);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await tool.execute("tool-call-heartbeat-mixed-queue", {}, undefined, undefined, {});
+// The offer is what this asserts on, so wait for it and then give any
+// erroneous main delivery a real chance to land before calling it absent.
+for (let i = 0; i < 250 && offers.length === 0; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+for (let i = 0; i < 25 && !prompt; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (offers.length !== 1 || offers[0].heartbeat !== true || offers[0].eligible !== true) {
+  throw new Error(`a co-present check row made the heartbeat offer ineligible: ${JSON.stringify(offers)}`);
+}
+if (prompt) {
+  throw new Error(`a co-present check row rode the heartbeat into main: ${prompt}`);
+}
+writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+process.exit(0);
+EOF
+  )
+  status=$?
+  expect_code 0 "$status" "a heartbeat must not ride a co-present check row into main: $out"
+  [ -z "$out" ] || fail "Pi mixed heartbeat-queue test printed output: $out"
+  pass "a co-present check row neither vetoes nor rides a heartbeat into main"
+}
+
+# Every check the main session alone can act on stays on main, even when an
+# unrelated task-local row in the same queue is perfectly branch-eligible. The
+# no-op checks the branch never sees are suppressed at their source instead
+# (bin/fm-procevent-lavish.sh "silent"), so what remains under a `check:`
+# trigger is exactly the main-only set, and each named class is driven here
+# through the real dispatcher.
+test_pi_main_only_check_classes_stay_on_main() {
+  local repo home plugin log stop out status reason label
+  repo="$TMP_ROOT/pi-main-only-check-root"
+  home="$TMP_ROOT/pi-main-only-check-home"
+  mkdir -p "$repo/bin" "$home/state" "$home/config" "$home/projects/approved"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  printf 'project=%s/projects/approved\nwindow=fm-window\n' "$home" > "$home/state/task-a.meta"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --handling-delivered ]; then exit 0; fi
+printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+count=$(grep -c '^arm=' "$FM_ARM_LOG")
+if [ "$count" -eq 1 ]; then
+  printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+  printf '%s\n' "${FM_TEST_REASON:?}"
+  exit 0
+fi
+printf 'watcher: started pid=%s (beacon fresh) recovery-generation=fixture-generation\n' "$$"
+trap 'exit 0' TERM INT
+while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  while IFS='|' read -r label reason; do
+    [ -n "$label" ] || continue
+    log="$TMP_ROOT/pi-main-only-check-$label.log"
+    stop="$TMP_ROOT/pi-main-only-check-$label.stop"
+    out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" \
+      FM_TEST_REASON="$reason" node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const offers = [];
+let prompt = "";
+let tool = null;
+const handlers = new Map();
+const bus = {
+  on(channel, handler) {
+    handlers.set(channel, [...(handlers.get(channel) ?? []), handler]);
+    return () => {};
+  },
+  emit(channel, data) {
+    for (const handler of handlers.get(channel) ?? []) handler(data);
+  },
+};
+bus.on("fm-branch-supervision:dispatch", (offer) => {
+  offers.push({ message: offer.message, eligible: offer.eligible });
+  if (offer.eligible) offer.accept();
+});
+const pi = {
+  on() {},
+  events: bus,
+  registerCommand() {},
+  registerTool(candidate) {
+    if (candidate.name === "fm_watch_arm_pi") tool = candidate;
+  },
+  sendUserMessage: async (message) => {
+    prompt = message;
+  },
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+// A task-local row the branch would happily take sits in the same queue, so
+// only the check-kind TRIGGER itself can be what keeps this wake on main.
+writeFileSync(
+  `${process.env.FM_HOME}/state/.wake-queue`,
+  "1\t1\tsignal\ttask-a.status\tsignal: task-a.status\n2\t2\tcheck\tmain-only\t" + process.env.FM_TEST_REASON + "\n",
+);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await tool.execute("tool-call-main-only-check", {}, undefined, undefined, {});
+for (let i = 0; i < 250 && !prompt; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (offers.length !== 1 || offers[0].eligible !== false) {
+  throw new Error(`a main-only check was offered to the branch: ${JSON.stringify(offers)}`);
+}
+if (!prompt.includes(`FIRSTMATE WATCHER WAKE: ${process.env.FM_TEST_REASON}`)) {
+  throw new Error(`a main-only check did not reach main: ${prompt}`);
+}
+writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+process.exit(0);
+EOF
+    )
+    status=$?
+    expect_code 0 "$status" "the $label check class must stay on main: $out"
+    [ -z "$out" ] || fail "Pi main-only check test ($label) printed output: $out"
+  done <<'CLASSES'
+relay-mention|check: x-mention 1234567890
+credential-failure|check: gh auth check failed; re-authenticate before dispatch
+merge-confirmation|check: task-a.check.sh: PR merged
+real-board-answer|check: procevent lavish lavish-abcdef0123456789 1
+CLASSES
+  pass "every main-only check class still reaches main, never the supervision branch"
+}
+
+test_pi_heartbeat_restoration_failure_stays_on_main() {
+  local repo home plugin log out status
+  repo="$TMP_ROOT/pi-heartbeat-restoration-failure-root"
+  home="$TMP_ROOT/pi-heartbeat-restoration-failure-home"
+  log="$TMP_ROOT/pi-heartbeat-restoration-failure.log"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+count=$(wc -l < "$FM_ARM_LOG" | tr -d '[:space:]')
+if [ "$count" -eq 1 ]; then
+  printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+  printf 'heartbeat\n'
+  exit 0
+fi
+printf 'synthetic successor startup failure\n' >&2
+exit 1
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const offers = [];
+let prompt = "";
+let tool = null;
+const handlers = new Map();
+const bus = {
+  on(channel, handler) {
+    handlers.set(channel, [...(handlers.get(channel) ?? []), handler]);
+    return () => {};
+  },
+  emit(channel, data) {
+    for (const handler of handlers.get(channel) ?? []) handler(data);
+  },
+};
+bus.on("fm-branch-supervision:dispatch", (offer) => {
+  offers.push({ message: offer.message, heartbeat: offer.heartbeat });
+  offer.accept();
+});
+const pi = {
+  on() {},
+  events: bus,
+  registerCommand() {},
+  registerTool(candidate) {
+    if (candidate.name === "fm_watch_arm_pi") tool = candidate;
+  },
+  sendUserMessage: async (message) => {
+    prompt = message;
+  },
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await tool.execute("tool-call-heartbeat-restoration-failure", {}, undefined, undefined, {});
+for (let i = 0; i < 500 && !prompt; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (offers.length !== 0) {
+  throw new Error(`heartbeat restoration failure was offered to the branch: ${JSON.stringify(offers)}`);
+}
+if (!prompt.includes("FIRSTMATE WATCHER WAKE: heartbeat\n\nwatcher: FAILED")) {
+  throw new Error(`main wake lost the bare heartbeat reason: ${prompt}`);
+}
+if (!prompt.includes("watcher: FAILED - Pi extension could not restore watcher continuity after 2 retries")) {
+  throw new Error(`main wake lost the restoration failure: ${prompt}`);
+}
+EOF
+  )
+  status=$?
+  expect_code 0 "$status" "heartbeat restoration failure must bypass an accepting branch: $out"
+  [ -z "$out" ] || fail "Pi heartbeat restoration-failure test printed output: $out"
+  pass "heartbeat restoration failure stays on main"
+}
+
+test_pi_watcher_failure_never_offered_to_branch() {
+  local repo home plugin out status
+  repo="$TMP_ROOT/pi-watcher-failure-root"
+  home="$TMP_ROOT/pi-watcher-failure-home"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'watcher: healthy pid=1 (beacon 0s)\n'
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  # Only "actionable" closes (signal/stale/check/heartbeat) ever reach
+  # offerWakeToBranch; only main can repair the watcher cycle
+  # (docs/pi-supervision-branch.md), and default-on eligibility must not
+  # change that. A live, always-accepting bus listener proves the negative:
+  # even with an acceptor present, a watcher-failure close is never offered.
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const offers = [];
+let prompt = "";
+let handler = null;
+const handlers = new Map();
+const bus = {
+  on(channel, h) {
+    handlers.set(channel, [...(handlers.get(channel) ?? []), h]);
+    return () => {};
+  },
+  emit(channel, data) {
+    for (const h of handlers.get(channel) ?? []) h(data);
+  },
+};
+bus.on("fm-branch-supervision:dispatch", (offer) => {
+  offers.push({ message: offer.message, heartbeat: offer.heartbeat });
+  offer.accept();
+});
+const pi = {
+  on() {},
+  events: bus,
+  registerCommand(name, options) {
+    if (name === "fm-watch-arm-pi") handler = options.handler;
+  },
+  registerTool() {},
+  sendUserMessage: async (message) => {
+    prompt = message;
+  },
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await handler("", { ui: { notify() {} } });
+for (let i = 0; i < 250 && !prompt; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 20));
+}
+if (!prompt.includes("external healthy watcher")) {
+  throw new Error(`watcher failure did not reach main: ${prompt}`);
+}
+if (offers.length !== 0) {
+  throw new Error(`watcher failure was offered to the branch: ${JSON.stringify(offers)}`);
+}
+EOF
+  )
+  status=$?
+  expect_code 0 "$status" "watcher-failure repair must never be offered to the branch: $out"
+  [ -z "$out" ] || fail "Pi watcher-failure test printed output: $out"
+  pass "watcher-failure repair stays with main even with a live, accepting branch listener"
+}
+
 test_pi_handling_delivery_failure_is_typed_once() {
   local repo home plugin log stop out status
   repo="$TMP_ROOT/pi-handling-fail-root"
@@ -2852,6 +3273,11 @@ test_pi_redundant_tool_call_is_owned_noop
 test_pi_scheduled_retry_call_is_owned_noop
 test_pi_actionable_close_starts_single_successor_before_delivery
 test_pi_branch_offer_owns_actionable_wake
+test_pi_branch_offer_flags_heartbeat
+test_pi_heartbeat_is_not_ridden_into_main_by_a_co_present_check
+test_pi_main_only_check_classes_stay_on_main
+test_pi_heartbeat_restoration_failure_stays_on_main
+test_pi_watcher_failure_never_offered_to_branch
 test_pi_handling_delivery_failure_is_typed_once
 test_pi_hung_successor_falls_back_to_typed_wake
 test_pi_unretired_successor_falls_back_without_retry
