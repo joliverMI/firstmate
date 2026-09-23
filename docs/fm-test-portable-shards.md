@@ -64,38 +64,48 @@ Each shard is still strictly serial in itself, and separate runners mean no two 
 `.github/workflows/ci.yml` derives the same `n` from `strategy.job-total` rather than a literal, so changing the shard count in either file without the other fails the lane loudly instead of leaving part of the required suite unrun.
 
 Assignment is longest-processing-time bin packing over per-script duration hints embedded in `bin/fm-test-run.sh`.
-The hints came from PR #45 CI run [35804182946](https://github.com/joliverMI/firstmate/actions/runs/35804182946) on 2026-09-23, refreshed from the per-shard timing artifacts of shards 1, 2 and 4 plus the nine `FM_TEST_END` durations shard 3 logged before its job cap (that shard was cancelled at the cap, so it uploaded no artifact; the scripts it never reached keep their previous hints until the next refresh).
+The hints came from PR #49 CI run [35867685323](https://github.com/joliverMI/firstmate/actions/runs/35867685323) on 2026-09-23, the slowest measurement of each of the lane's 150 measured scripts across that run's four green `fm-test-timing-portable-serial-*` artifacts (shards 1-4, the shard count in effect before this refresh moved the lane to 5 shards).
+Those per-script maxima total 3830925 ms of conservative balance weight.
 A script with no hint gets the conservative `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` default.
 Hints only affect balance: the coverage guard keeps the partition complete and disjoint whatever they say, so a stale hint costs a slower shard rather than lost coverage.
 Balance is still worth keeping current, because enough unmeasured scripts let one shard carry more than twice another shard's real work and reach the job cap while another runner sits idle.
-Refresh the hints whenever the serial lane gains scripts, rather than waiting for a shard to time out.
+That is not hypothetical: by 2026-09-01 the lane had grown from 116 to 139 scripts and from ~42 to ~63 minutes, 17 scripts were still unmeasured, and several hints were low by 2-5x, so shard 3 of 4 ran 17-20 minutes against its 20-minute cap while shard 1 ran 11.5 minutes and run [33574154856](https://github.com/kunchenguid/firstmate/actions/runs/33574154856) timed out seconds after a passing test.
+`bin/fm-test-run.sh --check-coverage` now reports the unmeasured share as `serial_unhinted=` and refuses past `PORTABLE_SERIAL_MAX_UNHINTED_PERCENT`, so hint drift fails the coverage guard instead of silently pushing one shard into its job cap.
+Refresh the hints whenever the serial lane gains scripts, rather than waiting for that bound to trip.
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
-| `portable-serial-1of4` | 34 | 759659 ms (~759.7 s) |
-| `portable-serial-2of4` | 35 | 759655 ms (~759.7 s) |
-| `portable-serial-3of4` | 35 | 759660 ms (~759.7 s) |
-| `portable-serial-4of4` | 33 | 759660 ms (~759.7 s) |
-| imbalance | | 5 ms |
+| `portable-serial-1of5` | 30 | 771590 ms (~12.86 min) |
+| `portable-serial-2of5` | 30 | 771582 ms (~12.86 min) |
+| `portable-serial-3of5` | 31 | 771593 ms (~12.86 min) |
+| `portable-serial-4of5` | 30 | 771574 ms (~12.86 min) |
+| `portable-serial-5of5` | 30 | 771586 ms (~12.86 min) |
+| imbalance | | 19 ms |
 
-The hint totals above model ~759.7 s per shard, while the same shards measured 628 s to over 900 s on runners: the refresh could only measure the scripts a capped shard had already reported, so the rest still carry local hints that understate CI by a median 1.14x and up to 1.5x.
-Treat the modelled totals as a balance input, not a runtime prediction, and prefer a cap set from measured shard durations.
+The hint totals above model ~12.86 min per shard, but the prior 4-way split's modelled ~12.7 min ran up to 15 min (628 s to over 900 s) on real runners, so treat the modelled totals as a balance input, not a runtime prediction, until a green 5-shard CI run gives a real measured ceiling.
 
-The single longest script, `tests/fm-public-followup.test.sh` at 183642 ms, is the floor for any shard count.
+The single longest script, `tests/fm-watch-triage.test.sh` at 247968 ms, is the floor for any shard count.
 
-Refresh the hints by downloading the per-shard timing artifacts from a green CI run, replacing the `portable_serial_weight_hints` table in `bin/fm-test-run.sh` with the measured `path`/`duration_ms` pairs, and updating the table above:
+Refresh the hints by downloading the per-shard timing artifacts from several green CI runs, replacing the `portable_serial_weight_hints` table in `bin/fm-test-run.sh` with the slowest measured `duration_ms` per `path`, and updating the table above:
 
 ```sh
-gh run download <run-id> -R kunchenguid/firstmate --pattern 'fm-test-timing-portable-serial-*' -D /tmp/fm-serial
-jq -r '.scripts[] | [.path, .duration_ms] | @tsv' /tmp/fm-serial/*.json | LC_ALL=C sort
+for run in <run-id> <run-id> <run-id>; do
+  gh run download "$run" -R kunchenguid/firstmate --pattern 'fm-test-timing-portable-serial-*' -D "/tmp/fm-serial/$run"
+done
+jq -r '.scripts[] | [.path, .duration_ms] | @tsv' /tmp/fm-serial/*/*.json \
+  | awk -F'\t' '$2 > m[$1] { m[$1] = $2 } END { for (p in m) print p, m[p] }' \
+  | LC_ALL=C sort
 bin/fm-test-run.sh --check-coverage
 ```
+
+A timed-out shard uploads no artifact, so pick runs where every serial shard is green or the lane's slowest scripts go unmeasured in exactly the shard that needs them most.
 
 ## Coverage guard
 
 `bin/fm-test-run.sh --check-coverage` verifies that both parallel lanes partition the proven-isolated set.
 It also verifies that the parallel lanes, portable serial lane, and real-Herdr family are disjoint and cover every `tests/*.test.sh` script.
 It separately verifies that the portable serial CI shards are non-empty, disjoint, and together equal the portable serial lane.
+It reports the unmeasured serial share as `serial_unhinted=` and refuses when that share exceeds `PORTABLE_SERIAL_MAX_UNHINTED_PERCENT`, so the shards stay balanced on evidence rather than on the default weight.
 
 ## Timing artifacts
 
@@ -113,7 +123,7 @@ Portable shards, each portable serial shard, and the Herdr lane upload runner-ge
 | Lane | Bound | Rationale |
 |---|---|---|
 | portable parallel 1/2 | job `timeout-minutes: 10` | The measured shard sums are about three minutes and the timeout is a hang tripwire. |
-| portable serial 1-4 | job `timeout-minutes: 25` | The lane measures ~57.3 min of real CI work, so a balanced shard is about 14.3 minutes and a 15-minute cap left no usable margin: on PR 45 one shard was cancelled at the cap twice while its siblings finished at 10.5, 13.7 and 14.7 minutes. The cap is a hang tripwire, so it now sits well above the balanced shard instead of beside it. Splitting the lane further is the shard-count change that belongs with the upstream CI matrix work, because each added shard adds a required check name to the branch ruleset. |
+| portable serial 1-5 | job `timeout-minutes: 25` | The lane measures ~64.3 min of real CI work, so a balanced shard is about 12.9 minutes, but the prior 4-way split's modelled ~12.7 min ran up to 15 minutes on real runners. The cap stays well above the modelled balanced shard until a green 5-shard CI run gives a real measured ceiling. |
 | Herdr | family-run step `timeout-minutes: 20`; job `timeout-minutes: 75` backstop | Healthy runs finish around 7 minutes, so the step bound is the hang tripwire (cleanup and timing artifacts still upload) while the job cap stays a last-resort backstop. |
 
 Timeouts are hang tripwires rather than expected healthy durations.
