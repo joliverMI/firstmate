@@ -28,3 +28,8 @@ jobs:
     steps:
       - name: Verify no-mistakes signature and pipeline attestation
         uses: kunchenguid/no-mistakes/.github/actions/require-no-mistakes@32d396ac0f29135daf7fcb9964aba9d5f4e796d6 # post-v1.57.1, untagged (action added in #819)
+        with:
+          # The fork's own maintainer raises PRs from this repository directly.
+          # Without the exemption every such PR carries a permanently red
+          # advisory check, which trains readers to ignore CI on this repo.
+          exempt-authors: joliverMI
