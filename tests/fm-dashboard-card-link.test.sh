@@ -624,7 +624,7 @@ make_spawn_case() {
   # codex matches tests/fm-spawn-worktree-settle.test.sh and needs no executable
   # on PATH (its launch template is only typed into the fake pane).
   printf 'codex\n' > "$home/config/crew-harness"
-  printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+  printf '# Task\nbrief for %s\n' "$id" > "$home/data/$id/brief.md"
   touch "$home/state/.last-watcher-beat"
   fakebin=$(make_spawn_fakebin "$case_dir/fake" "$wt")
   printf '%s|%s|%s|%s\n' "$home" "$proj" "$wt" "$fakebin"

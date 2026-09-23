@@ -150,7 +150,7 @@ test_worktree_already_owned_by_another_task_is_refused() {
 
   local id=collision-new-z1
   mkdir -p "$home/data/$id"
-  printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+  printf '# Task\nCaptain: brief for %s\n' "$id" > "$home/data/$id/brief.md"
 
   local tmuxlog="$case_dir/tmux.log"
   : > "$tmuxlog"
@@ -190,7 +190,7 @@ test_relaunch_into_a_claimed_worktree_refuses_without_pool_advice() {
 
   owner=relaunch-owner-z9
   mkdir -p "$home/data/$owner"
-  printf 'brief for %s\n' "$owner" > "$home/data/$owner/brief.md"
+  printf '# Task\nCaptain: brief for %s\n' "$owner" > "$home/data/$owner/brief.md"
   fm_write_meta "$home/state/$owner.meta" \
     "window=firstmate:fm-$owner" \
     "endpoint_task_id=$owner" \
@@ -251,7 +251,7 @@ test_unrelated_task_does_not_block_a_distinct_worktree() {
 
   local id=no-collision-new-z2
   mkdir -p "$home/data/$id"
-  printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+  printf '# Task\nCaptain: brief for %s\n' "$id" > "$home/data/$id/brief.md"
 
   out=$(run_collision_spawn "$home" "$proj" "$fakebin" "$wt" "$id")
   status=$?
@@ -280,7 +280,7 @@ test_worktree_freed_by_teardown_can_be_reused() {
 
   first_id=freed-reuse-first-z3
   mkdir -p "$home/data/$first_id"
-  printf 'brief for %s\n' "$first_id" > "$home/data/$first_id/brief.md"
+  printf '# Task\nCaptain: brief for %s\n' "$first_id" > "$home/data/$first_id/brief.md"
   out=$(run_collision_spawn "$home" "$proj" "$fakebin" "$wt" "$first_id")
   status=$?
   expect_code 0 "$status" "the first spawn onto a free worktree must succeed" "$out"
@@ -293,7 +293,7 @@ test_worktree_freed_by_teardown_can_be_reused() {
 
   second_id=freed-reuse-second-z4
   mkdir -p "$home/data/$second_id"
-  printf 'brief for %s\n' "$second_id" > "$home/data/$second_id/brief.md"
+  printf '# Task\nCaptain: brief for %s\n' "$second_id" > "$home/data/$second_id/brief.md"
   out=$(run_collision_spawn "$home" "$proj" "$fakebin" "$wt" "$second_id")
   status=$?
   expect_code 0 "$status" "a worktree freed by teardown must be reusable by a new task" "$out"

@@ -142,7 +142,14 @@ add_ship_task() {
   local home="$dir/home" proj="$dir/proj" wt="$dir/wt"
   fm_git_worktree "$proj" "$wt" "task-$id"
   mkdir -p "$home/data/$id"
-  printf '# brief for %s\n\nDo the thing.\n' "$id" > "$home/data/$id/brief.md"
+  cat > "$home/data/$id/brief.md" <<EOF
+# Task
+## Captain's intent
+Exercise relaunch behavior for $id.
+
+## Firstmate spec
+Preserve the task while replacing its agent process.
+EOF
   {
     echo "window=fmses:fm-$id"
     echo "endpoint_task_id=$id"
@@ -163,7 +170,12 @@ add_ship_task() {
 
 run_control() {  # <case-dir> <args...>
   local dir=$1; shift
+  # A claude spawn pre-registers workspace trust in the launching user's own
+  # store (bin/fm-claude-trust.sh), and a relaunch reaches it through fm-control.sh, so this runs against a throwaway HOME;
+  # without it this suite would write the developer's real ~/.claude.json.
+  mkdir -p "$dir/user-home"
   env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
+    HOME="$dir/user-home" CLAUDE_CONFIG_DIR='' \
     FM_SPAWN_NO_GUARD=1 GROK_HOME="$dir/grokhome" \
     FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=0.05 FM_CONTROL_LAUNCH_WAIT=0.05 \
     FM_REAL_GIT="${FM_REAL_GIT:-}" FM_FAKE_GIT_FAILURE="${FM_FAKE_GIT_FAILURE:-}" \
@@ -178,7 +190,12 @@ run_control() {  # <case-dir> <args...>
 
 run_spawn() {  # <case-dir> <args...>
   local dir=$1; shift
+  # A claude spawn pre-registers workspace trust in the launching user's own
+  # store (bin/fm-claude-trust.sh), so it runs against a throwaway HOME;
+  # without it this suite would write the developer's real ~/.claude.json.
+  mkdir -p "$dir/user-home"
   env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
+    HOME="$dir/user-home" CLAUDE_CONFIG_DIR='' \
     FM_SPAWN_NO_GUARD=1 GROK_HOME="$dir/grokhome" \
     "$SPAWN" "$@" 2>&1
 }
@@ -348,7 +365,12 @@ test_relaunch_serializes_concurrent_durable_metadata_publication() {
     FM_FAKE_TRACE_RELEASE="$launch_release" \
     run_control "$dir" rl28 relaunch --note "continue after publication" > "$dir/control.out" &
   control_pid=$!
-  while [ ! -e "$prepare" ] && [ "$i" -lt 200 ]; do
+  # A non-secondmate claude relaunch now pre-registers Claude workspace trust
+  # (bin/fm-claude-trust.sh, upstream) before reaching the trace-delivery hook;
+  # that real git+node work lands well inside this budget but past the 2s the
+  # pre-registration step's own history predates, so this waits longer than the
+  # other polls in this file.
+  while [ ! -e "$prepare" ] && [ "$i" -lt 600 ]; do
     /bin/sleep 0.01
     i=$((i + 1))
   done
@@ -432,7 +454,7 @@ test_relaunch_appends_the_progress_note_to_the_instructions() {
   out=$(run_control "$dir" rl2 relaunch --note "reproduced the crash in parser.go"); rc=$?
   expect_code 0 "$rc" "relaunch should succeed"$'\n'"$out"
   brief="$dir/home/data/rl2/brief.md"
-  assert_grep "Do the thing." "$brief" "the original instructions must survive"
+  assert_grep "Exercise relaunch behavior for rl2." "$brief" "the original instructions must survive"
   assert_grep "## Progress note" "$brief" "the note should be a dated section in the instructions"
   assert_grep "reproduced the crash in parser.go" "$brief" "the note text should reach the replacement"
   assert_grep "reproduced the crash in parser.go" "$dir/home/state/rl2.control-relaunch.note" \

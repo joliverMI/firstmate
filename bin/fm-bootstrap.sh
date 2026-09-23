@@ -22,11 +22,12 @@
 #                 "SECONDMATE_HANDOFF: secondmate <id>: pending delivery: <n> item(s)",
 #                 "SECONDMATE_HANDOFF: secondmate <id>: pending card link(s): <n>",
 #                 "FMX: X mode on ..." or "FMX: X mode off ...".
-#          When a RUNNING local secondmate worktree is fast-forwarded to
-#          firstmate's own current default-branch commit, that update is a
-#          purely local fast-forward and never a remote fetch. Remote routes
-#          instead converge the persistent home to their configured remote code
-#          root. If either placement changes its loaded instruction surface
+#          When a RUNNING secondmate home is fast-forwarded, its target is
+#          firstmate's own current default-branch commit. A local worktree uses
+#          a purely local fast-forward with no remote fetch; a remote route hands
+#          the same commit to its host, which imports that commit into the home
+#          without moving the host's Firstmate copy. If either placement changes
+#          its loaded instruction surface
 #          (AGENTS.md, bin/, or .agents/skills/), bootstrap immediately nudges it
 #          via FM_HOME=<active-home> bin/fm-send.sh fm-<id> so meta resolves the
 #          current route and the standard from-firstmate marker is applied. A
@@ -345,17 +346,19 @@ fleet_sync() {
 secondmate_sync() {
   # shellcheck source=bin/fm-wake-lib.sh disable=SC1091
   . "$SCRIPT_DIR/fm-wake-lib.sh"
-  # Placement-specific secondmate sync: local homes fast-forward to the primary
-  # checkout's current default-branch commit. That path is purely LOCAL - no
-  # fetch, no remote dependency: a linked-worktree home already holds the primary's
-  # commit (fm-ff-lib.sh), while a standalone clone without it is skipped until
-  # /updatefirstmate refreshes it from its configured upstream. Startup sends
-  # reread nudges only for RUNNING secondmates whose instruction surface
-  # (AGENTS.md, bin/, or .agents/skills/) actually changed, so a secondmate
-  # already on the primary's version is never disturbed (AGENTS.md bootstrap +
-  # supervision). Unlike /updatefirstmate, startup owns the live-convergence
-  # send itself because it is a deterministic locked sweep and can report
-  # success as BOOTSTRAP_INFO while preserving failed sends as
+  # Placement-specific secondmate sync: EVERY home, local or remote, follows the
+  # primary checkout's current default-branch commit. The local path is purely
+  # LOCAL - no fetch, no remote dependency: a linked-worktree home already holds
+  # the primary's commit (fm-ff-lib.sh), while a standalone clone without it is
+  # skipped until /updatefirstmate refreshes it from its configured upstream. A
+  # remote home is on another machine, so its host is handed that same commit
+  # and imports it there (bin/fm-remote-secondmate-control.sh); this side still
+  # fetches nothing. Startup sends reread nudges only for RUNNING secondmates
+  # whose instruction surface (AGENTS.md, bin/, or .agents/skills/) actually
+  # changed, so a secondmate already on the primary's version is never disturbed
+  # (AGENTS.md bootstrap + supervision). Unlike /updatefirstmate, startup owns
+  # the live-convergence send itself because it is a deterministic locked sweep
+  # and can report success as BOOTSTRAP_INFO while preserving failed sends as
   # NUDGE_SECONDMATES retry markers.
   [ -d "$STATE" ] || return 0
   local primary_head
@@ -569,7 +572,7 @@ secondmate_sync() {
   # "move on to the next secondmate".
   secondmate_sync_remote_one() {  # <id> <home> <remote-host>
     local id=$1 _home=$2 remote_host=$3
-    local sync_out inherit_out nudge_needed remote_marker remote_pending converged out remote_lock remote_generation
+    local sync_out sync_rc inherit_out nudge_needed remote_marker remote_pending converged out remote_lock remote_generation
     remote_lock=$(fm_remote_inherit_transaction_lock_path "$STATE" "$id" 2>/dev/null || true)
     if [ -z "$remote_lock" ] || ! fm_lock_acquire_wait "$remote_lock"; then
       echo "NUDGE_SECONDMATES: secondmate $id: send failed: cannot lock remote inheritance transaction"
@@ -595,10 +598,12 @@ secondmate_sync() {
     fi
     nudge_needed=0
     converged=1
-    if sync_out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh sync "$id" < /dev/null 2>&1); then
+    if sync_out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh sync "$id" \
+      "$primary_head" < /dev/null 2>&1); then
       case "$sync_out" in synced:*) nudge_needed=1 ;; esac
     else
-      echo "SECONDMATE_SYNC: secondmate $id: skipped: remote tracked-file sync failed on $remote_host: $(first_line "$sync_out")"
+      sync_rc=$?
+      echo "SECONDMATE_SYNC: secondmate $id: skipped: remote tracked-file sync failed on $remote_host: $(remote_sync_failure_reason "$sync_rc" "$sync_out")"
       converged=0
     fi
     if inherit_out=$(FM_CONFIG_INHERIT_LIVE=1 \
@@ -631,9 +636,10 @@ secondmate_sync() {
     fm_timing_record secondmate convergence "$__fm_timing_stamp" "$id@$remote_host"
   }
 
-  # Remote routes converge through the generic transport. Their code root and
-  # inherited files are authoritative on that host; no local path probe or
-  # local fast-forward is attempted for them.
+  # Remote routes converge through the generic transport. The primary commit is
+  # authoritative for tracked files, while inherited files come from this
+  # primary home; no local path probe or local fast-forward is attempted for
+  # either remote surface.
   local remote_host __fm_timing_stamp parallel=0
   if bootstrap_parallel_begin; then
     parallel=1

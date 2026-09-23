@@ -238,6 +238,15 @@ Point such a code root at that lineage by setting its default branch's tracking 
 `tests/fm-remote-update-follows-fork.test.sh` owns the portable regression coverage for that upstream-following remote update.
 Dirty, diverged, unavailable, or otherwise unsafe targets are reported and left untouched.
 
+A live remote second mate is restarted with `relaunch`, which runs the ordinary [control plane](agent-control.md) on that host: the endpoint record there was written by a host-local launch and carries no remote placement, so the transaction, its checkpoint, and its postconditions are the local ones.
+The primary passes `<harness> <model|default|-> <effort|default|->` explicitly, using `default` when an axis has no parent pin, because `config/secondmate-harness` is not inherited into a second mate's home and the file on that host belongs to a different home; letting the far side re-resolve it would silently move the mate onto another runtime.
+SSH exit 255 leaves completion unknown and the route preserved, exactly as every other verb here.
+
+Session start and every remote launch converge the persistent remote home on the primary's own default-branch commit rather than on the Firstmate copy that host keeps.
+The [`secondmate-provisioning` skill](../.agents/skills/secondmate-provisioning/SKILL.md) owns the guarded convergence contract, including the distinct `/updatefirstmate` behavior, and [`bin/fm-remote-secondmate-control.sh`](../bin/fm-remote-secondmate-control.sh) owns the commit-import mechanics.
+Neither session start nor launch moves the host's own Firstmate copy, and an unsafe or unavailable target is reported and left untouched.
+A completed sync reports which watched instruction paths its advance changed, because the primary cannot diff a checkout it cannot read and needs that fact to decide whether the running remote agent must be replaced to actually reload.
+
 Retire a remote second mate with the normal guarded command:
 
 ```sh
@@ -265,6 +274,7 @@ bin/fm-test-run.sh tests/fm-remote-job.test.sh
 bin/fm-test-run.sh tests/fm-remote-transport-lanes.test.sh
 bin/fm-test-run.sh tests/fm-remote-doctor.test.sh
 bin/fm-test-run.sh tests/fm-project-origin.test.sh
+bin/fm-test-run.sh tests/fm-secondmate-sync.test.sh
 bin/fm-test-run.sh tests/fm-remote-reply.test.sh
 bin/fm-test-run.sh tests/fm-remote-backlog-handoff.test.sh
 bin/fm-test-run.sh tests/fm-remote-secondmate-lifecycle-e2e.test.sh
