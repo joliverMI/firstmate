@@ -766,7 +766,7 @@ make_teardown_case() {
   local name=$1 id=$2 case_dir fakebin
   case_dir="$TMP_ROOT/$name"
   fakebin="$case_dir/fakebin"
-  mkdir -p "$case_dir/state" "$case_dir/config" "$fakebin"
+  mkdir -p "$case_dir/state" "$case_dir/config" "$case_dir/data" "$fakebin"
   cat > "$fakebin/treehouse" <<'SH'
 #!/usr/bin/env bash
 exit 0
@@ -809,6 +809,7 @@ run_teardown_case() {  # <case_dir> <id> [extra args...]
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
   FM_CONFIG_OVERRIDE="$case_dir/config" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
   PATH="$case_dir/fakebin:$PATH" \
     "$TEARDOWN" "$id" "$@" 2>&1
 }

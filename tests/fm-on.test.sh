@@ -11,7 +11,24 @@ TMP_ROOT=$(fm_test_tmproot fm-on)
 # and physicalize macOS's /var -> /private/var alias before transport validation.
 mkdir -p "$TMP_ROOT"
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
-trap 'if [ -f "$TMP_ROOT/remote-jobs/worker.pid" ]; then kill "$(cat "$TMP_ROOT/remote-jobs/worker.pid")" 2>/dev/null || true; fi; rm -rf -- "$TMP_ROOT"' EXIT
+# The worker's own EXIT trap removes files inside remote-jobs/worker.lock
+# before rmdir-ing it; killing the pid and immediately rm -rf-ing races that
+# cleanup and can hit "Directory not empty". Wait for the process to actually
+# die (its EXIT trap runs to completion before that) before tearing down.
+fm_on_cleanup() {
+  if [ -f "$TMP_ROOT/remote-jobs/worker.pid" ]; then
+    wpid=$(cat "$TMP_ROOT/remote-jobs/worker.pid" 2>/dev/null || true)
+    if [ -n "$wpid" ]; then
+      kill "$wpid" 2>/dev/null || true
+      for _ in $(seq 1 100); do
+        kill -0 "$wpid" 2>/dev/null || break
+        sleep 0.05
+      done
+    fi
+  fi
+  rm -rf -- "$TMP_ROOT"
+}
+trap fm_on_cleanup EXIT
 LOCAL_HOME="$TMP_ROOT/local-home"
 REMOTE_ROOT="$TMP_ROOT/remote-root"
 REMOTE_HOME="$TMP_ROOT/remote-home"
