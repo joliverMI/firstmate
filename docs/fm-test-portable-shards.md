@@ -41,11 +41,9 @@ The two parallel lanes use longest-processing-time assignment from those measure
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
-| `portable-serial-1of4` | 34 | 759659 ms (~759.7 s) |
-| `portable-serial-2of4` | 35 | 759655 ms (~759.7 s) |
-| `portable-serial-3of4` | 35 | 759660 ms (~759.7 s) |
-| `portable-serial-4of4` | 33 | 759660 ms (~759.7 s) |
-| imbalance | | 5 ms |
+| `portable-parallel-1` | 11 | 134295 ms (~134.3 s) |
+| `portable-parallel-2` | 13 | 126020 ms (~126.0 s) |
+| imbalance | | 8275 ms |
 
 `bin/fm-test-run.sh` contains the exact ordered memberships in `list_portable_parallel_1` and `list_portable_parallel_2`.
 
@@ -74,11 +72,11 @@ Refresh the hints whenever the serial lane gains scripts, rather than waiting fo
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
-| `portable-serial-1of4` | 30 | 702834 ms (~702.8 s) |
-| `portable-serial-2of4` | 33 | 702847 ms (~702.8 s) |
-| `portable-serial-3of4` | 31 | 702838 ms (~702.8 s) |
-| `portable-serial-4of4` | 34 | 702840 ms (~702.8 s) |
-| imbalance | | 13 ms |
+| `portable-serial-1of4` | 34 | 759659 ms (~759.7 s) |
+| `portable-serial-2of4` | 35 | 759655 ms (~759.7 s) |
+| `portable-serial-3of4` | 35 | 759660 ms (~759.7 s) |
+| `portable-serial-4of4` | 33 | 759660 ms (~759.7 s) |
+| imbalance | | 5 ms |
 
 The single longest script, `tests/fm-public-followup.test.sh` at 183642 ms, is the floor for any shard count.
 
