@@ -129,6 +129,9 @@ init_changed_fixture_repo() {
   : >"$repo/.pi/extensions/fm-primary-pi-watch.ts"
   : >"$repo/.pi/extensions/fm-primary-turnend-guard.ts"
   : >"$repo/src/unmapped.ts"
+  mkdir -p "$repo/tests/assets"
+  : >"$repo/tests/assets/render-harness.mjs"
+  printf '# assets/render-harness.mjs\n' >>"$repo/tests/fm-bearings-snapshot.test.sh"
   git -C "$repo" init -q
   git -C "$repo" add .
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm baseline
@@ -193,6 +196,40 @@ test_changed_dependency_selection_and_unmapped_failure() {
     || fail "unmapped changed source failure is not actionable: $(cat "$tmp/err")"
   rm -rf "$tmp"
   pass "changed selection covers dependents and fails closed for unmapped source"
+}
+
+# A shared file under tests/assets/ is a test input, not a suite: nothing
+# matches tests/*.test.sh, so without its own arm it reaches the tests/*
+# catch-all and refuses every --changed run in the branch that added it. It
+# must instead select the suite that names it, the way a fixture directory does.
+test_changed_asset_selects_the_suite_that_names_it() {
+  local tmp repo listed rc
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-asset.XXXXXX")
+  repo="$tmp/repo"
+  init_changed_fixture_repo "$repo"
+
+  printf '\n' >>"$repo/tests/assets/render-harness.mjs"
+  set +e
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD 2>"$tmp/err")
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "a changed test asset must not refuse the run: $(cat "$tmp/err")"
+  assert_contains "$listed" "tests/fm-bearings-snapshot.test.sh" \
+    "a changed test asset did not select the suite that names it"
+
+  # An asset no suite names is still unmapped: the arm resolves a consumer, it
+  # does not excuse an asset nothing reads.
+  : >"$repo/tests/assets/orphan.mjs"
+  set +e
+  (cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD) >"$tmp/out" 2>"$tmp/err2"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "an asset no suite names must still fail closed, got $rc"
+  grep -Fq 'no changed-test mapping for source path: tests/assets/orphan.mjs' "$tmp/err2" \
+    || fail "orphan asset failure is not actionable: $(cat "$tmp/err2")"
+
+  rm -rf "$tmp"
+  pass "a changed test asset selects its consuming suite and an unread one still fails closed"
 }
 
 test_empty_selection_emits_summary() {
@@ -820,6 +857,7 @@ test_family_selection
 test_single_script_selection
 test_changed_file_selection_is_conservative
 test_changed_dependency_selection_and_unmapped_failure
+test_changed_asset_selects_the_suite_that_names_it
 test_empty_selection_emits_summary
 test_changed_default_base_prefers_mains_upstream
 test_timing_markers_and_json

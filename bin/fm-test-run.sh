@@ -1176,6 +1176,16 @@ families_for_changed_path() {
           || printf '%s\n' "__unmapped__:$path"
       fi
       ;;
+    tests/assets/*)
+      # A shared test asset belongs to whichever suite names it, found by the
+      # same reference scan the fixtures and bin/ cases use. Keyed on the
+      # basename because that is how a suite refers to it. A removed asset has
+      # no consuming suite left to select.
+      if [ -e "$path" ]; then
+        families_for_test_reference "$(basename "$path")" \
+          || printf '%s\n' "__unmapped__:$path"
+      fi
+      ;;
     tests/*)
       printf '%s\n' "__unmapped__:$path"
       ;;
