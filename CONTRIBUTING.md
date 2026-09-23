@@ -9,16 +9,16 @@ We require this to reduce the maintainer's burden of reviewing and merging contr
 `no-mistakes` puts a local git proxy in front of your real remote.
 Pushing through it runs an AI-driven review/test/lint pipeline in an isolated worktree, forwards the push upstream only after every check passes, and opens a clean PR automatically.
 
-A GitHub Actions check (`Require no-mistakes`) runs on PRs targeting `main` and fails if the body is missing the deterministic signature that no-mistakes writes.
-It evaluates every PR opening and body edit independently, so a later edit cannot replace an earlier pending compliance check.
-GitHub Actions and Dependabot are exempt so their automation keeps working, but regular contributor PRs without the signature will not be reviewed or merged.
-The check also requires the structured `<!-- no-mistakes-pipeline-attestation:v1 ... -->` comment that no-mistakes >= 1.46.0 writes into the PR body, with the review, test, and document steps each reporting status `completed`; an older no-mistakes that writes only the signature line is not enough.
+A GitHub Actions check (`Require no-mistakes`) runs on PRs targeting `main` and requires both the deterministic signature and a parseable structured attestation from no-mistakes v1.46.0 or newer.
+The attestation must bind to the current PR head commit and report the review, test, and document steps as completed, so a stale attestation, a missing `head_sha`, or a skipped required step fails.
+It evaluates every PR opening and body edit independently, reruns after head synchronization or reopening, and prevents a later edit from replacing an earlier pending compliance check.
+GitHub Actions and Dependabot are exempt so their automation keeps working, but other contributor PRs that do not satisfy the attestation contract will not be reviewed or merged.
 
 ## Workflow
 
 1. Fork the repo, then clone the parent repo or set your local `origin` back to the parent (`git@github.com:kunchenguid/firstmate.git`).
 2. Create a branch and make your changes.
-3. Initialize the gate with your fork as the push target: `no-mistakes init --fork-url git@github.com:<you>/firstmate.git` (without a fork, plain `no-mistakes init` still works for maintainers with push access); use **no-mistakes v1.46.0+** so your PR carries the structured attestation the `Require no-mistakes` check demands (see above).
+3. Initialize the gate with your fork as the push target: `no-mistakes init --fork-url git@github.com:<you>/firstmate.git` (contributing to firstmate requires **no-mistakes v1.46.0+** for structured attestation; without a fork, plain `no-mistakes init` still works for maintainers with push access).
    Then run `bin/fm-pr-destination-guard.sh .`, which pins `gh` in both your clone and its gate to resolve pull requests to your clone's own `origin` rather than to a destination it picks for you.
    That matters when your `origin` is itself a GitHub fork, because `gh pr create` then defaults the pull request to the fork's parent repository; [`docs/architecture.md`](docs/architecture.md#pull-request-destination-is-pinned-never-ghs-default) owns that mechanism and what the guard verifies.
 4. Commit your changes.
