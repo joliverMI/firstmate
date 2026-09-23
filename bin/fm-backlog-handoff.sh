@@ -1591,16 +1591,19 @@ fi
 
 echo "handed off ${#TO_MOVE[@]} item(s) to $ID: ${TO_MOVE[*]}"
 echo "  into $SUB_BACKLOG"
-receiver_wake_promote_prepared "$ID" "$REQUESTED_BATCH" || {
-  echo "error: handed off work to secondmate $ID, but durable receiver wake state could not be recorded" >&2
-  exit 1
-}
-wake_pending_secondmate_receiver "$ID" || exit 1
 if [ "${#ALREADY[@]}" -gt 0 ]; then
   echo "  already present (skipped): ${ALREADY[*]}"
 fi
 warn_stale_public_commitments "$ID" "${TO_MOVE[@]}"
 # The move has landed, so record the card before consuming: a crash between
 # here and the board leaves a statement the next handoff to this secondmate
-# completes, the local twin of the remote outbox's own recovery.
+# completes, the local twin of the remote outbox's own recovery. It is
+# recorded BEFORE the receiver wake, which exits on failure: a wake that
+# cannot be delivered must not also discard the statement of which card this
+# item serves.
 with_handoff_card_lock "$ID" record_and_sweep_card_pairs "$ID" "${TO_MOVE[0]}" "$CARD_ARG"
+receiver_wake_promote_prepared "$ID" "$REQUESTED_BATCH" || {
+  echo "error: handed off work to secondmate $ID, but durable receiver wake state could not be recorded" >&2
+  exit 1
+}
+wake_pending_secondmate_receiver "$ID" || exit 1
