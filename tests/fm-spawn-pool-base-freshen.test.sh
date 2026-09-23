@@ -448,6 +448,13 @@ strand_submodule_pin_via_spawn() {  # <seed-id>
     || fail "the first spawn did not move the pooled base across the moved submodule pin"
   [ "$(git -C "$POOL_DIR/ui" rev-parse HEAD)" = "$SUBPIN1" ] \
     || fail "the first spawn did not strand the submodule on the pin the old base recorded"
+  # The seeding spawn is finished the moment it has produced the residue, but its
+  # record still claims this slot as its own isolated copy, and this fork refuses
+  # to spawn a second task onto a copy another record claims
+  # (tests/fm-spawn-pool-worktree-collision.test.sh). Retire the seed's record the
+  # way a real teardown does, so the case under test reaches the submodule gate
+  # instead of stopping at the collision refusal.
+  rm -f "$HOME_DIR/state/$id.meta" "$HOME_DIR/state/$id.turn-ended"
 }
 
 test_stale_submodule_pin_explains_itself() {
