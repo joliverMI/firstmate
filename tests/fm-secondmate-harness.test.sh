@@ -416,13 +416,44 @@ test_propagate_lib() {
 # propagates the crew harness into the home's config.
 # ===========================================================================
 
-# A tmux stub that accepts every subcommand and prints nothing, so no window
-# pre-exists and the spawn proceeds to write its meta. Echoes the fakebin dir.
+# A tmux stub that accepts every subcommand, so no window pre-exists and the
+# spawn proceeds to write its meta. It does have to resolve the window it is
+# asked to create: the named-target send refuses any target that does not
+# resolve to exactly one live endpoint, asking the session for
+# '#{window_id} #{window_name}' and matching the name half, and a refused brief
+# delivery now stops the spawn before its record is published. Echoes the
+# fakebin dir.
 make_noop_tmux() {
   local dir=$1 fakebin="$1/fakebin"
   mkdir -p "$fakebin"
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
+fm_fake_windows=${0%/*}/../tmux-windows
+case "${1:-}" in
+  new-window)
+    fm_fake_prev=
+    fm_fake_name=
+    for fm_fake_arg in "$@"; do
+      [ "$fm_fake_prev" = -n ] && fm_fake_name=$fm_fake_arg
+      fm_fake_prev=$fm_fake_arg
+    done
+    [ -z "$fm_fake_name" ] || printf '%s\n' "$fm_fake_name" >> "$fm_fake_windows"
+    printf '@%s\n' "$(wc -l < "$fm_fake_windows" 2>/dev/null | tr -d ' ')"
+    exit 0 ;;
+  list-windows)
+    fm_fake_fmt=name
+    for fm_fake_arg in "$@"; do
+      case "$fm_fake_arg" in *'#{window_id}'*) fm_fake_fmt=id ;; esac
+    done
+    [ "$fm_fake_fmt" = id ] || exit 0
+    fm_fake_n=0
+    while IFS= read -r fm_fake_win; do
+      [ -n "$fm_fake_win" ] || continue
+      fm_fake_n=$((fm_fake_n + 1))
+      printf '@%s %s\n' "$fm_fake_n" "$fm_fake_win"
+    done < "$fm_fake_windows" 2>/dev/null
+    exit 0 ;;
+esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
