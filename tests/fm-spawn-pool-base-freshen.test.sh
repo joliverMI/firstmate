@@ -8,72 +8,10 @@
 # unreachable.
 set -u
 
-# shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/fixtures.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 
-SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-pool-base-freshen)
-
-make_spawn_fakebin() {
-  local dir=$1 fakebin
-  fakebin=$(fm_fakebin "$dir")
-  cat > "$fakebin/tmux" <<'SH'
-#!/usr/bin/env bash
-set -u
-case "$*" in
-  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:?FM_FAKE_PANE_PATH unset}"; exit 0 ;;
-esac
-case "${1:-}" in
-  display-message) printf 'firstmate\n'; exit 0 ;;
-  list-windows)
-    # The exact-NAME resolver behind a recorded-target send (and the window kill
-    # and agent-state read) asks `-t "=<session>"` for
-    # '#{window_id} #{window_name}' and compares only the NAME half before
-    # addressing the ID half, so that format is answered from the recorded task
-    # inventory this stub already models as live, with a synthetic @N id that is
-    # deliberately NOT the name. Every other -F keeps its previous answer.
-    fm_fake_ses=
-    fm_fake_prev=
-    fm_fake_fmt=name
-    for fm_fake_arg in "$@"; do
-      [ "$fm_fake_prev" = -t ] && fm_fake_ses=${fm_fake_arg#=}
-      fm_fake_prev=$fm_fake_arg
-      case "$fm_fake_arg" in *'#{window_id}'*) fm_fake_fmt=id ;; esac
-    done
-    if [ "$fm_fake_fmt" = id ]; then
-      fm_fake_ses=${fm_fake_ses%%:*}
-      fm_fake_n=0
-      for fm_fake_meta in "${FM_STATE_OVERRIDE:-${FM_HOME:-/nonexistent}/state}"/*.meta; do
-        [ -f "$fm_fake_meta" ] || continue
-        fm_fake_win=$(sed -n 's/^window=//p' "$fm_fake_meta" | head -1)
-        case "$fm_fake_win" in "$fm_fake_ses":*) ;; *) continue ;; esac
-        fm_fake_win=${fm_fake_win#*:}
-        case "$fm_fake_win" in *:*|'') continue ;; esac
-        fm_fake_n=$((fm_fake_n + 1))
-        printf '@%s %s\n' "$fm_fake_n" "$fm_fake_win"
-      done
-      exit 0
-    fi
-    exit 0
-    ;;
-  new-window)
-    # Real tmux answers `new-window -dP -F '#{window_id}'` with the new
-    # window's id, which fm_backend_tmux_create_task captures as the
-    # rename-safe handle spawn-time typing then addresses. A stub that
-    # printed nothing left that handle empty, so spawn silently fell back
-    # to the name form for reads the id exists to make rename-proof.
-    for fm_fake_arg in "$@"; do
-      case "$fm_fake_arg" in -*P*) printf '@1\n'; break ;; esac
-    done
-    exit 0 ;;
-  has-session|new-session|kill-window|send-keys) exit 0 ;;
-esac
-exit 0
-SH
-  chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse
-  printf '%s\n' "$fakebin"
-}
 
 make_case() {
   local name=$1 id=$2 default=${3:-main} case_dir home project origin pool publisher fakebin initial
@@ -117,12 +55,8 @@ EOF
 run_spawn() {
   local id=$1
   shift
-  FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
-    FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
-    FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
-    FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" FM_FAKE_PANE_PATH="$POOL_DIR" \
-    PATH="$FAKEBIN_DIR:$PATH" \
-    "$SPAWN" "$id" "$PROJECT_DIR" "$@" 2>&1
+  fm_test_run_spawn "$HOME_DIR" "$POOL_DIR" "$FAKEBIN_DIR" \
+    "$id" "$PROJECT_DIR" "$@"
 }
 
 test_stale_pool_base_refreshes_before_branching() {

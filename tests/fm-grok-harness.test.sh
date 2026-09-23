@@ -2,72 +2,11 @@
 # Behavior tests for Grok-harness hook authentication, teardown cleanup, and session-lock holder detection.
 set -u
 
-# shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/fixtures.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 
-SPAWN="$ROOT/bin/fm-spawn.sh"
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
 TMP_ROOT=$(fm_test_tmproot fm-grok-harness)
-
-make_spawn_fakebin() {
-  local dir=$1 fakebin
-  fakebin=$(fm_fakebin "$dir")
-  cat > "$fakebin/tmux" <<'SH'
-#!/usr/bin/env bash
-set -u
-case "$*" in
-  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
-esac
-case "${1:-}" in
-  display-message) printf 'firstmate\n'; exit 0 ;;
-  list-windows)
-    # A recorded-target send, the window kill and the agent-state read all
-    # resolve through an exact-NAME match: they ask `-t "=<session>"` for
-    # '#{window_id} #{window_name}' and compare only the NAME half before
-    # addressing the ID half. This stub's other answers model "the recorded
-    # task endpoints are live", so that is the inventory it reports here, and
-    # the synthetic @N id it pairs with each name is deliberately NOT the name,
-    # so a regression that addressed the name where the id belongs cannot pass
-    # by coincidence. Any other -F keeps the previous silent success.
-    fm_fake_ses=
-    fm_fake_prev=
-    fm_fake_fmt=name
-    for fm_fake_arg in "$@"; do
-      [ "$fm_fake_prev" = -t ] && fm_fake_ses=${fm_fake_arg#=}
-      fm_fake_prev=$fm_fake_arg
-      case "$fm_fake_arg" in *'#{window_id}'*) fm_fake_fmt=id ;; esac
-    done
-    [ "$fm_fake_fmt" = id ] || exit 0
-    fm_fake_ses=${fm_fake_ses%%:*}
-    fm_fake_n=0
-    for fm_fake_meta in "${FM_STATE_OVERRIDE:-${FM_HOME:-/nonexistent}/state}"/*.meta; do
-      [ -f "$fm_fake_meta" ] || continue
-      fm_fake_win=$(sed -n 's/^window=//p' "$fm_fake_meta" | head -1)
-      case "$fm_fake_win" in "$fm_fake_ses":*) ;; *) continue ;; esac
-      fm_fake_win=${fm_fake_win#*:}
-      case "$fm_fake_win" in *:*|'') continue ;; esac
-      fm_fake_n=$((fm_fake_n + 1))
-      printf '@%s %s\n' "$fm_fake_n" "$fm_fake_win"
-    done
-    exit 0 ;;
-  new-window)
-    # Real tmux answers `new-window -dP -F '#{window_id}'` with the new
-    # window's id, which fm_backend_tmux_create_task captures as the
-    # rename-safe handle spawn-time typing then addresses. A stub that
-    # printed nothing left that handle empty, so spawn silently fell back
-    # to the name form for reads the id exists to make rename-proof.
-    for fm_fake_arg in "$@"; do
-      case "$fm_fake_arg" in -*P*) printf '@1\n'; break ;; esac
-    done
-    exit 0 ;;
-  has-session|new-session|send-keys|kill-window) exit 0 ;;
-esac
-exit 0
-SH
-  chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse gh-axi gh
-  printf '%s\n' "$fakebin"
-}
 
 make_spawn_case() {
   local name=$1 case_dir home proj wt fakebin grok_home id
@@ -75,24 +14,21 @@ make_spawn_case() {
   home="$case_dir/home"
   proj="$case_dir/project"
   wt="$case_dir/wt"
-  fakebin=$(make_spawn_fakebin "$case_dir/fake")
+  fakebin=$(make_spawn_fakebin "$case_dir/fake" gh-axi gh)
   grok_home="$case_dir/grok"
   id="grok-$name-x1"
-  mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config" "$grok_home"
-  printf 'brief\n' > "$home/data/$id/brief.md"
+  mkdir -p "$grok_home"
+  fm_test_spawn_home "$home"
+  fm_test_spawn_brief "$home" "$id" brief
   fm_git_worktree "$proj" "$wt" "fm/$id"
-  touch "$home/state/.last-watcher-beat"
   printf '%s\n' "$case_dir|$home|$proj|$wt|$fakebin|$grok_home|$id"
 }
 
 run_grok_spawn() {
   local home=$1 proj=$2 wt=$3 fakebin=$4 grok_home=$5 id=$6
-  FM_ROOT_OVERRIDE='' FM_HOME="$home" \
-    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
-    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
-    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
-    GROK_HOME="$grok_home" PATH="$fakebin:$PATH" \
-    "$SPAWN" "$id" "$proj" grok --mode no-mistakes --yolo off 2>&1
+  GROK_HOME="$grok_home" \
+    fm_test_run_spawn "$home" "$wt" "$fakebin" \
+    "$id" "$proj" grok --mode no-mistakes --yolo off
 }
 
 test_grok_hook_requires_registered_token() {
