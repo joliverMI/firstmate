@@ -78,6 +78,9 @@ Refresh the hints whenever the serial lane gains scripts, rather than waiting fo
 | `portable-serial-4of4` | 33 | 759660 ms (~759.7 s) |
 | imbalance | | 5 ms |
 
+The hint totals above model ~759.7 s per shard, while the same shards measured 628 s to over 900 s on runners: the refresh could only measure the scripts a capped shard had already reported, so the rest still carry local hints that understate CI by a median 1.14x and up to 1.5x.
+Treat the modelled totals as a balance input, not a runtime prediction, and prefer a cap set from measured shard durations.
+
 The single longest script, `tests/fm-public-followup.test.sh` at 183642 ms, is the floor for any shard count.
 
 Refresh the hints by downloading the per-shard timing artifacts from a green CI run, replacing the `portable_serial_weight_hints` table in `bin/fm-test-run.sh` with the measured `path`/`duration_ms` pairs, and updating the table above:
@@ -110,7 +113,7 @@ Portable shards, each portable serial shard, and the Herdr lane upload runner-ge
 | Lane | Bound | Rationale |
 |---|---|---|
 | portable parallel 1/2 | job `timeout-minutes: 10` | The measured shard sums are about three minutes and the timeout is a hang tripwire. |
-| portable serial 1-4 | job `timeout-minutes: 15` | Each balanced shard is about 12.7 minutes (see the refreshed hint totals above), leaving a hang-tripwire margin rather than the wider margin from older, lighter hint totals. |
+| portable serial 1-4 | job `timeout-minutes: 25` | The lane measures ~57.3 min of real CI work, so a balanced shard is about 14.3 minutes and a 15-minute cap left no usable margin: on PR 45 one shard was cancelled at the cap twice while its siblings finished at 10.5, 13.7 and 14.7 minutes. The cap is a hang tripwire, so it now sits well above the balanced shard instead of beside it. Splitting the lane further is the shard-count change that belongs with the upstream CI matrix work, because each added shard adds a required check name to the branch ruleset. |
 | Herdr | family-run step `timeout-minutes: 20`; job `timeout-minutes: 75` backstop | Healthy runs finish around 7 minutes, so the step bound is the hang tripwire (cleanup and timing artifacts still upload) while the job cap stays a last-resort backstop. |
 
 Timeouts are hang tripwires rather than expected healthy durations.
