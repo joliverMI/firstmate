@@ -146,6 +146,19 @@ case "$out" in
   *) fail "scoping: expected a no-remote-route skip, got: $out" ;;
 esac
 
+# --- scoping: unsafe remote_host is rejected, never handed to ssh -------------
+
+fb=$(make_tmux "$TMP_ROOT/unsafehost")
+new_case unsafehost
+opt_in
+write_meta sm1 "-oProxyCommand=touch /tmp/fm-test-pwned" fm-remote
+out=$(PATH="$fb:$BASE_PATH" FM_BACKEND=tmux run_viewer sm1) || fail "script must always exit 0 (unsafehost)"
+case "$out" in
+  skipped:*"unsafe recorded remote_host"*) pass "scoping: skipped when remote_host looks like an ssh option" ;;
+  *) fail "scoping: expected an unsafe-remote_host skip, got: $out" ;;
+esac
+[ ! -s "$TMUX_CALL_LOG" ] || fail "scoping: tmux must never be touched when remote_host is unsafe"
+
 # --- scoping: primary backend is not tmux ------------------------------------
 
 fb=$(make_tmux "$TMP_ROOT/notmux")

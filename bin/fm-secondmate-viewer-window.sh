@@ -77,6 +77,13 @@ if [ -z "$remote_host" ] || [ -z "$remote_session" ]; then
   exit 0
 fi
 
+case "$remote_host" in
+  ''|-*|*[!A-Za-z0-9._-]*)
+    echo "skipped: $id has an unsafe recorded remote_host: $remote_host"
+    exit 0
+    ;;
+esac
+
 backend=$(fm_backend_name 2>/dev/null)
 if [ "$backend" != tmux ]; then
   echo "skipped: primary backend is '${backend:-unknown}', not tmux"
