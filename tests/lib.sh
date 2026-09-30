@@ -40,6 +40,14 @@ export FM_GATE_REFUSE_BYPASS=1
 # shellcheck disable=SC2034
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Fixtures across this suite create state/ directories with a plain `mkdir -p`
+# and rely on fm-procevent.sh's private-directory check (no group/other write
+# bits) accepting them. That check is intentional hardening, not a bug, so
+# pin a umask here instead of chasing ambient-umask flakiness at every call
+# site: a host with a group-writable default umask (e.g. 002) would otherwise
+# produce directories fm-procevent.sh correctly refuses to operate on.
+umask 022
+
 # --- reporters --------------------------------------------------------------
 
 fail() {
