@@ -18,8 +18,12 @@ _FM_UNAME=$(uname 2>/dev/null || echo unknown)
 # almost every consumer, so it is usually the one that actually creates
 # $STATE. A lenient ambient umask (e.g. 002, common on hosts with a shared
 # primary group) would otherwise leave it group-writable and fail that check.
-mkdir -p "$STATE"
-chmod 0700 "$STATE" 2>/dev/null || true
+# Apply the private umask only at creation time via mkdir itself (mkdir never
+# touches the permissions of a directory that already exists): this library
+# is re-sourced on nearly every invocation, and an unconditional chmod here
+# would reset permissions a caller (e.g. a test fixture simulating a
+# write/read failure) deliberately set on an already-existing $STATE.
+(umask 077; mkdir -p "$STATE")
 
 # Most wake-library consumers need only queue and lock primitives, including
 # deliberately minimal recovery fixtures and remote installations.
