@@ -704,6 +704,24 @@ secondmate_liveness_sweep() {
   return 0
 }
 
+# Best-effort local tmux viewer window for one alive herdr-backed remote
+# secondmate. Presentation-only, opt-in (config/secondmate-viewer-window), and
+# never lets a failure here slow or fail the sweep; see
+# bin/fm-secondmate-viewer-window.sh's header for the full contract.
+secondmate_viewer_window_best_effort() {  # <id>
+  local id=$1 viewer_out viewer_line
+  [ -e "$CONFIG/secondmate-viewer-window" ] || return 0
+  [ -x "$SCRIPT_DIR/fm-secondmate-viewer-window.sh" ] || return 0
+  viewer_out=$("$SCRIPT_DIR/fm-secondmate-viewer-window.sh" "$id" 2>&1) || true
+  viewer_line=$(first_line "$viewer_out")
+  case "$viewer_line" in
+    created:*) [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" != 1 ] || echo "BOOTSTRAP_INFO: secondmate $id viewer window $viewer_line" ;;
+    skipped:*) echo "BOOTSTRAP_INFO: secondmate $id viewer window $viewer_line" ;;
+    *) ;;
+  esac
+  return 0
+}
+
 secondmate_liveness_one_timed() {  # <meta> <id> <label>
   local meta=$1 id=$2 label=$3 __fm_timing_stamp
   __fm_timing_stamp=$(fm_timing_now_ms)
@@ -772,6 +790,7 @@ secondmate_liveness_one() {  # <meta> <id>
           return 0
         fi
         [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" != 1 ] || echo "BOOTSTRAP_INFO: remote secondmate $id already live (host=$remote_host)"
+        secondmate_viewer_window_best_effort "$id"
         ;;
       dead|missing)
         cause="remote endpoint $agent_state on its configured host"

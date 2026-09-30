@@ -40,6 +40,7 @@ When the launcher has no Herdr workspace to inherit, the adapter maintains one d
 The primary home label is `firstmate`.
 A secondmate home label is `2ndmate-<secondmate-id>`, derived from its validated `.fm-secondmate-home` marker.
 A secondmate launched by the primary receives a narrowly scoped home override during container creation.
+See [configuration.md](configuration.md#secondmate-viewer-window-configsecondmate-viewer-window) for the optional opt-in local tmux window that attaches to a remote herdr-backed secondmate's session and lands on this workspace.
 
 Attach to the selected named Herdr session and switch to the relevant home workspace to watch its task tabs.
 Routine supervision uses `bin/fm-peek.sh <id>` and `FM_HOME=<home> bin/fm-send.sh <id> '<text>'` without attaching.
