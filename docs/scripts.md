@@ -27,6 +27,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-update.sh`           | Fast-forward-only self-update of firstmate and local or remote secondmate homes, classifying every live mate left on the target commit for restart or fallback nudge |
 | `fm-secondmate-restart.sh` | Persist open conversational work, then restart eligible second mates or report the fallback outcome |
 | `fm-secondmate-restart-lib.sh` | Shared second-mate restart capability and persistence-request contract |
+| `fm-secondmate-viewer-window.sh` | Opt-in best-effort local tmux viewer window per live herdr-backed remote secondmate, called from `fm-bootstrap.sh`'s liveness sweep ([configuration.md](configuration.md#secondmate-viewer-window-configsecondmate-viewer-window)) |
 | `fm-on.sh`               | Execute one tracked Firstmate command in a configured remote secondmate home, using its job worker except for the doctor bootstrap |
 | `fm-remote-job-lib.sh`   | Shared bounded remote job queue, worker readiness, LaunchAgent contract, and filesystem-composed PATH |
 | `fm-remote-job-worker.sh` | Long-lived remote queue worker for tracked `fm-*.sh` commands in the account runtime |
