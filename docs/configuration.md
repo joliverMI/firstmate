@@ -199,6 +199,17 @@ The bound is required rather than cosmetic because churn and pane staleness read
 The flag is a home-local supervision-noise preference and is not inherited by secondmate homes, which run their own crew mix.
 [`architecture.md`](architecture.md) owns the triage contract and `bin/fm-watch.sh`'s `signal_turnend_panes_churned` owns the exact evidence and fail-closed boundaries.
 
+## Secondmate viewer window (config/secondmate-viewer-window)
+
+The optional local, gitignored `config/secondmate-viewer-window` presence flag opts the primary into a default-off, best-effort local tmux viewer window per live remote secondmate recorded with `remote_backend=herdr`.
+With it present, `bin/fm-bootstrap.sh`'s secondmate liveness sweep calls `bin/fm-secondmate-viewer-window.sh <id>` for every such secondmate right after confirming its remote endpoint is alive and routed on the herdr backend, so the window is (re)created on every session start or recovery without the captain asking for it.
+The script creates, at most once per secondmate id, one tmux window named `2ndmate-<id>-view` in the primary's own local tmux session; it detects an existing window by that stable name before creating one, so repeated sweeps never accumulate duplicates.
+The window runs an SSH command, built fresh from that secondmate's own `state/<id>.meta` (`remote_host`, `remote_herdr_session`), that attaches to its Herdr session using the same `HERDR_SESSION=<session> ... --session <session>` targeting pattern `bin/backends/herdr.sh` uses everywhere else; the captain then switches to that secondmate's own `2ndmate-<id>` workspace exactly as with any other Herdr session (see [herdr-backend.md](herdr-backend.md)).
+This is presentation-only: the window is never read from, written to, or depended on by any send, control, or recovery path, and it carries no authority over the secondmate's recorded endpoint.
+Every failure case - the flag absent, the primary not on the tmux backend, `tmux` or `ssh` missing, no local tmux session to host the window, window creation refused - is best-effort and reported on stdout as a `skipped: <reason>` line; the sweep relays that as a low-grade `BOOTSTRAP_INFO:` line and always continues, never failing or slowing session start.
+The flag is the primary's own setting and is not inherited by secondmate homes, which have no remote secondmates of their own to view.
+`bin/fm-secondmate-viewer-window.sh`'s header owns the exact output protocol and window-naming contract.
+
 ## Gate defaults (.no-mistakes.yaml)
 
 The tracked `.no-mistakes.yaml` sets `test.evidence.store_in_repo: true`, pins `commands.lint` to `bin/fm-lint.sh` so local lint matches CI, and pins `commands.test` to `bin/fm-test-run.sh --changed --exclude-family real-herdr-gated` so the gate's test baseline runs through the repository's own runner instead of a hand-chained walk of `bash tests/*.test.sh`.

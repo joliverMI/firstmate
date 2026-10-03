@@ -13,7 +13,17 @@ FM_LOCK_STALE_AFTER="${FM_LOCK_STALE_AFTER:-2}"
 # confirm and 0.5s attach polls, and forking uname per call is a measurable cost on
 # the platform (Git Bash/MSYS) that already pays the highest fork price.
 _FM_UNAME=$(uname 2>/dev/null || echo unknown)
-mkdir -p "$STATE"
+# fm-procevent.sh enforces that $STATE itself is a private (non-group/other-
+# writable) directory, but this library is sourced ahead of that check by
+# almost every consumer, so it is usually the one that actually creates
+# $STATE. A lenient ambient umask (e.g. 002, common on hosts with a shared
+# primary group) would otherwise leave it group-writable and fail that check.
+# Apply the private umask only at creation time via mkdir itself (mkdir never
+# touches the permissions of a directory that already exists): this library
+# is re-sourced on nearly every invocation, and an unconditional chmod here
+# would reset permissions a caller (e.g. a test fixture simulating a
+# write/read failure) deliberately set on an already-existing $STATE.
+(umask 077; mkdir -p "$STATE")
 
 # Most wake-library consumers need only queue and lock primitives, including
 # deliberately minimal recovery fixtures and remote installations.
