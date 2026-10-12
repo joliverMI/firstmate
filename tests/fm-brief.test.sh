@@ -369,6 +369,18 @@ test_no_mistakes_dod_wording() {
     "no-mistakes DOD still states the --yes ban as a preference"
   assert_no_grep "no-mistakes refuses" "$brief" \
     "no-mistakes DOD must not claim the tool itself refuses --yes"
+
+  # The review fix-round cap is a captain-set token-spend limit the worker
+  # itself counts and enforces, distinct from the tool's own auto_fix.review
+  # setting, and it must not shorten the ask-user escalation above.
+  assert_grep "Cap review-step fix rounds at 3 per run" "$brief" \
+    "no-mistakes DOD must state the review fix-round cap"
+  assert_grep "not the \`auto_fix.review\` setting, which only bounds the pipeline's own unattended follow-up loop" "$brief" \
+    "no-mistakes DOD must distinguish the worker-counted cap from auto_fix.review"
+  assert_grep "needs-decision: review step reached 3 fix rounds in this run, remaining findings <id1,id2,...> at {gate step/round}" "$brief" \
+    "no-mistakes DOD must tell the worker how to escalate once the cap is reached"
+  assert_grep "This cap does not shorten the ask-user escalation above" "$brief" \
+    "no-mistakes DOD must keep the fix-round cap from weakening ask-user escalation"
   pass "fm-brief.sh: no-mistakes DOD keeps its apostrophe prose and bans --yes outright"
 }
 
