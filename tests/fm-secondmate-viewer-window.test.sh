@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/fm-secondmate-viewer-window.test.sh - the best-effort, opt-in, local
-# tmux viewer window for a live herdr-backed remote secondmate
-# (bin/fm-secondmate-viewer-window.sh).
+# tmux viewer window for live herdr-backed remote secondmate(s) that share one
+# (remote_host, remote_herdr_session) pair (bin/fm-secondmate-viewer-window.sh).
 #
 # Drives the real script directly against fake state/<id>.meta records and a
 # fake tmux, never a real remote host or Herdr install - exactly the shape
@@ -12,9 +12,16 @@
 #     skipped when the primary's own resolved backend is not tmux.
 #   - Idempotent: a second run against the same live window reports it already
 #     exists and never calls tmux new-window again.
-#   - The SSH/herdr-attach command is built fresh from that secondmate's own
-#     meta, never a hardcoded host or session name, and two different
-#     secondmate ids never collide on the same window name.
+#   - A dead pane on the existing window is respawned in place, not duplicated.
+#   - One window per distinct (remote_host, remote_herdr_session) pair: two
+#     secondmate ids sharing a pair share one window named "captains", while a
+#     second distinct pair gets its own stable "captains-<host>-<session>" name.
+#   - The SSH command attaches the shared Herdr session (`herdr session
+#     attach <session>`) with $HOME meant to expand on the remote host, built
+#     fresh from that pair's own recorded host/session, never hardcoded.
+#   - New windows are appended to the session (`-t "<session>:"`) rather than
+#     targeting a fixed index, so an occupied or non-default base index never
+#     fails creation.
 #   - Missing tmux or ssh on PATH is reported as skipped, never a hard failure.
 #   - The script always exits 0, so a caller can never let it block or fail.
 set -u
@@ -33,8 +40,11 @@ SCRIPT="$ROOT/bin/fm-secondmate-viewer-window.sh"
 # yet. new-window appends the requested name to that state file and logs the
 # full argv (one call per line) to FM_TMUX_CALL_LOG, so a test can assert
 # exactly one creation happened. send-keys logs the literal text typed into the
-# pane to FM_TMUX_KEYS_LOG, keyed by window id, so the composed SSH/herdr
-# command is directly observable.
+# pane to FM_TMUX_KEYS_LOG, keyed by window id/name, so the composed
+# SSH/herdr command is directly observable. FM_TMUX_DEAD_WINDOWS names a file
+# listing window names whose pane should report pane_dead=1 until the next
+# respawn-window call, which logs to FM_TMUX_RESPAWN_LOG and clears the name
+# from that dead list.
 make_tmux() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -52,14 +62,45 @@ case "${1:-}" in
     cat "$state"
     exit 0
     ;;
+  list-panes)
+    target=
+    while [ "$#" -gt 0 ]; do
+      case "$1" in -t) shift; target=$1 ;; esac
+      shift
+    done
+    name=${target#*:}
+    dead=${FM_TMUX_DEAD_WINDOWS:-}
+    if [ -n "$dead" ] && [ -f "$dead" ] && grep -qx "$name" "$dead" 2>/dev/null; then
+      echo 1
+    else
+      echo 0
+    fi
+    exit 0
+    ;;
+  respawn-window)
+    target=
+    while [ "$#" -gt 0 ]; do
+      case "$1" in -t) shift; target=$1 ;; esac
+      shift
+    done
+    name=${target#*:}
+    printf '%s\n' "$name" >> "${FM_TMUX_RESPAWN_LOG:?}"
+    dead=${FM_TMUX_DEAD_WINDOWS:-}
+    if [ -n "$dead" ] && [ -f "$dead" ]; then
+      grep -vx "$name" "$dead" > "$dead.tmp" 2>/dev/null || : > "$dead.tmp"
+      mv "$dead.tmp" "$dead"
+    fi
+    exit 0
+    ;;
   new-window)
     name=
+    args="$*"
     while [ "$#" -gt 0 ]; do
       case "$1" in -n) shift; name=$1 ;; esac
       shift
     done
     printf '%s\n' "$name" >> "$state"
-    printf '%s\n' "$*" >> "${FM_TMUX_CALL_LOG:?}"
+    printf '%s\n' "$args" >> "${FM_TMUX_CALL_LOG:?}"
     wid="@$(wc -l < "$state" | tr -d '[:space:]')"
     printf '%s\n' "$wid"
     exit 0
@@ -95,8 +136,12 @@ new_case() {
   TMUX_STATE="$CASE_DIR/tmux-windows"
   TMUX_CALL_LOG="$CASE_DIR/tmux-calls.log"
   TMUX_KEYS_LOG="$CASE_DIR/tmux-keys.log"
+  TMUX_RESPAWN_LOG="$CASE_DIR/tmux-respawn.log"
+  TMUX_DEAD_WINDOWS="$CASE_DIR/tmux-dead-windows"
   : > "$TMUX_CALL_LOG"
   : > "$TMUX_KEYS_LOG"
+  : > "$TMUX_RESPAWN_LOG"
+  : > "$TMUX_DEAD_WINDOWS"
 }
 
 # write_meta <id> <remote-host> <remote-session>
@@ -118,6 +163,7 @@ run_viewer() {  # <id> [extra env...] -> stdout, rc always 0
   local id=$1; shift
   FM_STATE_OVERRIDE="$CASE_STATE" FM_CONFIG_OVERRIDE="$CASE_CONFIG" \
     FM_TMUX_STATE="$TMUX_STATE" FM_TMUX_CALL_LOG="$TMUX_CALL_LOG" FM_TMUX_KEYS_LOG="$TMUX_KEYS_LOG" \
+    FM_TMUX_RESPAWN_LOG="$TMUX_RESPAWN_LOG" FM_TMUX_DEAD_WINDOWS="$TMUX_DEAD_WINDOWS" \
     TMUX='' \
     env "$@" "$SCRIPT" "$id"
 }
@@ -208,15 +254,16 @@ opt_in
 write_meta sm1 serenity.example fm-remote
 out=$(PATH="$fb:$BASE_PATH" FM_BACKEND=tmux run_viewer sm1) || fail "script must always exit 0 (create)"
 case "$out" in
-  "created: firstmate:2ndmate-sm1-view") pass "create: makes exactly the expected stable window name on first run" ;;
+  "created: firstmate:captains") pass "create: a single registered pair gets the stable 'captains' window name" ;;
   *) fail "create: expected a created line for the new window, got: $out" ;;
 esac
 [ "$(wc -l < "$TMUX_CALL_LOG" | tr -d '[:space:]')" = 1 ] || fail "create: exactly one tmux new-window call expected, got: $(cat "$TMUX_CALL_LOG")"
+grep -q -- '-t firstmate:' "$TMUX_CALL_LOG" || fail "create: new-window must target the session by name, appending rather than fixing an index, got: $(cat "$TMUX_CALL_LOG")"
 
 keys_line=$(cat "$TMUX_KEYS_LOG")
 case "$keys_line" in
-  *"serenity.example"*"fm-remote"*) pass "create: the ssh/herdr command is built from this secondmate's own recorded host and session" ;;
-  *) fail "create: expected the composed command to reference serenity.example and fm-remote, got: $keys_line" ;;
+  *"serenity.example"*"session"*"attach"*"fm-remote"*) pass "create: the ssh/herdr-attach command is built from this pair's own recorded host and session" ;;
+  *) fail "create: expected the composed command to attach serenity.example's fm-remote session, got: $keys_line" ;;
 esac
 case "$keys_line" in
   *"spotfx"*|*"homelab"*|*"fm-remote-secondmate-control"*) fail "create: command must never reference an unrelated hardcoded secondmate name" ;;
@@ -225,23 +272,48 @@ esac
 
 out2=$(PATH="$fb:$BASE_PATH" FM_BACKEND=tmux run_viewer sm1) || fail "script must always exit 0 (repeat)"
 case "$out2" in
-  "exists: firstmate:2ndmate-sm1-view") pass "idempotent: a repeat run detects the live window and reports exists" ;;
+  "exists: firstmate:captains") pass "idempotent: a repeat run detects the live window and reports exists" ;;
   *) fail "idempotent: expected an exists line on the second run, got: $out2" ;;
 esac
 [ "$(wc -l < "$TMUX_CALL_LOG" | tr -d '[:space:]')" = 1 ] || fail "idempotent: a repeat run must never call tmux new-window again"
 
-# --- scoping: two different secondmate ids never collide ----------------------
+# --- a dead pane on the existing window is respawned, not duplicated ----------
 
-fb=$(make_tmux "$TMP_ROOT/twoids")
-new_case twoids
+printf '%s\n' captains > "$TMUX_DEAD_WINDOWS"
+out3=$(PATH="$fb:$BASE_PATH" FM_BACKEND=tmux run_viewer sm1) || fail "script must always exit 0 (respawn)"
+case "$out3" in
+  "respawned: firstmate:captains") pass "respawn: a dead pane on the existing window is respawned in place" ;;
+  *) fail "respawn: expected a respawned line, got: $out3" ;;
+esac
+[ "$(wc -l < "$TMUX_CALL_LOG" | tr -d '[:space:]')" = 1 ] || fail "respawn: must never call tmux new-window"
+[ "$(cat "$TMUX_RESPAWN_LOG")" = captains ] || fail "respawn: expected exactly one respawn-window call against captains, got: $(cat "$TMUX_RESPAWN_LOG")"
+
+# --- two secondmates sharing one pair share the one 'captains' window --------
+
+fb=$(make_tmux "$TMP_ROOT/sharedpair")
+new_case sharedpair
+opt_in
+write_meta spotfx serenity fm-remote
+write_meta homelab serenity fm-remote
+out_a=$(PATH="$fb:$BASE_PATH" FM_BACKEND=tmux run_viewer spotfx) || fail "script must always exit 0 (spotfx)"
+out_b=$(PATH="$fb:$BASE_PATH" FM_BACKEND=tmux run_viewer homelab) || fail "script must always exit 0 (homelab)"
+[ "$out_a" = "created: firstmate:captains" ] || fail "shared pair: expected the shared 'captains' name on first creation, got: $out_a"
+[ "$out_b" = "exists: firstmate:captains" ] || fail "shared pair: expected the second secondmate on the same pair to see the window already exists, got: $out_b"
+[ "$(wc -l < "$TMUX_CALL_LOG" | tr -d '[:space:]')" = 1 ] || fail "shared pair: two secondmates on the same (host, session) pair must never create two windows"
+pass "scoping: two secondmates sharing one (remote_host, remote_herdr_session) pair share the single 'captains' window"
+
+# --- two distinct pairs get two distinct, stable window names ----------------
+
+fb=$(make_tmux "$TMP_ROOT/twopairs")
+new_case twopairs
 opt_in
 write_meta alpha host-a fm-remote
-write_meta bravo host-b fm-remote
+write_meta bravo host-b fm-remote-b
 out_a=$(PATH="$fb:$BASE_PATH" FM_BACKEND=tmux run_viewer alpha) || fail "script must always exit 0 (alpha)"
 out_b=$(PATH="$fb:$BASE_PATH" FM_BACKEND=tmux run_viewer bravo) || fail "script must always exit 0 (bravo)"
-[ "$out_a" = "created: firstmate:2ndmate-alpha-view" ] || fail "two-ids: expected alpha's own window name, got: $out_a"
-[ "$out_b" = "created: firstmate:2ndmate-bravo-view" ] || fail "two-ids: expected bravo's own window name, got: $out_b"
-[ "$(wc -l < "$TMUX_CALL_LOG" | tr -d '[:space:]')" = 2 ] || fail "two-ids: expected exactly two distinct window creations"
-pass "scoping: two different secondmate ids never collide on the same viewer window name"
+[ "$out_a" = "created: firstmate:captains-host-a-fm-remote" ] || fail "two-pairs: expected alpha's own pair-derived window name, got: $out_a"
+[ "$out_b" = "created: firstmate:captains-host-b-fm-remote-b" ] || fail "two-pairs: expected bravo's own pair-derived window name, got: $out_b"
+[ "$(wc -l < "$TMUX_CALL_LOG" | tr -d '[:space:]')" = 2 ] || fail "two-pairs: expected exactly two distinct window creations"
+pass "scoping: two distinct (remote_host, remote_herdr_session) pairs never collide on one window name"
 
 exit 0

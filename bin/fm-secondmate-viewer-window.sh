@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# fm-secondmate-viewer-window.sh - best-effort local tmux viewer window for one
-# LIVE remote secondmate, presentation-only and never authoritative.
+# fm-secondmate-viewer-window.sh - best-effort local tmux viewer window for the
+# LIVE herdr-backed remote secondmate(s) that share one (remote_host,
+# remote_herdr_session) pair, presentation-only and never authoritative.
 #
 # Usage:
 #   bin/fm-secondmate-viewer-window.sh <secondmate-id>
@@ -13,23 +14,27 @@
 # and routed on the herdr backend - this script trusts that gating and never
 # re-probes liveness itself.
 #
-# It creates, or on a later sweep leaves alone, exactly one tmux window in the
-# PRIMARY's own local tmux session per secondmate id, named "2ndmate-<id>-view"
-# (stable and greppable, so a repeated sweep detects it and never accumulates
-# duplicates). The window runs an SSH command that attaches to that
-# secondmate's own recorded Herdr session - state/<id>.meta's remote_host and
-# remote_herdr_session, read fresh every call, never a hardcoded host or
-# session name - using the same HERDR_SESSION=<session> ... --session
-# <session> targeting pattern bin/backends/herdr.sh's fm_backend_herdr_cli
-# uses for every other herdr call in this repo.
+# One remote host commonly hosts several secondmates inside the same Herdr
+# session (state/<id>.meta's remote_host and remote_herdr_session), so this
+# creates, or on a later sweep leaves alone, exactly one tmux window per
+# DISTINCT (remote_host, remote_herdr_session) pair rather than one per
+# secondmate id. The distinct-pair set is read fresh from every registered
+# secondmate's own state/<id>.meta (kind=secondmate, remote_backend=herdr),
+# not only the id passed on this invocation, so the window name stays stable
+# across a sweep regardless of call order or of a sibling secondmate's
+# transient liveness. When exactly one pair is registered - the common case -
+# the window is named the stable, greppable "captains"; a second or further
+# distinct pair gets its own stable "captains-<host>-<session>" name (host and
+# session sanitized for a tmux window name), so pairs never collide and a
+# repeated sweep never accumulates duplicates.
 #
-# Herdr's interactive TUI attach has no other documented CLI entry point
-# anywhere in this repository - every existing herdr call here is a headless
-# JSON-RPC subcommand. This deliberately does not invent or guess a flag to
-# force an initial workspace switch: the captain lands on Herdr's own bare
-# session view in the new window and switches to that secondmate's own
-# "2ndmate-<id>" workspace exactly as with any other Herdr session
-# (docs/herdr-backend.md).
+# The window runs `ssh -t <host> 'PATH=$HOME/.local/bin:$PATH herdr session
+# attach <session>'` - $HOME expands on the REMOTE side, inside Herdr's own
+# clickable multi-session sidebar (`herdr session attach`), exactly the
+# command the captain ran by hand after every restart before this existed.
+# Unlike a single secondmate's own `--session <session>` CLI view, `session
+# attach` is what surfaces every secondmate sharing that Herdr session in one
+# sidebar.
 #
 # Never touches state/<id>.meta, is never a target for fm-send.sh,
 # fm-control.sh, or fm-peek.sh, and adds no new control surface. A failure
@@ -39,9 +44,10 @@
 # it fail, block, or slow anything.
 #
 # Output protocol, one line, stable for script/test consumers:
-#   created: <session>:<window>   a new viewer window was made
-#   exists: <session>:<window>    the viewer window was already present (idempotent no-op)
-#   skipped: <reason>             opted out, wrong backend, missing tool, no route, etc.
+#   created: <session>:<window>     a new viewer window was made
+#   exists: <session>:<window>      the viewer window was already present and alive (idempotent no-op)
+#   respawned: <session>:<window>   the viewer window existed but its pane had died; it was respawned in place
+#   skipped: <reason>               opted out, wrong backend, missing tool, no route, etc.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -100,7 +106,33 @@ if ! command -v ssh >/dev/null 2>&1; then
   exit 0
 fi
 
-wname="2ndmate-$id-view"
+# sanitize_for_window_name <text>: tmux window names tolerate most bytes, but
+# we keep the fallback multi-pair name boringly greppable and shell-safe.
+sanitize_for_window_name() {
+  printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '-'
+}
+
+# Distinct (remote_host, remote_herdr_session) pairs across every registered
+# secondmate, read fresh every call so the window name is stable regardless
+# of which secondmate triggered this run or which siblings are live right now.
+distinct_pairs=$(
+  for other_meta in "$STATE"/*.meta; do
+    [ -f "$other_meta" ] || continue
+    grep -q '^kind=secondmate$' "$other_meta" 2>/dev/null || continue
+    [ "$(fm_meta_get "$other_meta" remote_backend)" = herdr ] || continue
+    other_host=$(fm_meta_get "$other_meta" remote_host)
+    other_session=$(fm_meta_get "$other_meta" remote_herdr_session)
+    [ -n "$other_host" ] && [ -n "$other_session" ] || continue
+    printf '%s\t%s\n' "$other_host" "$other_session"
+  done | sort -u
+)
+pair_count=$(printf '%s\n' "$distinct_pairs" | grep -c .)
+
+if [ "$pair_count" -le 1 ]; then
+  wname=captains
+else
+  wname="captains-$(sanitize_for_window_name "$remote_host")-$(sanitize_for_window_name "$remote_session")"
+fi
 
 ses=firstmate
 if [ -n "${TMUX:-}" ]; then
@@ -113,13 +145,21 @@ if ! tmux has-session -t "$ses" 2>/dev/null; then
   exit 0
 fi
 
+# shellcheck disable=SC2016 # $HOME is meant to expand on the remote side, not here.
+remote_cmd='PATH=$HOME/.local/bin:$PATH herdr session attach '"$(printf '%q' "$remote_session")"
+ssh_line="ssh -t $(printf '%q' "$remote_host") $(printf '%q' "$remote_cmd")"
+
 if tmux list-windows -t "$ses" -F '#{window_name}' 2>/dev/null | grep -qx "$wname"; then
+  pane_dead=$(tmux list-panes -t "$ses:$wname" -F '#{pane_dead}' 2>/dev/null | head -1)
+  if [ "$pane_dead" = 1 ]; then
+    tmux respawn-window -t "$ses:$wname" 2>/dev/null || true
+    tmux send-keys -t "$ses:$wname" "$ssh_line" Enter 2>/dev/null || true
+    echo "respawned: $ses:$wname"
+    exit 0
+  fi
   echo "exists: $ses:$wname"
   exit 0
 fi
-
-remote_cmd="HERDR_SESSION=$(printf '%q' "$remote_session") herdr --session $(printf '%q' "$remote_session")"
-ssh_line="ssh -t $(printf '%q' "$remote_host") $(printf '%q' "$remote_cmd")"
 
 wid=$(tmux new-window -dP -F '#{window_id}' -t "$ses:" -n "$wname" 2>/dev/null) || {
   echo "skipped: tmux window creation failed in session '$ses'"
@@ -127,6 +167,9 @@ wid=$(tmux new-window -dP -F '#{window_id}' -t "$ses:" -n "$wname" 2>/dev/null) 
 }
 tmux set-window-option -t "$wid" automatic-rename off 2>/dev/null || true
 tmux set-window-option -t "$wid" allow-rename off 2>/dev/null || true
+# remain-on-exit so a dropped ssh/herdr session leaves a respawn-able dead
+# pane behind instead of silently closing the whole window.
+tmux set-window-option -t "$wid" remain-on-exit on 2>/dev/null || true
 tmux send-keys -t "$wid" "$ssh_line" Enter 2>/dev/null || true
 
 echo "created: $ses:$wname"
