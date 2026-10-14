@@ -37,7 +37,7 @@ run_spawn() {
   local home=$1 wt=$2 fakebin=$3 launchlog=$4
   shift 4
   : > "$launchlog"
-  CLAUDE_CONFIG_DIR= FM_FAKE_LAUNCH_LOG="$launchlog" \
+  CLAUDE_CONFIG_DIR='' FM_FAKE_LAUNCH_LOG="$launchlog" \
     fm_test_run_spawn "$home" "$wt" "$fakebin" "$@"
 }
 
