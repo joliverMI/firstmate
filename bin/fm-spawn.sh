@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--card <card-id>]
-#        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--card <card-id>]
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--compact-window <capped|full>] [--backend <name>] [--card <card-id>]
+#        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--compact-window <capped|full>] [--backend <name>] [--card <card-id>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
@@ -59,6 +59,18 @@
 #   axes chosen by firstmate at intake. They are only threaded into harnesses whose
 #   installed CLIs were verified to support that axis; unsupported axes are omitted
 #   from that harness's launch rather than guessed.
+#   --compact-window <capped|full> overrides, for this one claude-harness
+#   crewmate or scout spawn only, whether the launch keeps the operator's global
+#   ~/.claude/settings.json autoCompactWindow cap (capped) or lifts it to the
+#   model's full context window via claude's own --autocompact flag (full),
+#   without ever touching that global file. Refused on --secondmate (a
+#   secondmate always keeps the standing cap) and on any harness other than
+#   claude. Without it, a claude crewmate or scout spawn resolved at xhigh
+#   effort defaults to full and every other resolved effort defaults to capped;
+#   docs/configuration.md "Claude auto-compact window override
+#   (--compact-window)" owns the full mechanism and rationale. The resolved
+#   choice is recorded as compact_window=<capped|full> in state/<id>.meta for
+#   every claude-harness spawn, secondmates included.
 #   --backend <name> is the explicit runtime session-provider backend for this
 #   exact task only (docs/configuration.md "Runtime backend" owns when that flag
 #   is authorized). Without it, the script resolves FM_BACKEND, then
@@ -358,6 +370,7 @@ MODE=
 YOLO=
 TRACEPARENT_ARG=
 CARD_ARG=
+COMPACT_WINDOW=
 HARNESS_SET=0
 MODEL_SET=0
 EFFORT_SET=0
@@ -366,6 +379,7 @@ MODE_SET=0
 YOLO_SET=0
 TRACEPARENT_SET=0
 CARD_SET=0
+COMPACT_WINDOW_SET=0
 RELAUNCH=0
 POS=()
 want_value=
@@ -383,6 +397,7 @@ for a in "$@"; do
       yolo) YOLO=$a; YOLO_SET=1 ;;
       traceparent) TRACEPARENT_ARG=$a; TRACEPARENT_SET=1 ;;
       card) CARD_ARG=$a; CARD_SET=1 ;;
+      compactwindow) COMPACT_WINDOW=$a; COMPACT_WINDOW_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -408,6 +423,8 @@ for a in "$@"; do
     --traceparent=*) TRACEPARENT_ARG=${a#--traceparent=}; TRACEPARENT_SET=1 ;;
     --card) want_value=card ;;
     --card=*) CARD_ARG=${a#--card=}; CARD_SET=1 ;;
+    --compact-window) want_value=compactwindow ;;
+    --compact-window=*) COMPACT_WINDOW=${a#--compact-window=}; COMPACT_WINDOW_SET=1 ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -421,6 +438,11 @@ done
 [ "$TRACEPARENT_SET" -eq 0 ] || [ -n "$TRACEPARENT_ARG" ] || { echo "error: --traceparent requires a non-empty value" >&2; exit 1; }
 [ "$CARD_SET" -eq 0 ] || [ -n "$CARD_ARG" ] || { echo "error: --card requires a non-empty value" >&2; exit 1; }
 [ "$CARD_SET" -eq 0 ] || [ "$KIND" != secondmate ] || { echo "error: --card applies only to ship and scout spawns; a secondmate is recorded in the secondmate registry, never as a dashboard card" >&2; exit 1; }
+[ "$COMPACT_WINDOW_SET" -eq 0 ] || [ -n "$COMPACT_WINDOW" ] || { echo "error: --compact-window requires a non-empty value" >&2; exit 1; }
+case "$COMPACT_WINDOW" in
+  ''|capped|full) ;;
+  *) echo "error: --compact-window must be 'capped' or 'full'" >&2; exit 1 ;;
+esac
 # A parent-delivered carrier replaces this home's own resolution, so it is
 # refused unless it is a secondmate spawn carrying a strictly valid W3C value.
 # Nothing else may reach the pane's TRACEPARENT export.
@@ -1249,6 +1271,7 @@ else
   ARG3=${POS[2]:-}
 fi
 [ -z "$HARNESS_ARG" ] || ARG3=$HARNESS_ARG
+[ "$COMPACT_WINDOW_SET" -eq 0 ] || [ "$KIND" != secondmate ] || { echo "error: --compact-window applies only to crewmate and scout spawns; a secondmate always keeps the standing auto-compact cap" >&2; exit 1; }
 
 shell_quote() {
   printf "'"
@@ -1303,7 +1326,7 @@ launch_template() {
     # alone disables the feature; keep both so a managed override of one still
     # leaves the other in force. Both are per-launch, scoped to this invocation only,
     # and never touch the captain's global ~/.claude/settings.json.
-    claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '\''{"feedbackDrafts":"off"}'\'' __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '\''{"feedbackDrafts":"off"}'\'' __MODELFLAG____EFFORTFLAG____COMPACTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     codex)
       if [ "$kind" = secondmate ]; then
         printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
@@ -1407,6 +1430,7 @@ case "$ARG3" in
     LAUNCH=$(launch_template "$HARNESS" "$KIND") || { echo "error: unknown harness '$HARNESS'; pass a raw launch command to use an unverified adapter" >&2; exit 1; }
     ;;
 esac
+[ "$COMPACT_WINDOW_SET" -eq 0 ] || [ "$HARNESS" = claude ] || { echo "error: --compact-window is implemented for the claude harness only" >&2; exit 1; }
 
 # muse is verified as a CREWMATE/SCOUT adapter only. A secondmate is a firstmate
 # instance, so it needs a primary supervision protocol; muse has none, and its
@@ -1614,6 +1638,37 @@ effort_flag_for_harness() {
     # in model ids such as cursor-grok-4.5-high, so it also receives no separate
     # effort flag.
   esac
+}
+
+# Captain order (2026-10-14): large-feature planning agents (xhigh-effort
+# crewmates and scouts) must not inherit the operator's global autoCompactWindow
+# cap unless the captain says otherwise for that task; firstmate, secondmates,
+# and ordinary crews keep it. claude's --autocompact flag overrides
+# ~/.claude/settings.json's autoCompactWindow for this one launch only
+# (verified: claude --help documents --autocompact <auto|tokens> accepting
+# 100k-1M tokens; `claude -p --autocompact 1000000` against a model with a
+# global autoCompactWindow of 200000 resolved effectiveWindow=980000 in debug
+# output, instead of the 180000 the same launch resolves to without the flag).
+# 1000000 is the flag's own documented maximum and claude itself clamps it to
+# the launched model's real context window, so it always resolves to that
+# model's full window rather than overshooting it.
+compact_window_choice() {
+  local harness=$1 kind=$2 effort=$3 requested=$4
+  if [ -n "$requested" ]; then
+    printf '%s' "$requested"
+    return
+  fi
+  if [ "$harness" = claude ] && [ "$kind" != secondmate ] && [ "$effort" = xhigh ]; then
+    printf full
+  else
+    printf capped
+  fi
+}
+
+compact_window_flag_for_harness() {
+  local harness=$1 choice=$2
+  [ "$harness" = claude ] && [ "$choice" = full ] || return 0
+  printf -- '--autocompact 1000000 '
 }
 
 case "$LAUNCH" in
@@ -3121,6 +3176,8 @@ else
   fi
 fi
 
+COMPACT_WINDOW_EFFECTIVE=$(compact_window_choice "$HARNESS" "$KIND" "$EFFORT" "$COMPACT_WINDOW")
+
 META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
 SPAWN_GEN="s$(date +%s).${BASHPID:-$$}.$RANDOM"
@@ -3140,7 +3197,7 @@ SPAWN_META_PATH=$SPAWN_META_TMP
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort compact_window busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -3158,6 +3215,7 @@ preserve_relaunch_meta() {
   echo "tasktmp=$TASK_TMP"
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
+  [ "$HARNESS" != claude ] || echo "compact_window=$COMPACT_WINDOW_EFFECTIVE"
   [ -z "${BUSY_GEN:-}" ] || echo "busy_gen=$BUSY_GEN"
   echo "spawn_gen=$SPAWN_GEN"
   # Default-off writes no traceparent= line.
@@ -3252,8 +3310,10 @@ sq_opinput=$(shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
 sq_worktree=$(shell_quote "$WT")
 MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL")
 EFFORTFLAG=$(effort_flag_for_harness "$HARNESS" "$EFFORT")
+COMPACTFLAG=$(compact_window_flag_for_harness "$HARNESS" "$COMPACT_WINDOW_EFFECTIVE")
 LAUNCH=${LAUNCH//__MODELFLAG__/$MODELFLAG}
 LAUNCH=${LAUNCH//__EFFORTFLAG__/$EFFORTFLAG}
+LAUNCH=${LAUNCH//__COMPACTFLAG__/$COMPACTFLAG}
 LAUNCH=${LAUNCH//__BRIEF__/$sq_brief}
 LAUNCH=${LAUNCH//__TURNEND__/$sq_turnend}
 LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}

@@ -389,6 +389,15 @@ Malformed JSON, an empty or malformed rule/default array, an unverified harness,
 While the file remains present, no crewmate or scout spawn may proceed without an explicit resolved harness; malformed configuration must be reported and corrected rather than selected around.
 Secondmate homes inherit this file from the primary, so a secondmate's own crewmates apply the same dispatch profile behavior.
 
+### Claude auto-compact window override (--compact-window)
+
+A captain's global `~/.claude/settings.json` `autoCompactWindow` caps every Claude launch on that machine, including every Claude crewmate and scout `fm-spawn.sh` starts, because the setting is machine-wide rather than per-launch.
+Claude's own `--autocompact <auto|tokens>` CLI flag overrides that cap for one launch only, up to its documented maximum of `1000000` tokens, and Claude itself clamps the effective window to the launched model's real context size; it never touches `~/.claude/settings.json`.
+By captain order (2026-10-14), a large-feature planning agent - a Claude crewmate or scout, never a secondmate, dispatched at `xhigh` effort - needs its full context window rather than the captain's own smaller operating cap, because an early auto-compact was cutting that work short.
+`fm-spawn.sh` resolves this per launch: a claude-harness crewmate or scout spawn whose resolved effort is `xhigh` passes `--autocompact 1000000`, lifting the window to the model's full size for that one launch; every other claude-harness crewmate or scout spawn, and every secondmate regardless of effort, keeps the standing cap.
+`--compact-window <capped|full>` overrides that default explicitly in either direction for one spawn; it is refused for a secondmate spawn (which always keeps the standing cap) and for any harness other than claude.
+The resolved choice is recorded as `compact_window=<capped|full>` in that task's `state/<id>.meta` for every claude-harness spawn, including secondmates (always `capped` there), for traceability.
+
 ## Toolchain
 
 On session start the first mate detects what its required toolchain is missing or too old and lists each problem with either an exact install command or manual instructions.
