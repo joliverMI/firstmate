@@ -68,3 +68,22 @@ commands:
 test:
   evidence:
     store_in_repo: true
+
+# Info-severity review findings catch far fewer real bugs than error/warning
+# ones but still cost a fix-and-rereview round when selected, so keep them
+# visible without letting them spend tokens. There is no native severity knob
+# for auto_fix selection (v1.84), so this is the documented review-instruction
+# workaround: `path: "*"` is a no-slash pattern, which matches every changed
+# file by basename at any depth (see docs/reference/repo-config.md
+# "ignore_patterns" for that matcher), so this block always applies.
+review:
+  path_instructions:
+    - path: "*"
+      instructions: |
+        Classify every info-severity finding's action as no-op, never
+        auto-fix or ask-user. Keep reporting info-severity findings in the
+        findings table so they stay visible - only their action
+        classification changes. Do not fold an info-severity finding into a
+        fix round or let it trigger another review pass on its own. This
+        does not relax error- or warning-severity findings, which keep
+        their ordinary action and escalation path.
