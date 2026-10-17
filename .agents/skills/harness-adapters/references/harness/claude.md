@@ -12,6 +12,7 @@ Busy hooks verified 2026-07-28 on Claude Code 2.1.220.
 | Skill | `/<skill>`, for example `/no-mistakes`. |
 | Model | `--model <model>`; discover through the interactive `/model` picker, with alias or full-name shape documented by `claude --help`. |
 | Effort | `--effort <low\|medium\|high\|xhigh\|max>`, verified on 2.1.196. |
+| Auto-compact window | `--autocompact <auto\|tokens>` overrides `~/.claude/settings.json`'s `autoCompactWindow` for one launch only; `../../../../../docs/configuration.md` under "Claude auto-compact window override (--compact-window)" owns the mechanism, `fm-spawn.sh`'s xhigh-crew default, and the `--compact-window <capped\|full>` override flag. |
 
 ## Workspace trust
 
