@@ -1,0 +1,28 @@
+ok - a silent supervision chain becomes one durable wake, one episode record, and an active alert
+ok - an open episode appends one wake and alerts once per interval, not once per tick
+ok - away mode keeps the deadman inert, so only one process ever injects into the pane
+ok - ordinary Stop-owned recovery already under way keeps the deadman out of the way
+ok - a live identity-matched watcher with a fresh beat is healthy and never alarms
+ok - a home with nothing in flight is not an outage
+ok - a delivered rewake that no turn ever handled is a trigger on its own, even behind a live watcher
+ok - self-recovery sends exactly one turn-end-guard input into firstmate's pane per backoff window
+ok - an unconfirmed submit is recorded and still spends its backoff window rather than retyping
+ok - self-recovery defers to a running turn and keeps the open episode's record
+ok - a six-minute handling turn with the pane mid-turn is not an outage
+ok - an idle pane after a dead rewake turn still alarms, records, and self-recovers
+ok - self-recovery refuses any pane whose composer is not positively proven empty
+ok - recovery closes the episode and stops the injections
+ok - ensure starts exactly one deadman, detached from its starter's process group, and stop retires it
+ok - a real arm starts this home's deadman outside its own process group and a later arm keeps the same one
+ok - the deadman retires itself when the session that owned its home is gone
+ok - a deadman retires when a different session takes over its home, so the next arm starts one from that session
+ok - ensure resolves firstmate's harness from its own ancestry and hands it to the detached deadman, so a mid-turn pane still reads busy there
+ok - ensure retires a deadman started under a superseded session and starts one for the current session at once
+ok - stop lands immediately even when the deadman is deep inside a production-length tick, and releases its lock completely
+ok - a linked task worktree never starts a deadman
+ok - a handling turn's drain retires the delivered-rewake marker
+ok - the first alarm fires on the tick that opens the episode, and a future-dated stamp never suppresses an alarm
+ok - the alarm reaches the captain whether injection is deferred by unsent text or by a turn busy past its bound
+ok - consecutive unsent-text deferrals alarm in plain words at the threshold, repeat on the interval, and never touch the text
+ok - a window with no readable input box escalates as its own plain-words cause
+ok - stopping the deadman terminates a notifier it was still running, as the away-mode daemon does
