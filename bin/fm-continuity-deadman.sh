@@ -45,19 +45,34 @@
 #     long handling turn satisfies every measure above without being an outage;
 #     the 2026-09-07 shape is an IDLE pane, because the woken turn had died. A
 #     pane this process cannot resolve or read falls back to the measures alone.
+#     That hold is bounded: a pane that has read mid-turn for
+#     FM_CONTINUITY_DEADMAN_BUSY_HOLD_MAX may be a wedged turn, so the episode
+#     opens anyway (injection still never types into a busy pane).
 # it, in order:
 #   1. appends ONE durable `check: watcher-continuity-lost` wake per episode, so
 #      the outage is a first-class record at the next drain rather than a memory;
 #   2. fires the configured active-alert channels through the shared
 #      bin/fm-wedge-alarm-lib.sh, so an outage can reach the captain from outside
-#      every terminal surface (docs/wedge-alarm.md owns channel configuration);
+#      every terminal surface (docs/wedge-alarm.md owns channel configuration).
+#      The episode's FIRST alarm fires on the tick that opens it, before and
+#      independent of any injection attempt, and no rate-limit stamp can hold it
+#      back; later alarms repeat once per FM_CONTINUITY_DEADMAN_ALARM_INTERVAL;
 #   3. SELF-RECOVERS on a bounded backoff: injects one turn-end-guard-kind
 #      operational input into the primary's own pane, exactly as the away-mode
 #      daemon injects its escalations. Each injection starts a real turn whose
 #      normal Stop re-arms the chain. While the API is still failing that turn
 #      also fails hook-less and costs nothing; the moment service returns, the
 #      next injection restores supervision within minutes instead of waiting for
-#      the captain. Injection stops the moment supervision is healthy again.
+#      the captain. Injection stops the moment supervision is healthy again;
+#   4. ESCALATES a composer that keeps recovery off: injection never types into
+#      a composer not proven empty, so a single stray character left in
+#      firstmate's input box would otherwise defer recovery forever (the
+#      2026-10-16 outage ran 26 hours that way). After
+#      FM_CONTINUITY_DEADMAN_COMPOSER_ALARM_AFTER consecutive composer deferrals
+#      it alarms at once, telling the captain in plain words that the input box
+#      holds unsent text and must be cleared, then repeats on the alarm interval
+#      while the cause persists. It reads the composer and never clears,
+#      overwrites, or submits it: that text may be the captain's own.
 #
 # It never kills, never tears down, and never touches another home: every path is
 # scoped to this FM_HOME's own state directory and its own singleton lock.
@@ -83,6 +98,15 @@
 #                                         episode, default 1800
 #   FM_CONTINUITY_DEADMAN_IDLE_EXIT       exit after this many seconds with no
 #                                         supervision need, default 900
+#   FM_CONTINUITY_DEADMAN_COMPOSER_ALARM_AFTER
+#                                         consecutive composer-not-empty
+#                                         deferrals before the input-box alarm,
+#                                         default 10 (about ten minutes at the
+#                                         default tick); 0 disables it
+#   FM_CONTINUITY_DEADMAN_BUSY_HOLD_MAX   seconds a mid-turn pane may hold off
+#                                         opening an episode, measured from this
+#                                         process's first mid-turn reading,
+#                                         default 1800; 0 never holds it off
 #   FM_CONTINUITY_DEADMAN_INJECT_EXEC     TEST SEAM. When set, it REPLACES the
 #                                         real pane submit: the resolved backend,
 #                                         target, and encoded message are handed
@@ -103,6 +127,11 @@
 #   .continuity-deadman-last-inject, .continuity-deadman-last-alarm
 #                               rate-limit stamps for the injection backoff and
 #                               the re-alarm interval; retired with the episode
+#   .continuity-deadman-composer-deferrals
+#                               consecutive composer-not-empty deferral count and
+#                               the last composer verdict, durable so a deadman
+#                               restart does not reset the escalation; retired
+#                               with the episode
 #   .rewake-pending             written by bin/fm-claude-stop-autoarm.sh before
 #                               its exit-2 rewake and cleared by
 #                               bin/fm-wake-drain.sh, so "a rewake was delivered
@@ -139,6 +168,7 @@ DEADMAN_LOCK="$STATE/.continuity-deadman.lock"
 AUTOARM_LOCK="$STATE/.claude-autoarm.lock"
 ALARM_MARKER="$STATE/.continuity-deadman-alarm"
 REWAKE_PENDING="$STATE/.rewake-pending"
+COMPOSER_DEFERRALS="$STATE/.continuity-deadman-composer-deferrals"
 DEADMAN_LOG="$STATE/.continuity-deadman.log"
 
 GRACE=${FM_GUARD_GRACE:-300}
@@ -146,6 +176,8 @@ TICK=${FM_CONTINUITY_DEADMAN_TICK:-60}
 INJECT_BACKOFF=${FM_CONTINUITY_DEADMAN_INJECT_BACKOFF:-600}
 ALARM_INTERVAL=${FM_CONTINUITY_DEADMAN_ALARM_INTERVAL:-1800}
 IDLE_EXIT=${FM_CONTINUITY_DEADMAN_IDLE_EXIT:-900}
+COMPOSER_ALARM_AFTER=${FM_CONTINUITY_DEADMAN_COMPOSER_ALARM_AFTER:-10}
+BUSY_HOLD_MAX=${FM_CONTINUITY_DEADMAN_BUSY_HOLD_MAX:-1800}
 LOG_MAX_BYTES=${FM_CONTINUITY_DEADMAN_LOG_MAX_BYTES:-262144}
 # Injectable backends: the same verified set the away-mode daemon restricts
 # itself to. zellij, orca, and cmux are real Firstmate backends with no verified
@@ -156,16 +188,16 @@ INJECTABLE_BACKENDS="tmux herdr"
 INJECT_CONFIRM_RETRIES=${FM_INJECT_CONFIRM_RETRIES:-3}
 INJECT_CONFIRM_SLEEP=${FM_INJECT_CONFIRM_SLEEP:-0.5}
 
-for _dm_num in GRACE TICK INJECT_BACKOFF ALARM_INTERVAL IDLE_EXIT LOG_MAX_BYTES; do
+for _dm_num in GRACE TICK INJECT_BACKOFF ALARM_INTERVAL IDLE_EXIT LOG_MAX_BYTES COMPOSER_ALARM_AFTER BUSY_HOLD_MAX; do
   case "${!_dm_num}" in
-    ''|*[!0-9]*) printf 'continuity deadman: %s must be a whole number of seconds\n' "$_dm_num" >&2; exit 2 ;;
+    ''|*[!0-9]*) printf 'continuity deadman: %s must be a whole number\n' "$_dm_num" >&2; exit 2 ;;
   esac
 done
 unset _dm_num
 [ "$TICK" -gt 0 ] || TICK=60
 
 # The active alert names this home, because the captain may run several.
-FM_WEDGE_ALARM_TITLE="firstmate: supervision continuity LOST"
+FM_WEDGE_ALARM_TITLE="firstmate: supervision stopped"
 
 # --- logging ----------------------------------------------------------------
 # Bounded and best-effort. This log is diagnostic evidence, never a supervision
@@ -319,7 +351,36 @@ episode_open() {  # <now> <reason>
 
 episode_close() {
   rm -f "$ALARM_MARKER" "$STATE/.continuity-deadman-last-inject" \
-    "$STATE/.continuity-deadman-last-alarm" 2>/dev/null || true
+    "$STATE/.continuity-deadman-last-alarm" "$COMPOSER_DEFERRALS" 2>/dev/null || true
+}
+
+# --- composer deferral record --------------------------------------------------
+# "<count> <verdict>" on one line. Durable so a restarted deadman keeps counting
+# toward the escalation instead of granting a stray character a fresh window.
+composer_deferral_count() {
+  local count
+  { read -r count _ < "$COMPOSER_DEFERRALS"; } 2>/dev/null || count=
+  case "$count" in
+    ''|*[!0-9]*) printf '0' ;;
+    *) printf '%s' "$count" ;;
+  esac
+}
+
+composer_deferral_verdict() {
+  local verdict=
+  { read -r _ verdict < "$COMPOSER_DEFERRALS"; } 2>/dev/null || true
+  printf '%s' "${verdict:-unknown}"
+}
+
+composer_deferral_reset() {
+  rm -f "$COMPOSER_DEFERRALS" 2>/dev/null || true
+}
+
+# True when the composer has kept recovery off for the configured number of
+# consecutive checks, i.e. the cause the captain must clear by hand.
+composer_escalated() {
+  [ "$COMPOSER_ALARM_AFTER" -gt 0 ] || return 1
+  [ "$(composer_deferral_count)" -ge "$COMPOSER_ALARM_AFTER" ]
 }
 
 # --- actions -----------------------------------------------------------------
@@ -336,16 +397,55 @@ append_continuity_wake() {  # <since>
   return 0
 }
 
-fire_alarm() {  # <since> <reason>
-  local since=$1 reason=$2 stamp="$STATE/.continuity-deadman-last-alarm"
-  if [ -e "$stamp" ] && [ "$(fm_path_age "$stamp")" -lt "$ALARM_INTERVAL" ]; then
-    return 0
+# "6 min", "2 h 5 min": durations the captain reads on a phone.
+human_duration() {  # <seconds>
+  local secs=$1 h m
+  [ "$secs" -ge 0 ] 2>/dev/null || secs=0
+  h=$((secs / 3600))
+  m=$(((secs % 3600) / 60))
+  if [ "$h" -gt 0 ]; then
+    printf '%s h %s min' "$h" "$m"
+  else
+    [ "$m" -gt 0 ] || m=1
+    printf '%s min' "$m"
+  fi
+}
+
+# The captain-facing alert text. It names the outcome and the one thing that
+# would help, in plain words; the internal reason stays in the log, the episode
+# record, and the durable wake, where the agent reads it.
+alarm_summary() {  # <since> <now>
+  local since=$1 now=$2 dark cause
+  dark=$(human_duration $((now - since)))
+  if composer_escalated; then
+    case "$(composer_deferral_verdict)" in
+      pending*) cause="Firstmate's input box has unsent text, so it cannot be woken; clear it and it will restart itself." ;;
+      *) cause="Firstmate's window is not showing an empty input box (it may have exited or be waiting on a prompt), so it cannot be woken; check that window." ;;
+    esac
+  elif [ "$LAST_RECOVERY_VERDICT" = busy ]; then
+    cause="Firstmate is still busy in a turn that has not ended, so it may be stuck; if this alert repeats, check its window."
+  else
+    cause="It is trying to restart itself; if this alert repeats, check firstmate's window."
+  fi
+  printf 'Firstmate supervision has been stopped for %s in %s. Work is safe, but nothing is watching it. %s' \
+    "$dark" "$FM_HOME" "$cause"
+}
+
+# Rate-limited active alert. <force> bypasses the interval: the tick that opens
+# an episode and the tick that first diagnoses a blocking composer must always
+# reach the captain, whatever stamp an earlier episode or a stepped clock left
+# behind. A stamp dated in the future (negative age) never suppresses either.
+fire_alarm() {  # <since> <now> <reason> [force]
+  local since=$1 now=$2 reason=$3 force=${4:-0} stamp="$STATE/.continuity-deadman-last-alarm" age
+  if [ "$force" -ne 1 ] && [ -e "$stamp" ]; then
+    age=$(fm_path_age "$stamp")
+    if [ "$age" -ge 0 ] && [ "$age" -lt "$ALARM_INTERVAL" ]; then
+      return 0
+    fi
   fi
   : > "$stamp" 2>/dev/null || true
   dm_log "ALARM: supervision continuity lost ($reason); episode since=$since"
-  wedge_alarm_notify \
-    "firstmate supervision is NOT running in $FM_HOME - $reason. Queued work is safe; nothing is watching it." \
-    "$ALARM_MARKER"
+  wedge_alarm_notify "$(alarm_summary "$since" "$now")" "$ALARM_MARKER"
 }
 
 # Resolve the pane running firstmate. Both discovery helpers return non-zero when
@@ -401,43 +501,74 @@ submit_encoded() {  # <encoded>
 # because typing into a busy pane corrupts a running turn and typing into an
 # unreadable one could reach a shell. A deferred injection simply retries on the
 # next tick; only an actual submit attempt spends the backoff window.
+# LAST_RECOVERY_VERDICT names the outcome (backoff, no-pane, unsupported, gone,
+# busy, composer, unencodable, injected, unconfirmed) for the alarm text, and a
+# composer deferral advances the durable count every other verdict but backoff
+# resets. COMPOSER_JUST_ESCALATED is set on the one deferral that reaches the
+# escalation threshold, so the caller can alarm immediately.
+LAST_RECOVERY_VERDICT=
+COMPOSER_JUST_ESCALATED=0
 try_self_recovery() {  # <reason>
-  local reason=$1 stamp="$STATE/.continuity-deadman-last-inject" body encoded rc
+  local reason=$1 stamp="$STATE/.continuity-deadman-last-inject" body encoded rc verdict count
+  COMPOSER_JUST_ESCALATED=0
   if [ -e "$stamp" ] && [ "$(fm_path_age "$stamp")" -lt "$INJECT_BACKOFF" ]; then
+    LAST_RECOVERY_VERDICT=backoff
     return 0
   fi
   resolve_inject_pane
   rc=$?
   if [ "$rc" -eq 1 ]; then
+    LAST_RECOVERY_VERDICT=no-pane
+    composer_deferral_reset
     dm_log "self-recovery skipped: this process has no evidence of which pane runs firstmate"
     return 1
   fi
   if [ "$rc" -eq 2 ]; then
+    LAST_RECOVERY_VERDICT=unsupported
+    composer_deferral_reset
     dm_log "self-recovery skipped: backend '$INJECT_BACKEND' has no verified primitives for firstmate's own pane"
     return 1
   fi
   fm_backend_target_exists "$INJECT_BACKEND" "$INJECT_TARGET" || {
+    LAST_RECOVERY_VERDICT=gone
+    composer_deferral_reset
     dm_log "self-recovery skipped: firstmate's pane no longer exists"
     return 1
   }
   if fm_supervisor_pane_is_busy "$INJECT_TARGET" "$INJECT_BACKEND"; then
+    LAST_RECOVERY_VERDICT=busy
+    composer_deferral_reset
     dm_log "self-recovery deferred: a turn is already running"
     return 1
   fi
-  if fm_supervisor_pane_input_pending "$INJECT_TARGET" "$INJECT_BACKEND"; then
-    dm_log "self-recovery deferred: composer not confirmed empty"
+  # Read-only: the verdict decides only whether to type. A composer holding text
+  # is never cleared, overwritten, or submitted from here.
+  verdict=$(fm_supervisor_pane_composer_state "$INJECT_TARGET" "$INJECT_BACKEND")
+  if [ "$verdict" != empty ]; then
+    LAST_RECOVERY_VERDICT=composer
+    count=$(($(composer_deferral_count) + 1))
+    printf '%s %s\n' "$count" "$verdict" > "$COMPOSER_DEFERRALS" 2>/dev/null || true
+    dm_log "self-recovery deferred: composer not confirmed empty ($verdict, $count in a row)"
+    if [ "$COMPOSER_ALARM_AFTER" -gt 0 ] && [ "$count" -eq "$COMPOSER_ALARM_AFTER" ]; then
+      COMPOSER_JUST_ESCALATED=1
+      dm_log "ESCALATION: the composer has held recovery off for $count consecutive checks; alarming the captain to clear it"
+    fi
     return 1
   fi
+  composer_deferral_reset
   body="SUPERVISION CONTINUITY LOST - $reason, supervision is still needed here, and no automatic recovery is under way. A turn that ends in an API error skips the Stop hooks that re-arm the watcher, so this input exists to start a real turn whose ordinary turn end restores it. Run bin/fm-wake-drain.sh first, handle every queued wake and run its exact WAKE_ACK_REQUIRED command, then end the turn normally."
   fm_operational_input_encode turn-end-guard "$body" encoded || {
+    LAST_RECOVERY_VERDICT=unencodable
     dm_log "self-recovery skipped: operational input could not be encoded"
     return 1
   }
   : > "$stamp" 2>/dev/null || true
   if submit_encoded "$encoded"; then
+    LAST_RECOVERY_VERDICT=injected
     dm_log "self-recovery injected one turn-end-guard input into firstmate's pane"
     return 0
   fi
+  LAST_RECOVERY_VERDICT=unconfirmed
   dm_log "self-recovery submit unconfirmed; retrying after the backoff window"
   return 1
 }
@@ -448,10 +579,11 @@ DEADMAN_STARTED_AT=0
 DEADMAN_SESSION_PID=
 NEED_ABSENT_SINCE=0
 TURN_DEFERRAL_LOGGED=0
+BUSY_HOLD_SINCE=0
 
 # Returns 0 to keep looping, 1 to exit the loop.
 deadman_tick() {
-  local now since reason
+  local now since reason opened
   now=$(date +%s)
 
   if ! session_alive; then
@@ -478,6 +610,7 @@ deadman_tick() {
 
   if ! continuity_lost; then
     TURN_DEFERRAL_LOGGED=0
+    BUSY_HOLD_SINCE=0
     if [ -e "$ALARM_MARKER" ]; then
       if [ -e "$STATE/.afk" ]; then
         dm_log "episode closed: away mode now owns supervision here"
@@ -499,21 +632,35 @@ deadman_tick() {
     return 0
   fi
 
+  opened=0
   if [ ! -e "$ALARM_MARKER" ]; then
     if primary_turn_running; then
-      if [ "$TURN_DEFERRAL_LOGGED" -eq 0 ]; then
-        dm_log "not an outage yet: $reason, but firstmate's pane is mid-turn (the watcher is down by design during a handling turn)"
-        TURN_DEFERRAL_LOGGED=1
+      [ "$BUSY_HOLD_SINCE" -ne 0 ] || BUSY_HOLD_SINCE=$now
+      if [ $((now - BUSY_HOLD_SINCE)) -lt "$BUSY_HOLD_MAX" ]; then
+        if [ "$TURN_DEFERRAL_LOGGED" -eq 0 ]; then
+          dm_log "not an outage yet: $reason, but firstmate's pane is mid-turn (the watcher is down by design during a handling turn)"
+          TURN_DEFERRAL_LOGGED=1
+        fi
+        return 0
       fi
-      return 0
+      LAST_RECOVERY_VERDICT=busy
+      dm_log "outage: $reason, and firstmate's pane has read mid-turn for $((now - BUSY_HOLD_SINCE))s, past the ${BUSY_HOLD_MAX}s a handling turn may hold it off"
+    else
+      BUSY_HOLD_SINCE=0
     fi
     TURN_DEFERRAL_LOGGED=0
     episode_open "$now" "$reason"
     append_continuity_wake "$now" || true
+    opened=1
   fi
   since=$(episode_since) || since=$now
-  fire_alarm "$since" "$reason"
+  # Alarm before any injection attempt: reaching the captain must never wait on,
+  # or be skipped by, a pane read that is slow, deferred, or wedged.
+  fire_alarm "$since" "$now" "$reason" "$opened"
   try_self_recovery "$reason" || true
+  if [ "$COMPOSER_JUST_ESCALATED" -eq 1 ]; then
+    fire_alarm "$since" "$now" "$reason (firstmate's composer is not empty)" 1
+  fi
   return 0
 }
 
@@ -524,6 +671,10 @@ DEADMAN_SLEEPER=
 # shellcheck disable=SC2317,SC2329 # Invoked by the traps below.
 deadman_cleanup() {
   local status=$?
+  # A notifier still running when this process is told to stop is torn down with
+  # it, exactly as the away-mode daemon's cleanup does, so a hung channel never
+  # outlives the deadman that started it.
+  wedge_alarm_stop_active_notifier
   [ -z "$DEADMAN_SLEEPER" ] || kill "$DEADMAN_SLEEPER" 2>/dev/null
   [ "$DEADMAN_HOLDS_LOCK" -eq 1 ] && fm_lock_release "$DEADMAN_LOCK"
   exit "$status"

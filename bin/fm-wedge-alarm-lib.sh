@@ -270,8 +270,12 @@ wedge_alarm_notify() {  # <summary> <marker>
     case "$ch" in auto|default) ch=$(wedge_alarm_platform_default) ;; esac
     case "$ch" in
       '') fm_wedge_alarm_log "wedge alarm: no OS-level alert channel on $(uname); durable marker $marker is the only signal - set config/wedge-alarm (e.g. a command: directive)" ;;
-      osascript|herdr) wedge_alarm_emit "$ch" "$summary" || true ;;
-      command:*) wedge_alarm_emit command "$summary" "${ch#command:}" || true ;;
+      osascript|herdr)
+        wedge_alarm_emit "$ch" "$summary" \
+          && fm_wedge_alarm_log "wedge alarm: $ch channel accepted the alert" ;;
+      command:*)
+        wedge_alarm_emit command "$summary" "${ch#command:}" \
+          && fm_wedge_alarm_log "wedge alarm: command channel exited 0 (the receiver accepted the alert; delivery past it is unproven)" ;;
       *) fm_wedge_alarm_log "wedge alarm: unrecognized active-alert channel directive (redacted); marker still written" ;;
     esac
   done
