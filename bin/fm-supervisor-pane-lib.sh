@@ -80,6 +80,15 @@ fm_supervisor_pane_is_busy() {  # <target> [backend]
 # aligned ghost-only or idle bordered claude composer ("| > ... |") is correctly
 # proven empty while a modal dialog or dead shell never is.
 fm_supervisor_pane_input_pending() {  # <target> [backend]
-  local target=$1 backend=${2:-tmux}
-  [ "$(fm_backend_composer_state "$backend" "$target" 2>/dev/null)" != empty ]
+  [ "$(fm_supervisor_pane_composer_state "$@")" != empty ]
+}
+
+# The composer verdict itself (empty|pending|pending-unproven|unknown), for a
+# caller that must tell the captain WHY a pane cannot be woken: real unsent text
+# reads pending, while a dead shell or a dialog reads unknown. Read-only, like
+# every predicate here; nothing in this file ever types into or clears a pane.
+fm_supervisor_pane_composer_state() {  # <target> [backend]
+  local target=$1 backend=${2:-tmux} verdict
+  verdict=$(fm_backend_composer_state "$backend" "$target" 2>/dev/null)
+  printf '%s' "${verdict:-unknown}"
 }

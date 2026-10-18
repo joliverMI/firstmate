@@ -81,11 +81,13 @@ start_fake_session() {
 # A fake tmux good enough for firstmate's own pane: an addressable
 # `sess:win` target, a numeric cursor row, and a pane body the test chooses.
 # The default body is an idle bordered composer, which the real classifier
-# reads as confirmed-empty.
+# reads as confirmed-empty. Every call is appended to FM_FAKE_TMUX_LOG when set,
+# so a case can prove the deadman only ever READ the pane.
 install_fake_tmux() {  # <fakebin-dir>
   cat > "$1/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
+[ -z "${FM_FAKE_TMUX_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
 case "${1:-}" in
   send-keys) exit 0 ;;
   list-panes) exit 0 ;;
@@ -685,6 +687,179 @@ test_wake_drain_clears_the_delivered_rewake_marker() {
   pass "a handling turn's drain retires the delivered-rewake marker"
 }
 
+# write_composer_body <file> <text>: an idle bordered claude composer holding
+# <text>, the shape a stray unsent character leaves behind.
+write_composer_body() {
+  local file=$1 text=$2 width bar
+  width=$((${#text} + 4))
+  bar=$(printf '\xe2\x94\x80%.0s' $(seq 1 "$width"))
+  {
+    printf '\xe2\x95\xad%s\xe2\x95\xae\n' "$bar"
+    printf '\xe2\x94\x82 > %s \xe2\x94\x82\n' "$text"
+    printf '\xe2\x95\xb0%s\xe2\x95\xaf\n' "$bar"
+  } > "$file"
+}
+
+# alarm_count <home>: active alerts recorded so far.
+alarm_count() { grep -c . "$1/alarm.log" 2>/dev/null || printf '0\n'; }
+
+test_first_alarm_ignores_a_leftover_or_future_stamp() {
+  local dir future
+  dir=$(make_home first-alarm-stamp)
+  # A rate-limit stamp left dated in the future (a stepped clock, a restored
+  # state directory) reads as a negative age. It must never hold back the
+  # opening alarm, nor a later one.
+  future=$(($(date +%s) + 7200))
+  : > "$dir/state/.continuity-deadman-last-alarm"
+  touch -d "@$future" "$dir/state/.continuity-deadman-last-alarm" \
+    || fail "could not future-date the alarm stamp"
+  FM_INJECT_LOG="$dir/inject.log" FM_ALARM_LOG="$dir/alarm.log" \
+    run_deadman "$dir" run --once || fail "deadman run --once exited non-zero"
+  [ "$(alarm_count "$dir")" = 1 ] \
+    || fail "the opening tick did not alarm past a leftover stamp: $(cat "$dir/alarm.log" 2>/dev/null)"
+  grep -q 'stopped for .* Work is safe, but nothing is watching it' "$dir/alarm.log" \
+    || fail "the alert did not say plainly what is wrong: $(cat "$dir/alarm.log")"
+
+  touch -d "@$future" "$dir/state/.continuity-deadman-last-alarm" \
+    || fail "could not future-date the alarm stamp again"
+  FM_INJECT_LOG="$dir/inject.log" FM_ALARM_LOG="$dir/alarm.log" \
+    run_deadman "$dir" run --once || fail "second run failed"
+  [ "$(alarm_count "$dir")" = 2 ] \
+    || fail "a future-dated stamp silenced the re-alarm: $(cat "$dir/alarm.log")"
+  stop_home "$dir"
+  pass "the first alarm fires on the tick that opens the episode, and a future-dated stamp never suppresses an alarm"
+}
+
+test_alarm_fires_when_injection_is_deferred() {
+  local dir
+  dir=$(make_home alarm-when-deferred)
+  write_composer_body "$dir/pending-body" p
+  FM_FAKE_PANE_BODY="$dir/pending-body" FM_INJECT_LOG="$dir/inject.log" FM_ALARM_LOG="$dir/alarm.log" \
+    run_deadman "$dir" run --once || fail "deadman failed against a pending composer"
+  grep -q 'composer not confirmed empty (pending' "$dir/state/.continuity-deadman.log" \
+    || fail "the fixture composer did not read as holding text: $(cat "$dir/state/.continuity-deadman.log")"
+  [ ! -s "$dir/inject.log" ] || fail "the deadman typed into a composer holding text"
+  [ "$(alarm_count "$dir")" = 1 ] \
+    || fail "a deferred injection held back the opening alarm: $(cat "$dir/alarm.log" 2>/dev/null)"
+
+  # The same with the pane mid-turn past its hold bound: a wedged turn must not
+  # keep the captain from hearing about it.
+  dir=$(make_home alarm-when-busy)
+  printf 'esc to interrupt\n' > "$dir/busy-body"
+  FM_CONTINUITY_DEADMAN_BUSY_HOLD_MAX=0 FM_FAKE_PANE_BODY="$dir/busy-body" \
+    FM_INJECT_LOG="$dir/inject.log" FM_ALARM_LOG="$dir/alarm.log" \
+    run_deadman "$dir" run --once || fail "deadman failed against a long-busy pane"
+  [ -f "$dir/state/.continuity-deadman-alarm" ] || fail "a pane busy past its hold bound never opened an episode"
+  [ ! -s "$dir/inject.log" ] || fail "the deadman typed into a busy pane"
+  grep -q 'busy in a turn that has not ended' "$dir/alarm.log" \
+    || fail "the alert did not name the long-busy turn: $(cat "$dir/alarm.log" 2>/dev/null)"
+  stop_home "$dir"
+  stop_home "$TMP_ROOT/alarm-when-deferred"
+  pass "the alarm reaches the captain whether injection is deferred by unsent text or by a turn busy past its bound"
+}
+
+test_composer_deferrals_escalate_in_plain_words() {
+  local dir i before after
+  dir=$(make_home input-box-escalation)
+  write_composer_body "$dir/pending-body" p
+  cp "$dir/pending-body" "$dir/pending-body.orig"
+  for i in 1 2 3 4; do
+    FM_CONTINUITY_DEADMAN_COMPOSER_ALARM_AFTER=3 FM_FAKE_PANE_BODY="$dir/pending-body" \
+      FM_FAKE_TMUX_LOG="$dir/tmux.log" FM_INJECT_LOG="$dir/inject.log" FM_ALARM_LOG="$dir/alarm.log" \
+      run_deadman "$dir" run --once || fail "deadman run $i failed"
+    case "$i" in
+      1) [ "$(alarm_count "$dir")" = 1 ] || fail "no opening alarm: $(cat "$dir/alarm.log" 2>/dev/null)"
+         ! grep -q 'unsent text' "$dir/alarm.log" \
+           || fail "the input-box cause was named before the deferrals reached the threshold" ;;
+      2) [ "$(alarm_count "$dir")" = 1 ] || fail "an alarm fired inside the interval before the threshold" ;;
+      3) [ "$(alarm_count "$dir")" = 2 ] \
+           || fail "reaching the deferral threshold did not alarm at once: $(cat "$dir/alarm.log")" ;;
+      4) [ "$(alarm_count "$dir")" = 2 ] || fail "the escalation repeated inside the alarm interval" ;;
+    esac
+  done
+  tail -n 1 "$dir/alarm.log" | grep -q "input box has unsent text, so it cannot be woken; clear it" \
+    || fail "the escalation did not name the cause in plain words: $(tail -n 1 "$dir/alarm.log")"
+  if tail -n 1 "$dir/alarm.log" | grep -Eqi 'composer|deferr|inject|watcher|wake|episode|pane'; then
+    fail "the escalation leaked internal jargon: $(tail -n 1 "$dir/alarm.log")"
+  fi
+  grep -q 'ESCALATION' "$dir/state/.continuity-deadman.log" \
+    || fail "the escalation was not logged: $(cat "$dir/state/.continuity-deadman.log")"
+
+  # While the cause persists the alert repeats on the ordinary interval.
+  before=$(alarm_count "$dir")
+  FM_CONTINUITY_DEADMAN_ALARM_INTERVAL=0 FM_CONTINUITY_DEADMAN_COMPOSER_ALARM_AFTER=3 \
+    FM_FAKE_PANE_BODY="$dir/pending-body" FM_FAKE_TMUX_LOG="$dir/tmux.log" \
+    FM_INJECT_LOG="$dir/inject.log" FM_ALARM_LOG="$dir/alarm.log" \
+    run_deadman "$dir" run --once || fail "repeat run failed"
+  after=$(alarm_count "$dir")
+  [ "$after" = $((before + 1)) ] || fail "the escalation did not repeat once its interval passed"
+  tail -n 1 "$dir/alarm.log" | grep -q 'input box has unsent text' \
+    || fail "the repeat lost the input-box cause: $(tail -n 1 "$dir/alarm.log")"
+
+  # Never cleared, overwritten, or submitted: nothing typed, no mutating pane
+  # call at all, and the text is still there.
+  [ ! -s "$dir/inject.log" ] || fail "the deadman submitted into a composer holding text: $(cat "$dir/inject.log")"
+  [ -s "$dir/tmux.log" ] || fail "the pane was never read, so the no-mutation check proved nothing"
+  if grep -Ev '^(capture-pane|display-message|list-panes|has-session)( |$)' "$dir/tmux.log" | grep -q .; then
+    fail "the deadman made a non-read pane call: $(grep -Ev '^(capture-pane|display-message|list-panes|has-session)( |$)' "$dir/tmux.log")"
+  fi
+  cmp -s "$dir/pending-body" "$dir/pending-body.orig" || fail "the composer text changed"
+
+  # Clearing the text resets the count: an empty composer is injected into as
+  # usual, and the next stray character gets a fresh window.
+  FM_CONTINUITY_DEADMAN_COMPOSER_ALARM_AFTER=3 FM_INJECT_LOG="$dir/inject.log" FM_ALARM_LOG="$dir/alarm.log" \
+    run_deadman "$dir" run --once || fail "run after clearing failed"
+  [ "$(grep -c . "$dir/inject.log")" = 1 ] || fail "a cleared composer was not injected into"
+  [ ! -e "$dir/state/.continuity-deadman-composer-deferrals" ] \
+    || fail "a cleared composer did not reset the deferral count"
+  stop_home "$dir"
+  pass "consecutive unsent-text deferrals alarm in plain words at the threshold, repeat on the interval, and never touch the text"
+}
+
+test_unreadable_composer_escalation_names_the_window() {
+  local dir
+  dir=$(make_home unreadable-escalation)
+  printf 'user@host:~$ \n' > "$dir/shell-body"
+  FM_CONTINUITY_DEADMAN_COMPOSER_ALARM_AFTER=1 FM_FAKE_PANE_BODY="$dir/shell-body" \
+    FM_INJECT_LOG="$dir/inject.log" FM_ALARM_LOG="$dir/alarm.log" \
+    run_deadman "$dir" run --once || fail "deadman failed against a dead-shell pane"
+  [ "$(alarm_count "$dir")" = 2 ] || fail "expected the opening alarm and the escalation: $(cat "$dir/alarm.log" 2>/dev/null)"
+  tail -n 1 "$dir/alarm.log" | grep -q 'not showing an empty input box' \
+    || fail "an unreadable window was not named: $(tail -n 1 "$dir/alarm.log")"
+  ! tail -n 1 "$dir/alarm.log" | grep -q 'unsent text' \
+    || fail "an unreadable window was misreported as unsent text"
+  stop_home "$dir"
+  pass "a window with no readable input box escalates as its own plain-words cause"
+}
+
+test_stop_terminates_a_running_notifier() {
+  local dir pid notifier
+  dir=$(make_home stop-notifier)
+  # A notifier that hangs: it records its process group leader, then sleeps far
+  # past any test. Only the deadman's own cleanup can end it before its timeout.
+  cat > "$dir/alarm-hang" <<'REC'
+#!/usr/bin/env bash
+printf '%s\n' "$$" > "${FM_NOTIFIER_PID_FILE:?}"
+exec sleep 600
+REC
+  chmod +x "$dir/alarm-hang"
+  FM_WEDGE_ALARM_EXEC="$dir/alarm-hang" FM_WEDGE_ALARM_TIMEOUT_SECS=600 \
+    FM_NOTIFIER_PID_FILE="$dir/notifier.pid" FM_GUARD_GRACE=1 \
+    FM_INJECT_LOG="$dir/inject.log" run_deadman "$dir" ensure || fail "ensure exited non-zero"
+  wait_until 20 test -s "$dir/notifier.pid" || fail "the hanging notifier never started"
+  notifier=$(cat "$dir/notifier.pid")
+  pid=$(cat "$dir/state/.continuity-deadman.lock/pid")
+  pid_alive "$notifier" || fail "the notifier was not running before stop, so this case proves nothing"
+  run_deadman "$dir" stop >/dev/null 2>&1 || fail "stop reported failure while a notifier was running"
+  ! pid_alive "$pid" || fail "stop left the deadman running"
+  wait_until 5 sh -c "! kill -0 $notifier 2>/dev/null" || {
+    kill -KILL "-$notifier" "$notifier" 2>/dev/null
+    fail "the deadman's notifier outlived its stop"
+  }
+  stop_home "$dir"
+  pass "stopping the deadman terminates a notifier it was still running, as the away-mode daemon does"
+}
+
 test_records_outage_when_the_chain_is_silent
 test_one_wake_per_episode
 test_silent_while_away_mode_owns_supervision
@@ -708,3 +883,8 @@ test_ensure_replaces_a_superseded_sessions_deadman
 test_stop_is_prompt_inside_a_long_tick
 test_ensure_is_inert_outside_a_primary_home
 test_wake_drain_clears_the_delivered_rewake_marker
+test_first_alarm_ignores_a_leftover_or_future_stamp
+test_alarm_fires_when_injection_is_deferred
+test_composer_deferrals_escalate_in_plain_words
+test_unreadable_composer_escalation_names_the_window
+test_stop_terminates_a_running_notifier

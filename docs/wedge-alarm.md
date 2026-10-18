@@ -28,7 +28,9 @@ This is deliberate because each caller fires it only after a genuine stall, a ma
 Each channel is best-effort.
 A missing binary or non-zero exit logs a warning and continues to the next channel without crashing the caller's loop.
 Every invocation is process-group bounded by `FM_WEDGE_ALARM_TIMEOUT_SECS`, which defaults to 10 seconds, including `command:`, `osascript`, `herdr`, and the test seam.
-On timeout, and on away-mode daemon shutdown, the notifier process group is terminated and the next configured channel may run.
+On timeout the notifier process group is terminated and the next configured channel may run, and both callers terminate a still-running notifier's process group when they shut down.
+A channel that succeeds is logged as having accepted the alert.
+For `command:` that proves only that the receiver accepted the request: a Home Assistant webhook, for example, answers success even when no automation is bound to its id or a local-only webhook rejects the caller's address, so confirm end-to-end delivery on the receiving side.
 AppleScript receives the summary and the caller's title as argv items rather than interpolated source, so neither text can alter the script.
 See [`examples/wedge-alarm`](examples/wedge-alarm) for a copyable config.
 
@@ -40,5 +42,5 @@ When the away-mode daemon or the continuity deadman is sourced as a library, tha
 Production leaves the seam unset and uses the configured real channels.
 
 `tests/fm-daemon.test.sh` covers directive parsing, rate limiting, timeout and process-group cleanup, argv-safe dispatch, channel fallback, and safe `command:` summary delivery.
-`tests/fm-continuity-deadman.test.sh` covers the attended caller's own channel dispatch and its once-per-interval rate limit.
+`tests/fm-continuity-deadman.test.sh` covers the attended caller's own channel dispatch, its rate limit and opening alert, its input-box escalation, and notifier termination on shutdown.
 [`verification/supervision.md`](verification/supervision.md#wedge-alarm-channels) records the bounded manual macOS and Herdr channel proof.
