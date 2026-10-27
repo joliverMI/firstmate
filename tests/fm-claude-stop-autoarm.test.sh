@@ -1211,6 +1211,71 @@ test_active_in_marked_secondmate_home() {
   pass "auto-arm: active in a marked secondmate home"
 }
 
+# Regression for the fleet-auditor finding "watcher-8h-hook-timeout": a quiet
+# home's healthy foregrounded owner used to sit inside fm-watch-arm.sh's
+# blocking wait for hours with no actionable reason, and Claude Code killed the
+# owning Stop hook (and the watcher with it) at the hook's own declared
+# timeout, with no model turn available to re-arm a successor. This proves two
+# independent halves of the fix: the owning script imposes no self-timeout of
+# its own on a healthy quiet wait, however long it runs, and the externally
+# registered ceiling Claude Code actually enforces (read from the tracked
+# settings it consumes, not reconstructed from fm-claude-stop-autoarm.sh's own
+# source) now sits far past any realistic quiet-home interval.
+test_healthy_quiet_wait_outlives_a_short_simulated_window() {
+  local dir out hook_pid status watcher watcher_id i
+  dir=$(make_primary_dir "$TMP_ROOT/quiet-wait-outlives-window")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" reset-boundary
+  sleep 60 &
+  watcher=$!
+  watcher_id=$(watcher_identity "$dir" "$watcher") || fail "could not identify quiet-wait watcher"
+  record_watcher_lock "$dir" "$watcher" "$watcher_id"
+  touch "$dir/state/.last-watcher-beat"
+  out="$dir/state/hook.out"
+  run_autoarm_bg "$dir" "$out"
+  hook_pid=$RUN_AUTOARM_BG_PID
+  i=0
+  while [ ! -e "$dir/state/arm-waiting" ]; do
+    [ "$i" -lt 50 ] || fail "healthy owner never reached its blocking watcher wait"
+    sleep 0.05
+    i=$((i + 1))
+  done
+  # Hold the owner inside its blocking wait across a window well past the
+  # "every arming phase with no watcher is bounded in seconds" ceiling
+  # docs/turnend-guard.md documents, refreshing the beacon exactly as a live
+  # watcher's own heartbeat loop would, and confirm nothing here self-retires.
+  i=0
+  while [ "$i" -lt 20 ]; do
+    kill -0 "$hook_pid" 2>/dev/null || fail "healthy quiet owner exited on its own before any actionable reason or release"
+    touch "$dir/state/.last-watcher-beat"
+    sleep 0.1
+    i=$((i + 1))
+  done
+  : > "$dir/state/arm-release"
+  wait "$hook_pid"; status=$?
+  kill "$watcher" 2>/dev/null || true
+  wait "$watcher" 2>/dev/null || true
+  expect_code 0 "$status" "a healthy owner released after a long quiet wait must still close benignly"
+  [ ! -s "$out" ] || fail "a long quiet wait followed by a benign close produced output: $(cat "$out")"
+  pass "auto-arm: a healthy quiet owner outlives a simulated long wait with no self-timeout and closes benignly"
+}
+
+test_claude_stop_hook_timeout_exceeds_realistic_quiet_intervals() {
+  local timeout
+  command -v jq >/dev/null 2>&1 || fail "test host must provide jq"
+  timeout=$(jq -r '
+    .hooks.Stop[].hooks[]
+    | select(.asyncRewake == true and (.command | contains("fm-claude-stop-autoarm.sh")))
+    | .timeout
+  ' "$ROOT/.claude/settings.json")
+  [ -n "$timeout" ] && [ "$timeout" != null ] || fail "could not read the Claude Stop asyncRewake hook's registered timeout"
+  case $timeout in
+    ''|*[!0-9]*) fail "registered Stop asyncRewake timeout is not a plain integer: $timeout" ;;
+  esac
+  [ "$timeout" -ge 604800 ] || fail "Stop asyncRewake hook timeout $timeout must be set well past any realistic quiet-home interval (>= 7 days), guarding against regression to the old 8h ceiling"
+  pass "auto-arm: the registered Claude Stop asyncRewake hook timeout exceeds realistic quiet-home intervals"
+}
+
 test_fm_lock_status_still_works_with_shared_lib() {
   local out
   out=$(FM_HOME="$TMP_ROOT/lock-status-home" bash "$ROOT/bin/fm-lock.sh" status 2>&1)
@@ -1259,4 +1324,6 @@ test_superseded_owner_goes_silent_and_never_double_translates
 test_need_vanished_mid_cycle_closes_quietly
 test_afk_mid_cycle_suppresses_rewake
 test_active_in_marked_secondmate_home
+test_healthy_quiet_wait_outlives_a_short_simulated_window
+test_claude_stop_hook_timeout_exceeds_realistic_quiet_intervals
 test_fm_lock_status_still_works_with_shared_lib

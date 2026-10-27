@@ -2,7 +2,9 @@
 # Claude Stop-owned watcher auto-arm (asyncRewake hook).
 #
 # Registered in tracked .claude/settings.json as a Stop command hook with
-# "asyncRewake": true and an explicit multi-hour timeout. Claude Code fires it
+# "asyncRewake": true and an explicit 30-day timeout, set well past any real
+# quiet-home interval rather than tied to it (docs/turnend-guard.md "Harness
+# integrations"). Claude Code fires it
 # in the background on EVERY Stop of a Claude primary session, with no
 # deduplication across firings. It owns routine tokenless watcher continuity
 # for Claude primaries (main home and marked secondmate homes):
@@ -111,7 +113,7 @@ PAYLOAD=$(cat 2>/dev/null || true)
 # Cursor loads the tracked Claude settings too. Cursor has no asyncRewake, so if
 # a future Cursor build starts firing the Claude-shaped Stop entry, this arm
 # would run SYNCHRONOUSLY inside Cursor's stop step and hold that turn open for
-# the declared multi-hour timeout - the exact wedge grok 1.0.0 produced
+# the declared 30-day timeout - the exact wedge grok 1.0.0 produced
 # (docs/turnend-guard.md "Harness integrations"). Cursor's own park adapter owns
 # its turn boundary, so stand down on a Cursor-delivered payload.
 fm_hook_payload_is_foreign_host "$PAYLOAD" && exit 0
