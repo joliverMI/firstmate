@@ -824,7 +824,7 @@ test_grok_adapter_missing_jq_and_no_supervision_allow() {
 # home gets a duplicate path. The regression this pins: the guard once tested
 # GROK_AGENT alone, which a grok 1.0.0 HOOK process does not carry, so the
 # Claude-only Stop auto-arm ran synchronously under Grok, foregrounded the
-# watcher, and wedged the Grok turn for its declared 28800-second timeout.
+# watcher, and wedged the Grok turn for its declared 30-day timeout.
 #
 # bin/fm-subagent-pretool-check.sh is the deliberate exception: Grok has no
 # counterpart registration, so guarding it would REMOVE the guard from Grok
