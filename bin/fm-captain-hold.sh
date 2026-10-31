@@ -660,6 +660,7 @@ command_hold() {
     link_dashboard_card "$id" "$title_for_card" "$card_captain" needs-action "$reason"
   fi
   if [ -n "$await_path" ]; then
+    retire_await_watch "$id"
     arm_await_watch "$id" "$await_path"
   fi
   printf '%s\n' "$id"

@@ -161,34 +161,48 @@ mkdir() {
   return "$rc"
 }
 
-SEQ_PIDS=()
-for i in $(seq 1 20); do
-  CLAIMANT_LOG="$TMP_ROOT/claimant-$i.log"
-  : > "$CLAIMANT_LOG"
-  (
-    printf 'bashpid=%s\n' "$BASHPID" >> "$CLAIMANT_LOG"
-    fm_remote_job_next_seq > "$TMP_ROOT/seq-$i"
-  ) &
-  SEQ_PIDS+=("$!")
-done
-for pid in "${SEQ_PIDS[@]}"; do
-  wait "$pid" || fail "a concurrent sequence allocator failed"
+# A single green run of this race is not evidence the underlying claim logic
+# is safe: it reproduced on 3 of 3 CI runs before per-claimant instrumentation
+# was added, then failed to reproduce on the one run observed with that
+# instrumentation in place - almost certainly a timing shift from the added
+# logging, not a fix. Repeat the race 30 times, each against a fresh
+# .seq-claims directory and sequence hint, so a stale claim or leftover inode
+# from an earlier round can never explain a later round's result, and stop at
+# the first round that actually reproduces a duplicate.
+for race_round in $(seq 1 30); do
+  rm -f -- "$STATE_ROOT/seq"
+  find "$FM_REMOTE_JOB_SEQ_CLAIMS" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+
+  SEQ_PIDS=()
+  for i in $(seq 1 20); do
+    CLAIMANT_LOG="$TMP_ROOT/claimant-$i.log"
+    : > "$CLAIMANT_LOG"
+    (
+      printf 'bashpid=%s\n' "$BASHPID" >> "$CLAIMANT_LOG"
+      fm_remote_job_next_seq > "$TMP_ROOT/seq-$i"
+    ) &
+    SEQ_PIDS+=("$!")
+  done
+  for pid in "${SEQ_PIDS[@]}"; do
+    wait "$pid" || fail "a concurrent sequence allocator failed"
+  done
+  SEQ_RESULTS=$(cat "$TMP_ROOT"/seq-* | sort -n)
+  SEQ_EXPECTED=$(seq 1 20)
+  if [ "$SEQ_RESULTS" != "$SEQ_EXPECTED" ]; then
+    {
+      printf -- '--- race round %s of 30 ---\n' "$race_round"
+      printf -- '--- process tree before the race ---\n%s\n' "$RACE_PS_SNAPSHOT"
+      printf -- '--- tool resolution ---\n%s\n' "$RACE_TOOL_RESOLUTION"
+      printf -- '--- claimed sequence results ---\n%s\n' "$SEQ_RESULTS"
+      for i in $(seq 1 20); do
+        printf -- '--- claimant %s log ---\n' "$i"
+        cat "$TMP_ROOT/claimant-$i.log"
+      done
+    } >&2
+    fail "concurrent sequence claims were not unique and monotonic on round $race_round of 30: $SEQ_RESULTS"
+  fi
 done
 unset -f mkdir
-SEQ_RESULTS=$(cat "$TMP_ROOT"/seq-* | sort -n)
-SEQ_EXPECTED=$(seq 1 20)
-if [ "$SEQ_RESULTS" != "$SEQ_EXPECTED" ]; then
-  {
-    printf -- '--- process tree before the race ---\n%s\n' "$RACE_PS_SNAPSHOT"
-    printf -- '--- tool resolution ---\n%s\n' "$RACE_TOOL_RESOLUTION"
-    printf -- '--- claimed sequence results ---\n%s\n' "$SEQ_RESULTS"
-    for i in $(seq 1 20); do
-      printf -- '--- claimant %s log ---\n' "$i"
-      cat "$TMP_ROOT/claimant-$i.log"
-    done
-  } >&2
-  fail "concurrent sequence claims were not unique and monotonic: $SEQ_RESULTS"
-fi
 [ "$(find "$STATE_ROOT/.seq-claims" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" = 20 ] \
   || fail "concurrent sequence allocations did not retain every durable claim"
 mkdir "$STATE_ROOT/.seq-claims/999998" "$STATE_ROOT/.seq-claims/999999"
