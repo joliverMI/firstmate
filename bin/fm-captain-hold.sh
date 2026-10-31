@@ -503,6 +503,7 @@ resolve_entry() {  # <origin-or-empty> <entry>; prints the resolved id or fails
 
 DASHBOARD_BIN="$SCRIPT_DIR/fm-dashboard.sh"
 PROCEVENT_WHEN_BIN="$SCRIPT_DIR/fm-procevent-when.sh"
+AWAIT_WATCH_DEADLINE_SECS=2592000
 
 card_link_path() { printf '%s/%s.hold-card\n' "$STATE" "$1"; }
 card_pending_path() { printf '%s/%s.hold-card-pending\n' "$STATE" "$1"; }
@@ -558,6 +559,7 @@ arm_await_watch() {  # <task-id> <await-path>
   local id=$1 path=$2 source
   source="captain-hold-await-$id"
   if "$PROCEVENT_WHEN_BIN" arm "$source" \
+    --deadline "$AWAIT_WATCH_DEADLINE_SECS" \
     --condition /usr/bin/test -e "$path" \
     --action /usr/bin/true >/dev/null 2>&1; then
     (umask 077; printf '%s\n' "$source" > "$(await_source_path "$id")") || true
@@ -1260,25 +1262,31 @@ command_resume_pending_cards() {
   for f in "$STATE"/*.hold-card-pending; do
     [ -f "$f" ] && [ ! -L "$f" ] || continue
     id=$(basename "$f" .hold-card-pending)
-    title=$(sed -n 's/^title=//p' "$f" | head -1)
-    captain=$(sed -n 's/^captain=//p' "$f" | head -1)
-    kind=$(sed -n 's/^kind=//p' "$f" | head -1)
-    text=$(sed -n 's/^text=//p' "$f" | head -1)
-    [ -n "$title" ] && [ -n "$kind" ] && [ -n "$text" ] || continue
-    [ -n "$captain" ] || captain=firstmate
-    if [ "$kind" = needs-review ]; then
-      card_id=$("$DASHBOARD_BIN" add --title "$title" --captain "$captain" --prompt "$title" \
-        --status needs-review --plan "$text" 2>/dev/null | cut -f1) || card_id=''
-    else
-      card_id=$("$DASHBOARD_BIN" add --title "$title" --captain "$captain" --prompt "$title" \
-        --status needs-action --reason "$text" 2>/dev/null | cut -f1) || card_id=''
+    acquire_task_control_lock "$id"
+    if [ -f "$f" ] && [ ! -L "$f" ]; then
+      title=$(sed -n 's/^title=//p' "$f" | head -1)
+      captain=$(sed -n 's/^captain=//p' "$f" | head -1)
+      kind=$(sed -n 's/^kind=//p' "$f" | head -1)
+      text=$(sed -n 's/^text=//p' "$f" | head -1)
+      if [ -n "$title" ] && [ -n "$kind" ] && [ -n "$text" ]; then
+        [ -n "$captain" ] || captain=firstmate
+        if [ "$kind" = needs-review ]; then
+          card_id=$("$DASHBOARD_BIN" add --title "$title" --captain "$captain" --prompt "$title" \
+            --status needs-review --plan "$text" 2>/dev/null | cut -f1) || card_id=''
+        else
+          card_id=$("$DASHBOARD_BIN" add --title "$title" --captain "$captain" --prompt "$title" \
+            --status needs-action --reason "$text" 2>/dev/null | cut -f1) || card_id=''
+        fi
+        if [ -n "$card_id" ]; then
+          (umask 077; printf '%s\n' "$card_id" > "$(card_link_path "$id")") || true
+          rm -f -- "$f"
+          printf 'linked: %s -> %s\n' "$id" "$card_id"
+          linked=$((linked + 1))
+        fi
+      fi
     fi
-    if [ -n "$card_id" ]; then
-      (umask 077; printf '%s\n' "$card_id" > "$(card_link_path "$id")") || true
-      rm -f -- "$f"
-      printf 'linked: %s -> %s\n' "$id" "$card_id"
-      linked=$((linked + 1))
-    fi
+    fm_lock_release "$CAPTAIN_CONTROL_LOCK" || true
+    CAPTAIN_CONTROL_LOCK_HELD=0
   done
   printf 'resume-pending-cards: linked=%s\n' "$linked"
 }
