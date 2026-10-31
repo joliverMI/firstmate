@@ -23,7 +23,7 @@ fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
 
 command -v tmux >/dev/null 2>&1 || { echo "skip: tmux not found"; exit 0; }
-SLEEP_BIN=$(command -v sleep) || { echo "skip: sleep not found"; exit 0; }
+BASH_BIN=$(command -v bash) || { echo "skip: bash not found"; exit 0; }
 
 REAL_TMUX=$(command -v tmux)
 SOCKET="fm-liveness-$$"
@@ -57,36 +57,33 @@ chmod +x "$LAB/shim/tmux"
 PATH="$LAB/shim:$PATH"
 export PATH
 
+# Every long-running fixture below blocks on a read from this one fifo rather
+# than sleeping: a multicall coreutils `sleep` build (e.g. Ubuntu's uutils
+# package) dispatches its own behavior off the executed path and refuses to
+# run under a renamed symlink at all, regardless of argv[0]. Opening the fifo
+# O_RDWR never blocks (no peer required), and `read -t 900` then blocks until
+# the timeout with no child process spawned, so the foreground process this
+# test classifies stays the harness-named symlink itself.
+mkfifo "$LAB/hold.fifo" || fail "could not create hold fifo"
+
 # Stand-in "harness" binaries. These are SYMLINKS to a real long-running system
 # binary, never copies: a copied platform binary fails code-signing validation
 # and is killed on macOS arm64. The symlink name is what the kernel records as
 # the executable identity, which is exactly the signal under test.
-ln -s "$SLEEP_BIN" "$LAB/bin/claude-link"
-ln -s "$SLEEP_BIN" "$LAB/bin/pi"
-# notaharness is exec'd below with argv[0] deliberately overridden to a
-# version string, not "sleep" (that is the point of the case it drives), so
-# it cannot be a bare symlink: a multicall coreutils build (Ubuntu's uutils
-# package) dispatches sleep's own behavior off argv[0] and would not
-# recognize that override. Running the real sleep as an internal child keeps
-# this process's own exec identity (comm) "notaharness" while the override
-# lands only on it, and the real sleep always sees its own correct argv[0].
-cat > "$LAB/bin/notaharness" <<SH
-#!/usr/bin/env bash
-"$SLEEP_BIN" "\${1:-900}" &
-wait
-SH
-chmod +x "$LAB/bin/notaharness"
+ln -s "$BASH_BIN" "$LAB/bin/claude-link"
+ln -s "$BASH_BIN" "$LAB/bin/pi"
+ln -s "$BASH_BIN" "$LAB/bin/notaharness"
 # muse's installed binary is muse-bin-<version>: the launcher execs it, so the
 # version is the LIVE process name and it changes on every auto-update. Unlike
 # Claude Code's version-named binary there is no `muse` path component to fall
 # back on (~/.local/bin/muse-bin-<version>), so the executable name is the ONLY
 # signal, and `muse` alone is a common English fragment that must not widen into
 # a substring match. The last two names are the decoys that would be misread.
-ln -s "$SLEEP_BIN" "$LAB/bin/muse-bin-0.1.0-R708.1"
-ln -s "$SLEEP_BIN" "$LAB/bin/musescore"
-ln -s "$SLEEP_BIN" "$LAB/bin/amuse"
-ln -s "$SLEEP_BIN" "$LAB/bin/muse-binary"
-ln -s "$SLEEP_BIN" "$LAB/bin/muse-bind"
+ln -s "$BASH_BIN" "$LAB/bin/muse-bin-0.1.0-R708.1"
+ln -s "$BASH_BIN" "$LAB/bin/musescore"
+ln -s "$BASH_BIN" "$LAB/bin/amuse"
+ln -s "$BASH_BIN" "$LAB/bin/muse-binary"
+ln -s "$BASH_BIN" "$LAB/bin/muse-bind"
 
 # A launcher whose own process identity is a bare shell, running the harness as
 # a child in the same foreground process group - the shape the real Pi Launcher
@@ -94,7 +91,7 @@ ln -s "$SLEEP_BIN" "$LAB/bin/muse-bind"
 # false `dead`.
 cat > "$LAB/bin/agent-launcher" <<SH
 #!/usr/bin/env bash
-(exec -a sleep "$LAB/bin/pi" 900) &
+"$LAB/bin/pi" -c 'read -r -t 900 <> "$LAB/hold.fifo"' &
 wait
 SH
 chmod +x "$LAB/bin/agent-launcher"
@@ -200,50 +197,8 @@ assert_sources_disagree() {  # <target> <label>
 # with a real process. macOS exposes different names for the symlink through
 # tmux and ps, while Linux can expose the symlink name through both, so the
 # version-string case below owns the cross-platform divergence assertion.
-#
-# Run it as `exec -a sleep <symlink>`, not the symlink directly: a multicall
-# coreutils build (Ubuntu's uutils package) dispatches sleep's behavior off
-# argv[0], and the symlink's own name is not a name it recognizes, so a direct
-# exec exits immediately instead of sleeping. `exec -a` overrides only argv[0]
-# (what the real sleep dispatches on); the kernel's own exec identity (comm),
-# which is what this classifier reads and what this case is testing, still
-# comes from the path, so it stays the harness name.
 
-# Diagnostics only: confirm the runner's actual sleep binary and exec -a
-# behavior before the real "agent" window, so a failure here shows the
-# runner's truth instead of guessing at another fix blind.
-{
-  printf -- '--- uname -a ---\n'
-  uname -a 2>&1
-  printf -- '--- /etc/os-release (head -3) ---\n'
-  head -3 /etc/os-release 2>&1
-  printf -- '--- tmux -V ---\n'
-  "$REAL_TMUX" -V 2>&1
-  printf -- '--- ls -l %s ---\n' "$(command -v sleep)"
-  ls -l "$(command -v sleep)" 2>&1
-  printf -- '--- readlink -f %s ---\n' "$(command -v sleep)"
-  readlink -f "$(command -v sleep)" 2>&1
-  printf -- '--- $SLEEP_BIN --version ---\n'
-  "$SLEEP_BIN" --version 2>&1 | head -2
-  printf -- '--- exec -a sleep probe (1s, outside tmux) ---\n'
-  bash -c "exec -a sleep '$LAB/bin/claude-link' 1" 2>&1
-  printf 'exit=%s\n' "$?"
-} >&2
-
-"$REAL_TMUX" -L "$SOCKET" set-option -t "$SESSION" remain-on-exit on 2>/dev/null
-"$REAL_TMUX" -L "$SOCKET" new-window -d -t "$SESSION:" -n agent-probe -c "$LAB/wt" -- \
-  bash -c "exec -a sleep '$LAB/bin/claude-link' 900" 2>/dev/null
-sleep 0.3
-{
-  printf -- '--- agent-probe pane_dead / pane_dead_status ---\n'
-  "$REAL_TMUX" -L "$SOCKET" list-panes -t "$SESSION:agent-probe" -F '#{pane_dead} #{pane_dead_status}' 2>&1
-  printf -- '--- agent-probe capture-pane -p ---\n'
-  "$REAL_TMUX" -L "$SOCKET" capture-pane -p -t "$SESSION:agent-probe" 2>&1
-} >&2
-"$REAL_TMUX" -L "$SOCKET" kill-window -t "$SESSION:agent-probe" 2>/dev/null || true
-"$REAL_TMUX" -L "$SOCKET" set-option -t "$SESSION" remain-on-exit off 2>/dev/null
-
-new_window agent bash -c "exec -a sleep '$LAB/bin/claude-link' 900"
+new_window agent "$LAB/bin/claude-link" -c "read -r -t 900 <> '$LAB/hold.fifo'"
 # This case fails only under CI, never locally, so dump the real process and
 # tmux state before failing rather than guessing at a timing fix again.
 wait_for_state "$SESSION:agent" alive || {
@@ -266,13 +221,13 @@ pass "tmux liveness: a harness-named foreground process classifies alive"
 # worker would be torn down or relaunched. The decoys below are what keep the
 # fix from being a substring match that claims unrelated programs.
 
-new_window muse bash -c "exec -a sleep '$LAB/bin/muse-bin-0.1.0-R708.1' 900"
+new_window muse "$LAB/bin/muse-bin-0.1.0-R708.1" -c "read -r -t 900 <> '$LAB/hold.fifo'"
 wait_for_state "$SESSION:muse" alive \
   || fail "muse's version-suffixed binary name must classify alive"
 pass "tmux liveness: muse's version-suffixed muse-bin-<version> classifies alive"
 
 for decoy in musescore amuse muse-binary muse-bind; do
-  new_window "decoy-$decoy" bash -c "exec -a sleep '$LAB/bin/$decoy' 900"
+  new_window "decoy-$decoy" "$LAB/bin/$decoy" -c "read -r -t 900 <> '$LAB/hold.fifo'"
   wait_for_state "$SESSION:decoy-$decoy" ambiguous \
     || fail "'$decoy' merely contains 'muse' and must not classify as a live agent pane"
 done
@@ -306,7 +261,7 @@ fi
 
 # --- neither source names a harness: no invented agent ----------------------
 
-new_window unknown bash -c "exec -a 2.1.220 '$LAB/bin/notaharness' 900"
+new_window unknown bash -c "exec -a 2.1.220 '$LAB/bin/notaharness' -c 'read -r -t 900 <> \"$LAB/hold.fifo\"'"
 wait_for_state "$SESSION:unknown" ambiguous \
   || fail "a foreground process no name source attributes must stay ambiguous"
 pass "tmux liveness: a process neither name source attributes stays ambiguous rather than inventing an agent"
@@ -334,7 +289,7 @@ pass "tmux liveness: an idle shell pane classifies dead"
 # `set -m` gives the background job its own process group, which is what an
 # interactive shell does for a job an exited agent left behind.
 
-new_window background bash -c "set -m; ( exec -a sleep '$LAB/bin/claude-link' 900 ) & printf '%s\n' \"\$!\" > '$LAB/bg.pid'; exec /bin/sh"
+new_window background bash -c "set -m; '$LAB/bin/claude-link' -c 'read -r -t 900 <> \"$LAB/hold.fifo\"' & printf '%s\n' \"\$!\" > '$LAB/bg.pid'; exec /bin/sh"
 bg_pid=
 for _ in $(seq 1 100); do
   [ -s "$LAB/bg.pid" ] && bg_pid=$(cat "$LAB/bg.pid") && break
@@ -374,8 +329,8 @@ pass "tmux liveness: an absent window classifies missing rather than inheriting 
 # shellcheck source=bin/fm-tmux-lib.sh
 . "$ROOT/bin/fm-tmux-lib.sh"
 
-ln -s "$SLEEP_BIN" "$LAB/bin/cursor-agent"
-ln -s "$SLEEP_BIN" "$LAB/bin/notcursor"
+ln -s "$BASH_BIN" "$LAB/bin/cursor-agent"
+ln -s "$BASH_BIN" "$LAB/bin/notcursor"
 
 # Cursor's real screen shape: a BARE composer row carrying its U+2192 glyph, two
 # footer rows below it, and the terminal cursor left on a blank row past the
@@ -395,7 +350,7 @@ cursor_screen() {  # <composer-text> <ghost 0|1>
 
 open_composer_pane() {  # <window> <binary> <composer-text> <ghost 0|1>
   local window=$1 binary=$2 text=$3 ghost=$4
-  new_window "$window" bash -c "$(declare -f cursor_screen); LAB='$LAB'; cursor_screen '$text' '$ghost'; exec -a sleep '$binary' 900"
+  new_window "$window" bash -c "$(declare -f cursor_screen); LAB='$LAB'; cursor_screen '$text' '$ghost'; exec '$binary' -c 'read -r -t 900 <> \"$LAB/hold.fifo\"'"
   local i=0
   while [ "$i" -lt 100 ]; do
     case "$("$REAL_TMUX" -L "$SOCKET" capture-pane -p -t "$SESSION:$window" 2>/dev/null)" in
