@@ -96,11 +96,26 @@ fm_backend_source tmux || fail "fm_backend_source tmux failed"
 
 # Run the pane's process DIRECTLY as the window command rather than typing into
 # a shell, so no case depends on interactive shell readiness.
+#
+# tmux destroys a window the instant its pane's command exits, unless
+# remain-on-exit is set, and no case here sets it. A pane whose command dies
+# right after spawning - seen only under CI contention, never locally - takes
+# the brand-new window down with it before any caller gets to observe it, so
+# a target recorded a moment earlier reads as a window that was never there.
+# Confirm the window survives past its own creation, and recreate it a bounded
+# number of times if it does not, rather than hand the caller a target whose
+# window is already gone.
 new_window() {  # <name> <cmd...>
   local name=$1
   shift
-  "$REAL_TMUX" -L "$SOCKET" new-window -d -t "$SESSION:" -n "$name" -c "$LAB/wt" -- "$@" \
-    || fail "could not create window $name"
+  for _ in 1 2 3 4 5; do
+    "$REAL_TMUX" -L "$SOCKET" new-window -d -t "$SESSION:" -n "$name" -c "$LAB/wt" -- "$@" \
+      || fail "could not create window $name"
+    sleep 0.2
+    "$REAL_TMUX" -L "$SOCKET" list-windows -t "=$SESSION" -F '#{window_name}' 2>/dev/null \
+      | grep -Fqx "$name" && return 0
+  done
+  fail "window $name kept exiting immediately after creation"
 }
 
 wait_for_state() {  # <target> <expected> [tries]
