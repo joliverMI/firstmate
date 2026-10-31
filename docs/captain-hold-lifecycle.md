@@ -39,6 +39,7 @@ The script never fabricates the captain's release or close decision from a card 
 `card-task <card-id>` is the read-only reverse lookup from a card id back to the task id that carries it (a scan of `state/*.hold-card`), for the mate handling a `check: dashboard-approval <card-id>` or `check: dashboard-note <card-id>` wake: resolve the task, read the captain's own approval text or note off the card, and close through `answer` - or `answer --release` - exactly as any other channel does.
 
 A hold waiting on a named deliverable may carry `--await-path <path>`, recorded as an armed `bin/fm-procevent-when.sh` watch in `state/<id>.hold-await-source`: the watch fires once that path exists, so the hold re-surfaces the moment the awaited report or table actually lands rather than sitting idle until someone remembers to look.
+A repeat `hold` that carries `--await-path` always retires whatever watch is already armed for that task id before arming a fresh one, so a re-hold whose deliverable turned out to land somewhere else re-points the watch instead of leaving it armed against the stale path.
 `answer` retires that watch, best-effort, in the same act that closes the hold, whether the close comes through the direct command or through the "repaired" (closed-outside-the-script) path.
 
 ## Cleanup never closes a captain call
