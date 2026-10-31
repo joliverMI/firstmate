@@ -131,8 +131,19 @@ for pid in "${SEQ_PIDS[@]}"; do
 done
 SEQ_RESULTS=$(cat "$TMP_ROOT"/seq-* | sort -n)
 SEQ_EXPECTED=$(seq 1 20)
-[ "$SEQ_RESULTS" = "$SEQ_EXPECTED" ] \
-  || fail "concurrent sequence claims were not unique and monotonic: $SEQ_RESULTS"
+if [ "$SEQ_RESULTS" != "$SEQ_EXPECTED" ]; then
+  # Diagnostics only: this failure has only reproduced under CI, so dump the
+  # full claimed-sequence list and the runner's flock before failing, rather
+  # than guessing at another fix blind.
+  {
+    printf -- '--- claimed sequence results ---\n%s\n' "$SEQ_RESULTS"
+    printf -- '--- flock --version ---\n'
+    flock --version 2>&1
+    printf -- '--- which flock ---\n'
+    which flock 2>&1
+  } >&2
+  fail "concurrent sequence claims were not unique and monotonic: $SEQ_RESULTS"
+fi
 [ "$(find "$STATE_ROOT/.seq-claims" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" = 20 ] \
   || fail "concurrent sequence allocations did not retain every durable claim"
 mkdir "$STATE_ROOT/.seq-claims/999998" "$STATE_ROOT/.seq-claims/999999"

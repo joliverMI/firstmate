@@ -127,6 +127,20 @@ new_window() {  # <name> <cmd...>
     "$REAL_TMUX" -L "$SOCKET" list-windows -t "=$SESSION" -F '#{window_name}' 2>/dev/null \
       | grep -Fqx "$name" && return 0
   done
+  # Diagnostics only: the retry loop above already decided this is a failure.
+  # Recreate once more with remain-on-exit on so the dead pane's own status
+  # and output survive long enough to read, instead of vanishing with the
+  # window before this failure path can look at them.
+  "$REAL_TMUX" -L "$SOCKET" set-option -t "$SESSION" remain-on-exit on 2>/dev/null
+  "$REAL_TMUX" -L "$SOCKET" new-window -d -t "$SESSION:" -n "$name" -c "$LAB/wt" -- "$@" 2>/dev/null
+  sleep 0.2
+  {
+    printf -- '--- %s pane_dead_status ---\n' "$name"
+    "$REAL_TMUX" -L "$SOCKET" list-panes -t "$SESSION:$name" -F '#{pane_dead_status}' 2>&1
+    printf -- '--- %s capture-pane -p ---\n' "$name"
+    "$REAL_TMUX" -L "$SOCKET" capture-pane -p -t "$SESSION:$name" 2>&1
+  } >&2
+  "$REAL_TMUX" -L "$SOCKET" set-option -t "$SESSION" remain-on-exit off 2>/dev/null
   fail "window $name kept exiting immediately after creation"
 }
 
@@ -194,6 +208,40 @@ assert_sources_disagree() {  # <target> <label>
 # (what the real sleep dispatches on); the kernel's own exec identity (comm),
 # which is what this classifier reads and what this case is testing, still
 # comes from the path, so it stays the harness name.
+
+# Diagnostics only: confirm the runner's actual sleep binary and exec -a
+# behavior before the real "agent" window, so a failure here shows the
+# runner's truth instead of guessing at another fix blind.
+{
+  printf -- '--- uname -a ---\n'
+  uname -a 2>&1
+  printf -- '--- /etc/os-release (head -3) ---\n'
+  head -3 /etc/os-release 2>&1
+  printf -- '--- tmux -V ---\n'
+  "$REAL_TMUX" -V 2>&1
+  printf -- '--- ls -l %s ---\n' "$(command -v sleep)"
+  ls -l "$(command -v sleep)" 2>&1
+  printf -- '--- readlink -f %s ---\n' "$(command -v sleep)"
+  readlink -f "$(command -v sleep)" 2>&1
+  printf -- '--- $SLEEP_BIN --version ---\n'
+  "$SLEEP_BIN" --version 2>&1 | head -2
+  printf -- '--- exec -a sleep probe (1s, outside tmux) ---\n'
+  bash -c "exec -a sleep '$LAB/bin/claude-link' 1" 2>&1
+  printf 'exit=%s\n' "$?"
+} >&2
+
+"$REAL_TMUX" -L "$SOCKET" set-option -t "$SESSION" remain-on-exit on 2>/dev/null
+"$REAL_TMUX" -L "$SOCKET" new-window -d -t "$SESSION:" -n agent-probe -c "$LAB/wt" -- \
+  bash -c "exec -a sleep '$LAB/bin/claude-link' 900" 2>/dev/null
+sleep 0.3
+{
+  printf -- '--- agent-probe pane_dead / pane_dead_status ---\n'
+  "$REAL_TMUX" -L "$SOCKET" list-panes -t "$SESSION:agent-probe" -F '#{pane_dead} #{pane_dead_status}' 2>&1
+  printf -- '--- agent-probe capture-pane -p ---\n'
+  "$REAL_TMUX" -L "$SOCKET" capture-pane -p -t "$SESSION:agent-probe" 2>&1
+} >&2
+"$REAL_TMUX" -L "$SOCKET" kill-window -t "$SESSION:agent-probe" 2>/dev/null || true
+"$REAL_TMUX" -L "$SOCKET" set-option -t "$SESSION" remain-on-exit off 2>/dev/null
 
 new_window agent bash -c "exec -a sleep '$LAB/bin/claude-link' 900"
 # This case fails only under CI, never locally, so dump the real process and
