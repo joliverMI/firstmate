@@ -135,7 +135,11 @@ jobs:
     # modelled ~12.7 min ran up to 15 min on real runners, so the cap stays
     # well above the balanced shard rather than beside it until a green
     # 5-shard CI run gives a real measured ceiling (docs/fm-test-portable-shards.md).
-    timeout-minutes: 25
+    # ubuntu-latest moved to Ubuntu 26.04 (Rust uutils coreutils), whose
+    # measured per-shard time now runs 30-50% slower than the Ubuntu 24.04
+    # baseline this cap was set from, exceeding the old 25-minute cap on
+    # shard 1 alone; the cap is raised here rather than shards rebalanced.
+    timeout-minutes: 40
     strategy:
       # Every shard reports so one failure never hides another shard's result.
       fail-fast: false
