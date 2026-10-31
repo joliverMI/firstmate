@@ -862,8 +862,18 @@ secondmate_handoff_resume() {
   # (bin/fm-backlog-handoff.sh). A home with only local secondmates has the
   # second without ever having the first, so gating on the outbox directory
   # alone would skip the resume that exists to complete those links.
-  [ -d "$DATA/handoff" ] || [ -d "$STATE/handoff-cards" ] || return 0
-  "$SCRIPT_DIR/fm-backlog-handoff.sh" --resume-pending >/dev/null 2>&1 || true
+  if [ -d "$DATA/handoff" ] || [ -d "$STATE/handoff-cards" ]; then
+    "$SCRIPT_DIR/fm-backlog-handoff.sh" --resume-pending >/dev/null 2>&1 || true
+  fi
+  # A captain hold whose board card could not be created when it was first
+  # held (bin/fm-captain-hold.sh hold) stages the same shape of pending record
+  # under state/<id>.hold-card-pending; retry it on the same network-gated
+  # cadence as the handoff resume above, so a board that was briefly
+  # unreachable never leaves a captain call without the one card that makes it
+  # visible to the board's own age checks.
+  if compgen -G "$STATE"'/*.hold-card-pending' >/dev/null 2>&1; then
+    "$SCRIPT_DIR/fm-captain-hold.sh" resume-pending-cards >/dev/null 2>&1 || true
+  fi
 }
 
 # The two independent kinds of pending handoff state secondmate_handoff_resume
