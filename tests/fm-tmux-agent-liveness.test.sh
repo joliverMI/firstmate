@@ -151,7 +151,10 @@ assert_sources_disagree() {  # <target> <label>
 # version-string case below owns the cross-platform divergence assertion.
 
 new_window agent "$LAB/bin/claude-link" 900
-wait_for_state "$SESSION:agent" alive \
+# The first classification after the tmux server and session are freshly
+# created; under contended CI shard load, the session's initial pane/process
+# bookkeeping can take longer to settle than the default 10s window allows.
+wait_for_state "$SESSION:agent" alive 300 \
   || fail "a running harness-named foreground process must classify alive"
 pass "tmux liveness: a harness-named foreground process classifies alive"
 
