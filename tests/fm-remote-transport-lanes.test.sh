@@ -122,44 +122,72 @@ export FM_REMOTE_JOB_STAGE_REAP_SECONDS=1
 fm_remote_job_prepare_state "$ACCOUNT_HOME" || fail "$FM_REMOTE_JOB_ERROR"
 rm -f -- "$STATE_ROOT/seq"
 
-# One-time diagnostic probe (test-only; remove once this round confirms or
-# denies the hypothesis). fm_remote_job_next_seq's claim
-# (bin/fm-remote-job-lib.sh) treats a successful `mkdir "$claim"` as proof no
-# other caller holds that claim number. Confirm directly, before touching any
-# lock logic, whether concurrent mkdir of the very same new path is still
-# exclusive on this runner: spawn 50 callers racing to mkdir one shared fresh
-# path and count how many report success.
-MKDIR_BIN=$(command -v mkdir)
-PROBE_DIR=$(mktemp -d)
-PROBE_WINNERS=$(
-  for i in $(seq 1 50); do
-    ( mkdir "$PROBE_DIR/samepath" 2>/dev/null && printf 'win %s\n' "$i" ) &
+# Diagnostic instrumentation (test-only; no change to fm_remote_job_next_seq
+# itself). The prior round's mkdir-exclusivity probe confirmed mkdir itself is
+# exclusive (1 winner of 50) even on a run where the claimed sequence still
+# held a duplicate, so that hypothesis is spent. This round's question is
+# narrower: when a duplicate shows up, did the claim directory get removed
+# and recreated mid-race (two "winners" of the same value see different
+# inodes for the claim path), or did mkdir itself report success to a loser
+# that should have gotten EEXIST (two "winners" see the same inode)? Capture
+# the process tree before the race (in case a worker/reaper/background job is
+# rmdir'ing claims concurrently), shadow mkdir so each of the 20 claimants
+# logs its own attempts/outcomes to a private file, and dump everything only
+# if the race actually produces a bad result.
+RACE_PS_SNAPSHOT=$(ps -ef --forest 2>&1)
+RACE_TOOL_RESOLUTION=$(
+  for tool in mkdir rmdir mv cat; do
+    tool_path=$(command -v "$tool" 2>&1)
+    printf '%s -> %s -> %s\n' "$tool" "$tool_path" "$(readlink -f "$tool_path" 2>&1)"
   done
-  wait
 )
-PROBE_WIN_COUNT=$(printf '%s\n' "$PROBE_WINNERS" | grep -c '^win ')
-rm -rf -- "$PROBE_DIR"
-{
-  printf -- '--- mkdir exclusivity probe ---\n'
-  printf -- 'mkdir bin: %s -> %s\n' "$MKDIR_BIN" "$(readlink -f "$MKDIR_BIN")"
-  "$MKDIR_BIN" --version 2>&1 | head -1
-  printf -- 'winners (of 50 concurrent mkdir of one shared path):\n%s\n' "$PROBE_WINNERS"
-  printf -- 'winner count: %s\n' "$PROBE_WIN_COUNT"
-} >&2
+
+# shellcheck disable=SC2329 # Invoked indirectly: shadows mkdir for fm_remote_job_next_seq's own call.
+mkdir() {
+  local rc path
+  command mkdir "$@"
+  rc=$?
+  if [ -n "${CLAIMANT_LOG:-}" ]; then
+    path=$1
+    {
+      printf 'attempt claim=%s exit=%s\n' "$path" "$rc"
+      if [ "$rc" -eq 0 ]; then
+        printf 'won inode=%s\n' "$(stat -c %i "$path" 2>&1)"
+        printf 'seq-claims snapshot:\n'
+        ls -la "$FM_REMOTE_JOB_SEQ_CLAIMS" 2>&1
+      fi
+    } >> "$CLAIMANT_LOG"
+  fi
+  return "$rc"
+}
 
 SEQ_PIDS=()
 for i in $(seq 1 20); do
-  fm_remote_job_next_seq > "$TMP_ROOT/seq-$i" &
+  CLAIMANT_LOG="$TMP_ROOT/claimant-$i.log"
+  : > "$CLAIMANT_LOG"
+  (
+    printf 'bashpid=%s\n' "$BASHPID" >> "$CLAIMANT_LOG"
+    fm_remote_job_next_seq > "$TMP_ROOT/seq-$i"
+  ) &
   SEQ_PIDS+=("$!")
 done
 for pid in "${SEQ_PIDS[@]}"; do
   wait "$pid" || fail "a concurrent sequence allocator failed"
 done
+unset -f mkdir
 SEQ_RESULTS=$(cat "$TMP_ROOT"/seq-* | sort -n)
 SEQ_EXPECTED=$(seq 1 20)
 if [ "$SEQ_RESULTS" != "$SEQ_EXPECTED" ]; then
-  printf -- '--- claimed sequence results ---\n%s\n' "$SEQ_RESULTS" >&2
-  fail "concurrent sequence claims were not unique and monotonic (mkdir exclusivity probe winner count was $PROBE_WIN_COUNT of 50): $SEQ_RESULTS"
+  {
+    printf -- '--- process tree before the race ---\n%s\n' "$RACE_PS_SNAPSHOT"
+    printf -- '--- tool resolution ---\n%s\n' "$RACE_TOOL_RESOLUTION"
+    printf -- '--- claimed sequence results ---\n%s\n' "$SEQ_RESULTS"
+    for i in $(seq 1 20); do
+      printf -- '--- claimant %s log ---\n' "$i"
+      cat "$TMP_ROOT/claimant-$i.log"
+    done
+  } >&2
+  fail "concurrent sequence claims were not unique and monotonic: $SEQ_RESULTS"
 fi
 [ "$(find "$STATE_ROOT/.seq-claims" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" = 20 ] \
   || fail "concurrent sequence allocations did not retain every durable claim"
