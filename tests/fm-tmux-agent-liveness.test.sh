@@ -31,6 +31,16 @@ LAB=$(mktemp -d "${TMPDIR:-/tmp}/fm-liveness.XXXXXX")
 SESSION=liveness
 
 cleanup_all() {
+  # The background-window fixture below puts claude-link in its OWN process
+  # group via `set -m`, so tmux kill-server (which only reaps the panes' own
+  # process groups) never reaches it; under real init-reaping (CI containers,
+  # unlike a human shell) nothing else reparents and reaps it either, and it
+  # survives as an orphan. Kill the recorded group explicitly.
+  local bg_pid
+  if [ -n "${LAB:-}" ] && [ -s "$LAB/bg.pid" ]; then
+    bg_pid=$(cat "$LAB/bg.pid" 2>/dev/null) || bg_pid=
+    [ -n "$bg_pid" ] && kill -- "-$bg_pid" 2>/dev/null
+  fi
   "$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || true
   [ -n "${LAB:-}" ] && rm -rf "$LAB"
 }
@@ -151,11 +161,21 @@ assert_sources_disagree() {  # <target> <label>
 # version-string case below owns the cross-platform divergence assertion.
 
 new_window agent "$LAB/bin/claude-link" 900
-# The first classification after the tmux server and session are freshly
-# created; under contended CI shard load, the session's initial pane/process
-# bookkeeping can take longer to settle than the default 10s window allows.
-wait_for_state "$SESSION:agent" alive 300 \
-  || fail "a running harness-named foreground process must classify alive"
+# This case fails only under CI, never locally, so dump the real process and
+# tmux state before failing rather than guessing at a timing fix again.
+wait_for_state "$SESSION:agent" alive || {
+  {
+    printf -- '--- ps -eo pid,ppid,pgid,stat,etime,args ---\n'
+    ps -eo pid,ppid,pgid,stat,etime,args 2>&1
+    printf -- '--- tmux list-panes -a (socket %s) ---\n' "$SOCKET"
+    "$REAL_TMUX" -L "$SOCKET" list-panes -a -F '#{pane_pid} #{pane_current_command}' 2>&1
+    printf -- '--- fm_backend_tmux_current_command %s:agent ---\n' "$SESSION"
+    fm_backend_tmux_current_command "$SESSION:agent" 2>&1
+    printf -- '--- fm_backend_agent_state tmux %s:agent ---\n' "$SESSION"
+    fm_backend_agent_state tmux "$SESSION:agent" 2>&1
+  } >&2
+  fail "a running harness-named foreground process must classify alive"
+}
 pass "tmux liveness: a harness-named foreground process classifies alive"
 
 # --- muse's version-suffixed binary name ------------------------------------
