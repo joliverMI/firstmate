@@ -63,7 +63,19 @@ export PATH
 # the executable identity, which is exactly the signal under test.
 ln -s "$SLEEP_BIN" "$LAB/bin/claude-link"
 ln -s "$SLEEP_BIN" "$LAB/bin/pi"
-ln -s "$SLEEP_BIN" "$LAB/bin/notaharness"
+# notaharness is exec'd below with argv[0] deliberately overridden to a
+# version string, not "sleep" (that is the point of the case it drives), so
+# it cannot be a bare symlink: a multicall coreutils build (Ubuntu's uutils
+# package) dispatches sleep's own behavior off argv[0] and would not
+# recognize that override. Running the real sleep as an internal child keeps
+# this process's own exec identity (comm) "notaharness" while the override
+# lands only on it, and the real sleep always sees its own correct argv[0].
+cat > "$LAB/bin/notaharness" <<SH
+#!/usr/bin/env bash
+"$SLEEP_BIN" "\${1:-900}" &
+wait
+SH
+chmod +x "$LAB/bin/notaharness"
 # muse's installed binary is muse-bin-<version>: the launcher execs it, so the
 # version is the LIVE process name and it changes on every auto-update. Unlike
 # Claude Code's version-named binary there is no `muse` path component to fall
@@ -81,8 +93,8 @@ ln -s "$SLEEP_BIN" "$LAB/bin/muse-bind"
 # path takes, and the one where trusting a single name source can produce a
 # false `dead`.
 cat > "$LAB/bin/agent-launcher" <<SH
-#!/bin/sh
-"$LAB/bin/pi" 900 &
+#!/usr/bin/env bash
+(exec -a sleep "$LAB/bin/pi" 900) &
 wait
 SH
 chmod +x "$LAB/bin/agent-launcher"
@@ -174,8 +186,16 @@ assert_sources_disagree() {  # <target> <label>
 # with a real process. macOS exposes different names for the symlink through
 # tmux and ps, while Linux can expose the symlink name through both, so the
 # version-string case below owns the cross-platform divergence assertion.
+#
+# Run it as `exec -a sleep <symlink>`, not the symlink directly: a multicall
+# coreutils build (Ubuntu's uutils package) dispatches sleep's behavior off
+# argv[0], and the symlink's own name is not a name it recognizes, so a direct
+# exec exits immediately instead of sleeping. `exec -a` overrides only argv[0]
+# (what the real sleep dispatches on); the kernel's own exec identity (comm),
+# which is what this classifier reads and what this case is testing, still
+# comes from the path, so it stays the harness name.
 
-new_window agent "$LAB/bin/claude-link" 900
+new_window agent bash -c "exec -a sleep '$LAB/bin/claude-link' 900"
 # This case fails only under CI, never locally, so dump the real process and
 # tmux state before failing rather than guessing at a timing fix again.
 wait_for_state "$SESSION:agent" alive || {
@@ -198,13 +218,13 @@ pass "tmux liveness: a harness-named foreground process classifies alive"
 # worker would be torn down or relaunched. The decoys below are what keep the
 # fix from being a substring match that claims unrelated programs.
 
-new_window muse "$LAB/bin/muse-bin-0.1.0-R708.1" 900
+new_window muse bash -c "exec -a sleep '$LAB/bin/muse-bin-0.1.0-R708.1' 900"
 wait_for_state "$SESSION:muse" alive \
   || fail "muse's version-suffixed binary name must classify alive"
 pass "tmux liveness: muse's version-suffixed muse-bin-<version> classifies alive"
 
 for decoy in musescore amuse muse-binary muse-bind; do
-  new_window "decoy-$decoy" "$LAB/bin/$decoy" 900
+  new_window "decoy-$decoy" bash -c "exec -a sleep '$LAB/bin/$decoy' 900"
   wait_for_state "$SESSION:decoy-$decoy" ambiguous \
     || fail "'$decoy' merely contains 'muse' and must not classify as a live agent pane"
 done
@@ -266,7 +286,7 @@ pass "tmux liveness: an idle shell pane classifies dead"
 # `set -m` gives the background job its own process group, which is what an
 # interactive shell does for a job an exited agent left behind.
 
-new_window background bash -c "set -m; '$LAB/bin/claude-link' 900 & printf '%s\n' \"\$!\" > '$LAB/bg.pid'; exec /bin/sh"
+new_window background bash -c "set -m; ( exec -a sleep '$LAB/bin/claude-link' 900 ) & printf '%s\n' \"\$!\" > '$LAB/bg.pid'; exec /bin/sh"
 bg_pid=
 for _ in $(seq 1 100); do
   [ -s "$LAB/bg.pid" ] && bg_pid=$(cat "$LAB/bg.pid") && break
@@ -327,7 +347,7 @@ cursor_screen() {  # <composer-text> <ghost 0|1>
 
 open_composer_pane() {  # <window> <binary> <composer-text> <ghost 0|1>
   local window=$1 binary=$2 text=$3 ghost=$4
-  new_window "$window" bash -c "$(declare -f cursor_screen); LAB='$LAB'; cursor_screen '$text' '$ghost'; exec '$binary' 900"
+  new_window "$window" bash -c "$(declare -f cursor_screen); LAB='$LAB'; cursor_screen '$text' '$ghost'; exec -a sleep '$binary' 900"
   local i=0
   while [ "$i" -lt 100 ]; do
     case "$("$REAL_TMUX" -L "$SOCKET" capture-pane -p -t "$SESSION:$window" 2>/dev/null)" in
