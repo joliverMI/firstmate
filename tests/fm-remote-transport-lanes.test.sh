@@ -121,6 +121,32 @@ export FM_REMOTE_JOB_STAGE_REAP_SECONDS=1
 
 fm_remote_job_prepare_state "$ACCOUNT_HOME" || fail "$FM_REMOTE_JOB_ERROR"
 rm -f -- "$STATE_ROOT/seq"
+
+# One-time diagnostic probe (test-only; remove once this round confirms or
+# denies the hypothesis). fm_remote_job_next_seq's claim
+# (bin/fm-remote-job-lib.sh) treats a successful `mkdir "$claim"` as proof no
+# other caller holds that claim number. Confirm directly, before touching any
+# lock logic, whether concurrent mkdir of the very same new path is still
+# exclusive on this runner: spawn 50 callers racing to mkdir one shared fresh
+# path and count how many report success.
+MKDIR_BIN=$(command -v mkdir)
+PROBE_DIR=$(mktemp -d)
+PROBE_WINNERS=$(
+  for i in $(seq 1 50); do
+    ( mkdir "$PROBE_DIR/samepath" 2>/dev/null && printf 'win %s\n' "$i" ) &
+  done
+  wait
+)
+PROBE_WIN_COUNT=$(printf '%s\n' "$PROBE_WINNERS" | grep -c '^win ')
+rm -rf -- "$PROBE_DIR"
+{
+  printf -- '--- mkdir exclusivity probe ---\n'
+  printf -- 'mkdir bin: %s -> %s\n' "$MKDIR_BIN" "$(readlink -f "$MKDIR_BIN")"
+  "$MKDIR_BIN" --version 2>&1 | head -1
+  printf -- 'winners (of 50 concurrent mkdir of one shared path):\n%s\n' "$PROBE_WINNERS"
+  printf -- 'winner count: %s\n' "$PROBE_WIN_COUNT"
+} >&2
+
 SEQ_PIDS=()
 for i in $(seq 1 20); do
   fm_remote_job_next_seq > "$TMP_ROOT/seq-$i" &
@@ -132,17 +158,8 @@ done
 SEQ_RESULTS=$(cat "$TMP_ROOT"/seq-* | sort -n)
 SEQ_EXPECTED=$(seq 1 20)
 if [ "$SEQ_RESULTS" != "$SEQ_EXPECTED" ]; then
-  # Diagnostics only: this failure has only reproduced under CI, so dump the
-  # full claimed-sequence list and the runner's flock before failing, rather
-  # than guessing at another fix blind.
-  {
-    printf -- '--- claimed sequence results ---\n%s\n' "$SEQ_RESULTS"
-    printf -- '--- flock --version ---\n'
-    flock --version 2>&1
-    printf -- '--- which flock ---\n'
-    which flock 2>&1
-  } >&2
-  fail "concurrent sequence claims were not unique and monotonic: $SEQ_RESULTS"
+  printf -- '--- claimed sequence results ---\n%s\n' "$SEQ_RESULTS" >&2
+  fail "concurrent sequence claims were not unique and monotonic (mkdir exclusivity probe winner count was $PROBE_WIN_COUNT of 50): $SEQ_RESULTS"
 fi
 [ "$(find "$STATE_ROOT/.seq-claims" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" = 20 ] \
   || fail "concurrent sequence allocations did not retain every durable claim"
