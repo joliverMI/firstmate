@@ -217,9 +217,42 @@ test_await_path_arms_and_answer_retires_the_deliverable_watch() {
   pass "--await-path arms a deliverable watch that answer retires once the hold is closed"
 }
 
+test_rehold_with_a_changed_await_path_rearms_the_watch() {
+  local home await_a await_b watch_marker source spec_file
+  home=$(make_home rehold-await-path)
+  await_a="$home/data/report-a.md"
+  await_b="$home/data/report-b.md"
+  run_captain "$home" hold sample-rehold-await-call \
+    --title "Review once DJ's table lands" --reason "captain review once the table lands at a.md" --repo sample \
+    --await-path "$await_a" \
+    >/dev/null || fail "could not create the deliverable-awaiting captain-held task"
+
+  watch_marker="$home/state/sample-rehold-await-call.hold-await-source"
+  assert_present "$watch_marker" "--await-path did not record an armed deliverable watch"
+  source=$(cat "$watch_marker")
+  spec_file="$home/state/when/when-$source.spec"
+  assert_present "$spec_file" "the initial await watch left no spec behind"
+  assert_grep "$await_a" "$spec_file" "the initial watch's spec does not name the awaited path"
+
+  run_captain "$home" hold sample-rehold-await-call \
+    --reason "captain review once the table lands at b.md" --await-path "$await_b" \
+    >/dev/null || fail "re-holding with a changed --await-path failed"
+
+  assert_present "$watch_marker" "re-holding with a changed --await-path lost the armed deliverable watch"
+  source=$(cat "$watch_marker")
+  spec_file="$home/state/when/when-$source.spec"
+  assert_present "$spec_file" "re-holding with a changed --await-path left no spec behind for the re-armed watch"
+  assert_grep "$await_b" "$spec_file" "re-holding did not arm a fresh watch for the new await-path"
+  if grep -qF "$await_a" "$spec_file"; then
+    fail "the re-armed watch's spec still names the old await-path instead of only the new one"
+  fi
+  pass "re-holding the same task id with a changed --await-path retires the old deliverable watch and arms a fresh one for the new path"
+}
+
 test_hold_creates_a_needs_action_card_with_the_reason
 test_card_plan_creates_a_needs_review_card
 test_rehold_reuses_the_linked_card_and_resyncs_the_reason
 test_unreachable_board_defers_to_a_pending_marker_until_resumed
 test_card_task_reverse_looks_up_the_held_task
 test_await_path_arms_and_answer_retires_the_deliverable_watch
+test_rehold_with_a_changed_await_path_rearms_the_watch
