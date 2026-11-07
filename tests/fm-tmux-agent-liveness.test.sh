@@ -23,7 +23,7 @@ fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
 
 command -v tmux >/dev/null 2>&1 || { echo "skip: tmux not found"; exit 0; }
-SLEEP_BIN=$(command -v sleep) || { echo "skip: sleep not found"; exit 0; }
+BASH_BIN=$(command -v bash) || { echo "skip: bash not found"; exit 0; }
 
 REAL_TMUX=$(command -v tmux)
 SOCKET="fm-liveness-$$"
@@ -31,6 +31,16 @@ LAB=$(mktemp -d "${TMPDIR:-/tmp}/fm-liveness.XXXXXX")
 SESSION=liveness
 
 cleanup_all() {
+  # The background-window fixture below puts claude-link in its OWN process
+  # group via `set -m`, so tmux kill-server (which only reaps the panes' own
+  # process groups) never reaches it; under real init-reaping (CI containers,
+  # unlike a human shell) nothing else reparents and reaps it either, and it
+  # survives as an orphan. Kill the recorded group explicitly.
+  local bg_pid
+  if [ -n "${LAB:-}" ] && [ -s "$LAB/bg.pid" ]; then
+    bg_pid=$(cat "$LAB/bg.pid" 2>/dev/null) || bg_pid=
+    [ -n "$bg_pid" ] && kill -- "-$bg_pid" 2>/dev/null
+  fi
   "$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || true
   [ -n "${LAB:-}" ] && rm -rf "$LAB"
 }
@@ -47,32 +57,41 @@ chmod +x "$LAB/shim/tmux"
 PATH="$LAB/shim:$PATH"
 export PATH
 
+# Every long-running fixture below blocks on a read from this one fifo rather
+# than sleeping: a multicall coreutils `sleep` build (e.g. Ubuntu's uutils
+# package) dispatches its own behavior off the executed path and refuses to
+# run under a renamed symlink at all, regardless of argv[0]. Opening the fifo
+# O_RDWR never blocks (no peer required), and `read -t 900` then blocks until
+# the timeout with no child process spawned, so the foreground process this
+# test classifies stays the harness-named symlink itself.
+mkfifo "$LAB/hold.fifo" || fail "could not create hold fifo"
+
 # Stand-in "harness" binaries. These are SYMLINKS to a real long-running system
 # binary, never copies: a copied platform binary fails code-signing validation
 # and is killed on macOS arm64. The symlink name is what the kernel records as
 # the executable identity, which is exactly the signal under test.
-ln -s "$SLEEP_BIN" "$LAB/bin/claude-link"
-ln -s "$SLEEP_BIN" "$LAB/bin/pi"
-ln -s "$SLEEP_BIN" "$LAB/bin/notaharness"
+ln -s "$BASH_BIN" "$LAB/bin/claude-link"
+ln -s "$BASH_BIN" "$LAB/bin/pi"
+ln -s "$BASH_BIN" "$LAB/bin/notaharness"
 # muse's installed binary is muse-bin-<version>: the launcher execs it, so the
 # version is the LIVE process name and it changes on every auto-update. Unlike
 # Claude Code's version-named binary there is no `muse` path component to fall
 # back on (~/.local/bin/muse-bin-<version>), so the executable name is the ONLY
 # signal, and `muse` alone is a common English fragment that must not widen into
 # a substring match. The last two names are the decoys that would be misread.
-ln -s "$SLEEP_BIN" "$LAB/bin/muse-bin-0.1.0-R708.1"
-ln -s "$SLEEP_BIN" "$LAB/bin/musescore"
-ln -s "$SLEEP_BIN" "$LAB/bin/amuse"
-ln -s "$SLEEP_BIN" "$LAB/bin/muse-binary"
-ln -s "$SLEEP_BIN" "$LAB/bin/muse-bind"
+ln -s "$BASH_BIN" "$LAB/bin/muse-bin-0.1.0-R708.1"
+ln -s "$BASH_BIN" "$LAB/bin/musescore"
+ln -s "$BASH_BIN" "$LAB/bin/amuse"
+ln -s "$BASH_BIN" "$LAB/bin/muse-binary"
+ln -s "$BASH_BIN" "$LAB/bin/muse-bind"
 
 # A launcher whose own process identity is a bare shell, running the harness as
 # a child in the same foreground process group - the shape the real Pi Launcher
 # path takes, and the one where trusting a single name source can produce a
 # false `dead`.
 cat > "$LAB/bin/agent-launcher" <<SH
-#!/bin/sh
-"$LAB/bin/pi" 900 &
+#!/usr/bin/env bash
+"$LAB/bin/pi" -c 'read -r -t 900 <> "$LAB/hold.fifo"' &
 wait
 SH
 chmod +x "$LAB/bin/agent-launcher"
@@ -86,11 +105,40 @@ fm_backend_source tmux || fail "fm_backend_source tmux failed"
 
 # Run the pane's process DIRECTLY as the window command rather than typing into
 # a shell, so no case depends on interactive shell readiness.
+#
+# tmux destroys a window the instant its pane's command exits, unless
+# remain-on-exit is set, and no case here sets it. A pane whose command dies
+# right after spawning - seen only under CI contention, never locally - takes
+# the brand-new window down with it before any caller gets to observe it, so
+# a target recorded a moment earlier reads as a window that was never there.
+# Confirm the window survives past its own creation, and recreate it a bounded
+# number of times if it does not, rather than hand the caller a target whose
+# window is already gone.
 new_window() {  # <name> <cmd...>
   local name=$1
   shift
-  "$REAL_TMUX" -L "$SOCKET" new-window -d -t "$SESSION:" -n "$name" -c "$LAB/wt" -- "$@" \
-    || fail "could not create window $name"
+  for _ in 1 2 3 4 5; do
+    "$REAL_TMUX" -L "$SOCKET" new-window -d -t "$SESSION:" -n "$name" -c "$LAB/wt" -- "$@" \
+      || fail "could not create window $name"
+    sleep 0.2
+    "$REAL_TMUX" -L "$SOCKET" list-windows -t "=$SESSION" -F '#{window_name}' 2>/dev/null \
+      | grep -Fqx "$name" && return 0
+  done
+  # Diagnostics only: the retry loop above already decided this is a failure.
+  # Recreate once more with remain-on-exit on so the dead pane's own status
+  # and output survive long enough to read, instead of vanishing with the
+  # window before this failure path can look at them.
+  "$REAL_TMUX" -L "$SOCKET" set-option -t "$SESSION" remain-on-exit on 2>/dev/null
+  "$REAL_TMUX" -L "$SOCKET" new-window -d -t "$SESSION:" -n "$name" -c "$LAB/wt" -- "$@" 2>/dev/null
+  sleep 0.2
+  {
+    printf -- '--- %s pane_dead_status ---\n' "$name"
+    "$REAL_TMUX" -L "$SOCKET" list-panes -t "$SESSION:$name" -F '#{pane_dead_status}' 2>&1
+    printf -- '--- %s capture-pane -p ---\n' "$name"
+    "$REAL_TMUX" -L "$SOCKET" capture-pane -p -t "$SESSION:$name" 2>&1
+  } >&2
+  "$REAL_TMUX" -L "$SOCKET" set-option -t "$SESSION" remain-on-exit off 2>/dev/null
+  fail "window $name kept exiting immediately after creation"
 }
 
 wait_for_state() {  # <target> <expected> [tries]
@@ -150,9 +198,22 @@ assert_sources_disagree() {  # <target> <label>
 # tmux and ps, while Linux can expose the symlink name through both, so the
 # version-string case below owns the cross-platform divergence assertion.
 
-new_window agent "$LAB/bin/claude-link" 900
-wait_for_state "$SESSION:agent" alive \
-  || fail "a running harness-named foreground process must classify alive"
+new_window agent "$LAB/bin/claude-link" -c "read -r -t 900 <> '$LAB/hold.fifo'"
+# This case fails only under CI, never locally, so dump the real process and
+# tmux state before failing rather than guessing at a timing fix again.
+wait_for_state "$SESSION:agent" alive || {
+  {
+    printf -- '--- ps -eo pid,ppid,pgid,stat,etime,args ---\n'
+    ps -eo pid,ppid,pgid,stat,etime,args 2>&1
+    printf -- '--- tmux list-panes -a (socket %s) ---\n' "$SOCKET"
+    "$REAL_TMUX" -L "$SOCKET" list-panes -a -F '#{pane_pid} #{pane_current_command}' 2>&1
+    printf -- '--- fm_backend_tmux_current_command %s:agent ---\n' "$SESSION"
+    fm_backend_tmux_current_command "$SESSION:agent" 2>&1
+    printf -- '--- fm_backend_agent_state tmux %s:agent ---\n' "$SESSION"
+    fm_backend_agent_state tmux "$SESSION:agent" 2>&1
+  } >&2
+  fail "a running harness-named foreground process must classify alive"
+}
 pass "tmux liveness: a harness-named foreground process classifies alive"
 
 # --- muse's version-suffixed binary name ------------------------------------
@@ -160,13 +221,13 @@ pass "tmux liveness: a harness-named foreground process classifies alive"
 # worker would be torn down or relaunched. The decoys below are what keep the
 # fix from being a substring match that claims unrelated programs.
 
-new_window muse "$LAB/bin/muse-bin-0.1.0-R708.1" 900
+new_window muse "$LAB/bin/muse-bin-0.1.0-R708.1" -c "read -r -t 900 <> '$LAB/hold.fifo'"
 wait_for_state "$SESSION:muse" alive \
   || fail "muse's version-suffixed binary name must classify alive"
 pass "tmux liveness: muse's version-suffixed muse-bin-<version> classifies alive"
 
 for decoy in musescore amuse muse-binary muse-bind; do
-  new_window "decoy-$decoy" "$LAB/bin/$decoy" 900
+  new_window "decoy-$decoy" "$LAB/bin/$decoy" -c "read -r -t 900 <> '$LAB/hold.fifo'"
   wait_for_state "$SESSION:decoy-$decoy" ambiguous \
     || fail "'$decoy' merely contains 'muse' and must not classify as a live agent pane"
 done
@@ -200,7 +261,7 @@ fi
 
 # --- neither source names a harness: no invented agent ----------------------
 
-new_window unknown bash -c "exec -a 2.1.220 '$LAB/bin/notaharness' 900"
+new_window unknown bash -c "exec -a 2.1.220 '$LAB/bin/notaharness' -c 'read -r -t 900 <> \"$LAB/hold.fifo\"'"
 wait_for_state "$SESSION:unknown" ambiguous \
   || fail "a foreground process no name source attributes must stay ambiguous"
 pass "tmux liveness: a process neither name source attributes stays ambiguous rather than inventing an agent"
@@ -228,7 +289,7 @@ pass "tmux liveness: an idle shell pane classifies dead"
 # `set -m` gives the background job its own process group, which is what an
 # interactive shell does for a job an exited agent left behind.
 
-new_window background bash -c "set -m; '$LAB/bin/claude-link' 900 & printf '%s\n' \"\$!\" > '$LAB/bg.pid'; exec /bin/sh"
+new_window background bash -c "set -m; '$LAB/bin/claude-link' -c 'read -r -t 900 <> \"$LAB/hold.fifo\"' & printf '%s\n' \"\$!\" > '$LAB/bg.pid'; exec /bin/sh"
 bg_pid=
 for _ in $(seq 1 100); do
   [ -s "$LAB/bg.pid" ] && bg_pid=$(cat "$LAB/bg.pid") && break
@@ -268,8 +329,8 @@ pass "tmux liveness: an absent window classifies missing rather than inheriting 
 # shellcheck source=bin/fm-tmux-lib.sh
 . "$ROOT/bin/fm-tmux-lib.sh"
 
-ln -s "$SLEEP_BIN" "$LAB/bin/cursor-agent"
-ln -s "$SLEEP_BIN" "$LAB/bin/notcursor"
+ln -s "$BASH_BIN" "$LAB/bin/cursor-agent"
+ln -s "$BASH_BIN" "$LAB/bin/notcursor"
 
 # Cursor's real screen shape: a BARE composer row carrying its U+2192 glyph, two
 # footer rows below it, and the terminal cursor left on a blank row past the
@@ -289,7 +350,7 @@ cursor_screen() {  # <composer-text> <ghost 0|1>
 
 open_composer_pane() {  # <window> <binary> <composer-text> <ghost 0|1>
   local window=$1 binary=$2 text=$3 ghost=$4
-  new_window "$window" bash -c "$(declare -f cursor_screen); LAB='$LAB'; cursor_screen '$text' '$ghost'; exec '$binary' 900"
+  new_window "$window" bash -c "$(declare -f cursor_screen); LAB='$LAB'; cursor_screen '$text' '$ghost'; exec '$binary' -c 'read -r -t 900 <> \"$LAB/hold.fifo\"'"
   local i=0
   while [ "$i" -lt 100 ]; do
     case "$("$REAL_TMUX" -L "$SOCKET" capture-pane -p -t "$SESSION:$window" 2>/dev/null)" in

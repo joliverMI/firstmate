@@ -21,7 +21,8 @@
 #
 # Usage:
 #   fm-captain-hold.sh hold <task-id> --reason <reason> \
-#     [--title <title>] [--repo <repo>] [--origin <origin-id>] [--until YYYY-MM-DD]
+#     [--title <title>] [--repo <repo>] [--origin <origin-id>] [--until YYYY-MM-DD] \
+#     [--card-plan <plan>] [--card-captain <id>] [--await-path <path>]
 #   fm-captain-hold.sh answer <task-id> --decision-file <path> [--release]
 #   fm-captain-hold.sh answers [<legacy-origin> | --any-origin] --source <provenance>   (keyed answers on stdin)
 #   fm-captain-hold.sh bind <source-id> [<legacy-origin> | --any-origin]
@@ -31,6 +32,8 @@
 #   fm-captain-hold.sh verify <origin-id>
 #   fm-captain-hold.sh open <task-id>
 #   fm-captain-hold.sh diverged
+#   fm-captain-hold.sh card-task <card-id>
+#   fm-captain-hold.sh resume-pending-cards
 #
 # `hold` places an existing task under an active captain hold, or creates the
 # task first when no work item exists to hold (--title required to create; the
@@ -41,6 +44,49 @@
 # records the captain's own deferral date through `tasks-axi hold --until`, so
 # a "revisit later" answer is stored as a date instead of a live card.
 #
+# EVERY CAPTAIN HOLD CARRIES EXACTLY ONE BOARD CARD.
+# `hold` also creates or reuses a Fleet Dashboard card for the task, through
+# `bin/fm-dashboard.sh`, and records the link in `state/<task-id>.hold-card`
+# (card id, one line) so a mate cannot park a question for the captain without
+# one. Default is a `needs-action` card carrying `--reason`; pass `--card-plan
+# <text>` to create a `needs-review` card carrying that plan instead, for a
+# hold that is really asking permission for a recommended action. `--card-captain
+# <id>` selects which board captain the card is filed under (`bin/fm-dashboard.sh
+# captains` lists valid ids); it defaults to `firstmate` and the invoking agent
+# supplies a different one when it genuinely knows whose work this is - this
+# script does not infer it. Re-holding the same task id never mints a second
+# card: the existing link is reused, and the card's own reason or plan is
+# best-effort re-synced to the current ask only while the card itself is still
+# unresolved (`needs_action`/`needs_review`); a card the captain has already
+# moved on from (approved, answered, or otherwise advanced) is left alone. A
+# board the home cannot reach never loses the hold: the task stays held
+# regardless, and the card link is instead staged in
+# `state/<task-id>.hold-card-pending` for `resume-pending-cards` to retry -
+# mirroring the handoff pending-card-link pattern in bin/fm-backlog-handoff.sh.
+# Wire `resume-pending-cards` into every session start and recovery sweep the
+# same way.
+#
+# `card-task <card-id>` is the read-only reverse lookup from a board card to
+# the captain-held task it carries, by scanning `state/*.hold-card`; it prints
+# the task id and exits 0, or exits 1 when no captain hold carries that card.
+# On a `check: dashboard-approval <card-id>` wake for a card this names, read
+# the board's own recorded `plan_approved_text` (`bin/fm-dashboard.sh show
+# <card-id> --json`) and feed it to `answer --decision-file` exactly as any
+# other answer channel does; the board's approval is the captain's own word
+# captured there, never fabricated by an agent reading it. Whether that answer
+# also needs `--release` is the same judgment call `answer` already asks for
+# any other channel - this script does not guess it from the card.
+#
+# A hold may also carry `--await-path <path>`, when the reason or plan names a
+# deliverable - a report, a table - that will land at a known path later.
+# `hold` arms a `bin/fm-procevent-when.sh` watch (condition: the path exists;
+# action: none) recorded in `state/<task-id>.hold-await-source`, so the hold
+# re-surfaces as a `check: procevent when ...` wake the moment that deliverable
+# exists, instead of sitting idle until someone remembers to look. The watch
+# never closes the hold itself - only `answer` does that - and `answer` retires
+# it. This reuses the existing condition->action primitive rather than adding a
+# second polling mechanism; see `.agents/skills/process-event-sources/SKILL.md`.
+#
 # `answer` records the captain's exact words and closes the call in the same
 # act. It requires a non-empty captain decision file of at most 8192 bytes,
 # writes a resolution block at the top of the task body (the previous body is
@@ -49,7 +95,9 @@
 # hold with `tasks-axi unhold` so a captain-gated WORK item resumes instead of
 # closing. An exact retry is idempotent only when its requested close mode
 # matches the newest record; a changed decision or a mode mismatch is rejected.
-# A re-held task may record a new answer on top. On a task already closed outside this script,
+# A re-held task may record a new answer on top. Any armed deliverable watch
+# from `--await-path` is retired here, best-effort, since the hold it would
+# re-surface is now answered. On a task already closed outside this script,
 # `answer` records the missing resolution block (the old `repair` path) only
 # when the task still carries the captain-hold provenance tasks-axi preserves
 # through a close, so an ordinary finished task cannot be dressed up as an
@@ -451,8 +499,87 @@ resolve_entry() {  # <origin-or-empty> <entry>; prints the resolved id or fails
   fail "no captain-held task $entry in $CAPTAIN_BACKLOG_FILE"
 }
 
+# --- Fleet Dashboard card link, and the deliverable re-test watch ----------
+
+DASHBOARD_BIN="$SCRIPT_DIR/fm-dashboard.sh"
+PROCEVENT_WHEN_BIN="$SCRIPT_DIR/fm-procevent-when.sh"
+AWAIT_WATCH_DEADLINE_SECS=2592000
+
+card_link_path() { printf '%s/%s.hold-card\n' "$STATE" "$1"; }
+card_pending_path() { printf '%s/%s.hold-card-pending\n' "$STATE" "$1"; }
+await_source_path() { printf '%s/%s.hold-await-source\n' "$STATE" "$1"; }
+
+# Best-effort re-sync of an already-linked card's ask text, only while the
+# card is still unresolved; a card the captain has already moved on from is
+# left exactly as it is.
+sync_dashboard_card() {  # <card-id> <kind> <text>
+  local card_id=$1 kind=$2 text=$3 status
+  command -v jq >/dev/null 2>&1 || return 0
+  status=$("$DASHBOARD_BIN" show "$card_id" --json 2>/dev/null | jq -r '.status // empty' 2>/dev/null) || return 0
+  case "$status" in
+    needs_action|needs_review) : ;;
+    *) return 0 ;;
+  esac
+  if [ "$kind" = needs-review ]; then
+    "$DASHBOARD_BIN" status "$card_id" needs-review --plan "$text" >/dev/null 2>&1 || true
+  else
+    "$DASHBOARD_BIN" status "$card_id" needs-action --reason "$text" >/dev/null 2>&1 || true
+  fi
+}
+
+# Create or reuse the one board card a captain-held task carries. Never fails
+# the hold: a board the home cannot reach defers the link to
+# resume-pending-cards instead of losing the question.
+link_dashboard_card() {  # <task-id> <title> <captain> <kind: needs-action|needs-review> <text>
+  local id=$1 title=$2 captain=$3 kind=$4 text=$5 link pending card_id
+  link=$(card_link_path "$id")
+  if [ -s "$link" ]; then
+    sync_dashboard_card "$(cat "$link")" "$kind" "$text"
+    rm -f -- "$(card_pending_path "$id")"
+    return 0
+  fi
+  if [ "$kind" = needs-review ]; then
+    card_id=$("$DASHBOARD_BIN" add --title "$title" --captain "$captain" --prompt "$title" \
+      --status needs-review --plan "$text" 2>/dev/null | cut -f1) || card_id=''
+  else
+    card_id=$("$DASHBOARD_BIN" add --title "$title" --captain "$captain" --prompt "$title" \
+      --status needs-action --reason "$text" 2>/dev/null | cut -f1) || card_id=''
+  fi
+  if [ -n "$card_id" ]; then
+    (umask 077; printf '%s\n' "$card_id" > "$link") || true
+    rm -f -- "$(card_pending_path "$id")"
+  else
+    pending=$(card_pending_path "$id")
+    (umask 077; printf 'title=%s\ncaptain=%s\nkind=%s\ntext=%s\n' "$title" "$captain" "$kind" "$text" > "$pending") || true
+    printf 'fm-captain-hold: dashboard unreachable; card for %s deferred to resume-pending-cards\n' "$id" >&2
+  fi
+}
+
+arm_await_watch() {  # <task-id> <await-path>
+  local id=$1 path=$2 source
+  source="captain-hold-await-$id"
+  if "$PROCEVENT_WHEN_BIN" arm "$source" \
+    --deadline "$AWAIT_WATCH_DEADLINE_SECS" \
+    --condition /usr/bin/test -e "$path" \
+    --action /usr/bin/true >/dev/null 2>&1; then
+    (umask 077; printf '%s\n' "$source" > "$(await_source_path "$id")") || true
+  else
+    printf 'fm-captain-hold: could not arm the deliverable watch for %s; it will not re-surface automatically when %s appears\n' "$id" "$path" >&2
+  fi
+}
+
+retire_await_watch() {  # <task-id>
+  local id=$1 f source
+  f=$(await_source_path "$id")
+  [ -f "$f" ] || return 0
+  source=$(cat "$f" 2>/dev/null) || { rm -f -- "$f"; return 0; }
+  "$PROCEVENT_WHEN_BIN" retire "$source" >/dev/null 2>&1 || true
+  rm -f -- "$f"
+}
+
 command_hold() {
-  local id=${1:-} title='' reason='' repo='' origin='' until='' show state existing_title body='' hold_kind occurrence
+  local id=${1:-} title='' reason='' repo='' origin='' until='' card_plan='' card_captain='firstmate' await_path=''
+  local show state existing_title body='' hold_kind occurrence title_for_card
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
@@ -462,6 +589,9 @@ command_hold() {
       --repo) shift; repo=${1:-} ;;
       --origin) shift; origin=${1:-} ;;
       --until) shift; until=${1:-} ;;
+      --card-plan) shift; card_plan=${1:-} ;;
+      --card-captain) shift; card_captain=${1:-} ;;
+      --await-path) shift; await_path=${1:-} ;;
       *) usage >&2; exit 2 ;;
     esac
     shift
@@ -469,6 +599,10 @@ command_hold() {
   validate_slug task-id "$id"
   validate_one_line reason "$reason"
   case "$reason" in *'('*|*')'*) fail "reason must not contain parentheses (tasks-axi hold contract)" ;; esac
+  if [ -n "$card_plan" ]; then
+    validate_one_line card-plan "$card_plan"
+  fi
+  validate_slug card-captain "$card_captain"
   if [ -n "$origin" ]; then
     validate_slug origin-id "$origin"
   fi
@@ -519,6 +653,16 @@ command_hold() {
   [ "$hold_kind" = captain ] || fail "task $id did not retain its captain hold"
   occurrence=$(( $(resolution_record_count "$(show_field "$show" body)") + 1 ))
   publish_parent_hold "$id" "$occurrence" needs-decision "$reason"
+  title_for_card=${title:-$(show_field_value "$show" title)}
+  if [ -n "$card_plan" ]; then
+    link_dashboard_card "$id" "$title_for_card" "$card_captain" needs-review "$card_plan"
+  else
+    link_dashboard_card "$id" "$title_for_card" "$card_captain" needs-action "$reason"
+  fi
+  if [ -n "$await_path" ]; then
+    retire_await_watch "$id"
+    arm_await_watch "$id" "$await_path"
+  fi
   printf '%s\n' "$id"
 }
 
@@ -551,6 +695,7 @@ close_answered() {  # <task-id> <release-0-or-1>
   else
     tasks_axi "done" "$1" >/dev/null || fail "could not close answered captain-held task $1"
   fi
+  retire_await_watch "$1"
 }
 
 command_answer() {
@@ -607,6 +752,7 @@ command_answer() {
     [ "$(show_field "$show" state)" = "done" ] || fail "recording the answer reopened closed task $id"
     body_has_resolution_record "$(show_field "$show" body)" \
       || fail "captain-held task $id did not retain its durable resolution record"
+    retire_await_watch "$id"
     publish_parent_hold "$id" "$occurrence" resolved "answered (repaired)"
     printf 'repaired: %s\n' "$id"
     return 0
@@ -1088,6 +1234,64 @@ EOF
   done
 }
 
+# Reverse lookup: which captain-held task carries this board card? Read-only,
+# scans state/*.hold-card. Prints the task id and exits 0 when found, else
+# exits 1 with no output.
+command_card_task() {  # <card-id>
+  local card_id=${1:-} f content
+  [ "$#" -eq 1 ] || { usage >&2; exit 2; }
+  [ -n "$card_id" ] || fail "card-id is required"
+  for f in "$STATE"/*.hold-card; do
+    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    content=$(cat "$f" 2>/dev/null) || continue
+    if [ "$content" = "$card_id" ]; then
+      printf '%s\n' "$(basename "$f" .hold-card)"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Retry every deferred card link left by a board that was unreachable at hold
+# time. Best-effort and idempotent: a still-unreachable board leaves its
+# pending marker in place for the next sweep. Meant to be called from every
+# session start and recovery sweep, the same way
+# bin/fm-backlog-handoff.sh --resume-pending is.
+command_resume_pending_cards() {
+  local f id title captain kind text card_id linked=0
+  [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+  for f in "$STATE"/*.hold-card-pending; do
+    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    id=$(basename "$f" .hold-card-pending)
+    acquire_task_control_lock "$id"
+    if [ -f "$f" ] && [ ! -L "$f" ]; then
+      title=$(sed -n 's/^title=//p' "$f" | head -1)
+      captain=$(sed -n 's/^captain=//p' "$f" | head -1)
+      kind=$(sed -n 's/^kind=//p' "$f" | head -1)
+      text=$(sed -n 's/^text=//p' "$f" | head -1)
+      if [ -n "$title" ] && [ -n "$kind" ] && [ -n "$text" ]; then
+        [ -n "$captain" ] || captain=firstmate
+        if [ "$kind" = needs-review ]; then
+          card_id=$("$DASHBOARD_BIN" add --title "$title" --captain "$captain" --prompt "$title" \
+            --status needs-review --plan "$text" 2>/dev/null | cut -f1) || card_id=''
+        else
+          card_id=$("$DASHBOARD_BIN" add --title "$title" --captain "$captain" --prompt "$title" \
+            --status needs-action --reason "$text" 2>/dev/null | cut -f1) || card_id=''
+        fi
+        if [ -n "$card_id" ]; then
+          (umask 077; printf '%s\n' "$card_id" > "$(card_link_path "$id")") || true
+          rm -f -- "$f"
+          printf 'linked: %s -> %s\n' "$id" "$card_id"
+          linked=$((linked + 1))
+        fi
+      fi
+    fi
+    fm_lock_release "$CAPTAIN_CONTROL_LOCK" || true
+    CAPTAIN_CONTROL_LOCK_HELD=0
+  done
+  printf 'resume-pending-cards: linked=%s\n' "$linked"
+}
+
 # Still an open captain call? Exit 0 yes, 1 no, 2 cannot tell (see the header).
 # A row this home does not carry holds no captain call, so an absent task is a
 # plain no; every other read failure is a 2, printed to stderr, because a
@@ -1127,6 +1331,8 @@ case "${1:-}" in
   verify) shift; command_verify "$@" ;;
   open) shift; command_open "$@" ;;
   diverged) shift; command_diverged "$@" ;;
+  card-task) shift; command_card_task "$@" ;;
+  resume-pending-cards) shift; command_resume_pending_cards "$@" ;;
   -h|--help) usage ;;
   *) usage >&2; exit 2 ;;
 esac

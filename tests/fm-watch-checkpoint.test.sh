@@ -16,7 +16,7 @@ make_home() {
 }
 
 test_quiet_checkpoint_exits_124_cleanly() {
-  local home out err status
+  local home out err status lock_pid
   home=$(make_home quiet)
   out="$home/out.txt"
   err="$home/err.txt"
@@ -24,6 +24,21 @@ test_quiet_checkpoint_exits_124_cleanly() {
   FM_HOME="$home" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 "$CHECKPOINT" --seconds 1 >"$out" 2>"$err" || status=$?
   expect_code 124 "$status" "quiet checkpoint exit"
   assert_contains "$(cat "$out")" "checkpoint: no actionable wake within 1s" "quiet checkpoint line missing"
+  # This case fails only under CI, never locally, so dump the real process
+  # state before failing rather than guessing at a timing fix again.
+  if [ -e "$home/state/.watch.lock/pid" ]; then
+    lock_pid=$(cat "$home/state/.watch.lock/pid" 2>/dev/null) || lock_pid=
+    {
+      printf -- '--- ps -eo pid,ppid,pgid,stat,etime,args ---\n'
+      ps -eo pid,ppid,pgid,stat,etime,args 2>&1
+      if [ -n "$lock_pid" ]; then
+        printf -- '--- /proc/%s/status ---\n' "$lock_pid"
+        cat "/proc/$lock_pid/status" 2>&1
+        printf -- '--- /proc/%s/stat ---\n' "$lock_pid"
+        cat "/proc/$lock_pid/stat" 2>&1
+      fi
+    } >&2
+  fi
   assert_absent "$home/state/.watch.lock/pid" "watch lock pid survived quiet checkpoint timeout"
   pass "quiet checkpoint exits 124 with a clean checkpoint line and no live lock"
 }

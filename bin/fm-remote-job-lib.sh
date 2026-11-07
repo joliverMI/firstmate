@@ -541,7 +541,7 @@ fm_remote_job_advance_seq_hint() { # <value>
 }
 
 fm_remote_job_next_seq() { # [stage-dir destination]
-  local stage=${1:-} destination=${2:-} counter value claim attempt=0 recovered=0 maximum entry
+  local stage=${1:-} destination=${2:-} counter value claim attempt=0 recovered=0 maximum entry owner_rc
   [ -n "$FM_REMOTE_JOB_STATE" ] && [ -n "$FM_REMOTE_JOB_SEQ_CLAIMS" ] || return 1
   counter="$FM_REMOTE_JOB_STATE/seq"
   value=$(cat "$counter" 2>/dev/null || true)
@@ -563,22 +563,28 @@ fm_remote_job_next_seq() { # [stage-dir destination]
     attempt=$((attempt + 1))
     value=$((value + 1))
     claim="$FM_REMOTE_JOB_SEQ_CLAIMS/$value"
-    if (umask 077; mkdir "$claim") 2>/dev/null; then
-      chmod 700 "$claim" || return 1
-      fm_remote_job_advance_seq_hint "$value" || true
-      if [ -n "$stage" ]; then
-        if ! fm_remote_job_write_number "$stage" seq "$value" \
-          || ! fm_remote_job_write_state "$stage" queued \
-          || ! mv -- "$stage" "$destination"; then
-          rm -f -- "$stage/state" "$stage/seq"
-          return 1
-        fi
-        rm -f -- "$destination/.owner-pid" "$destination/.owner-start" || true
-      fi
-      printf '%s\n' "$value"
-      return 0
-    fi
+    (umask 077; mkdir "$claim") 2>/dev/null
     [ -d "$claim" ] && [ ! -L "$claim" ] || return 1
+    # 2026-11-01: observed uutils-coreutils mkdir report exit=0 to two
+    # concurrent callers for the same path/inode under this test's access
+    # pattern; the owner file's O_CREAT|O_EXCL create is now the sole
+    # ownership proof, never mkdir's own exit code.
+    owner_rc=0
+    (set -C; : > "$claim/owner") 2>/dev/null || owner_rc=1
+    [ "$owner_rc" -eq 0 ] || continue
+    chmod 700 "$claim" || return 1
+    fm_remote_job_advance_seq_hint "$value" || true
+    if [ -n "$stage" ]; then
+      if ! fm_remote_job_write_number "$stage" seq "$value" \
+        || ! fm_remote_job_write_state "$stage" queued \
+        || ! mv -- "$stage" "$destination"; then
+        rm -f -- "$stage/state" "$stage/seq"
+        return 1
+      fi
+      rm -f -- "$destination/.owner-pid" "$destination/.owner-start" || true
+    fi
+    printf '%s\n' "$value"
+    return 0
   done
 }
 
@@ -803,6 +809,7 @@ fm_remote_job_reap_stale() { # <account-home>
         mtime=$(fm_remote_job_path_mtime "$claim" 2>/dev/null || true)
         case "$mtime" in ''|*[!0-9]*) continue ;; esac
         [ $((now - mtime)) -ge "$FM_REMOTE_JOB_SEQ_CLAIM_REAP_SECONDS" ] || continue
+        rm -f -- "$claim/owner" 2>/dev/null
         rmdir "$claim" 2>/dev/null || true
       done
     else

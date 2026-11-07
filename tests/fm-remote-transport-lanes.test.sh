@@ -121,18 +121,88 @@ export FM_REMOTE_JOB_STAGE_REAP_SECONDS=1
 
 fm_remote_job_prepare_state "$ACCOUNT_HOME" || fail "$FM_REMOTE_JOB_ERROR"
 rm -f -- "$STATE_ROOT/seq"
-SEQ_PIDS=()
-for i in $(seq 1 20); do
-  fm_remote_job_next_seq > "$TMP_ROOT/seq-$i" &
-  SEQ_PIDS+=("$!")
+
+# Diagnostic instrumentation (test-only; no change to fm_remote_job_next_seq
+# itself). The prior round's mkdir-exclusivity probe confirmed mkdir itself is
+# exclusive (1 winner of 50) even on a run where the claimed sequence still
+# held a duplicate, so that hypothesis is spent. This round's question is
+# narrower: when a duplicate shows up, did the claim directory get removed
+# and recreated mid-race (two "winners" of the same value see different
+# inodes for the claim path), or did mkdir itself report success to a loser
+# that should have gotten EEXIST (two "winners" see the same inode)? Capture
+# the process tree before the race (in case a worker/reaper/background job is
+# rmdir'ing claims concurrently), shadow mkdir so each of the 20 claimants
+# logs its own attempts/outcomes to a private file, and dump everything only
+# if the race actually produces a bad result.
+RACE_PS_SNAPSHOT=$(ps -ef --forest 2>&1)
+RACE_TOOL_RESOLUTION=$(
+  for tool in mkdir rmdir mv cat; do
+    tool_path=$(command -v "$tool" 2>&1)
+    printf '%s -> %s -> %s\n' "$tool" "$tool_path" "$(readlink -f "$tool_path" 2>&1)"
+  done
+)
+
+# shellcheck disable=SC2329 # Invoked indirectly: shadows mkdir for fm_remote_job_next_seq's own call.
+mkdir() {
+  local rc path
+  command mkdir "$@"
+  rc=$?
+  if [ -n "${CLAIMANT_LOG:-}" ]; then
+    path=$1
+    {
+      printf 'attempt claim=%s exit=%s\n' "$path" "$rc"
+      if [ "$rc" -eq 0 ]; then
+        printf 'won inode=%s\n' "$(stat -c %i "$path" 2>&1)"
+        printf 'seq-claims snapshot:\n'
+        ls -la "$FM_REMOTE_JOB_SEQ_CLAIMS" 2>&1
+      fi
+    } >> "$CLAIMANT_LOG"
+  fi
+  return "$rc"
+}
+
+# A single green run of this race is not evidence the underlying claim logic
+# is safe: it reproduced on 3 of 3 CI runs before per-claimant instrumentation
+# was added, then failed to reproduce on the one run observed with that
+# instrumentation in place - almost certainly a timing shift from the added
+# logging, not a fix. Repeat the race 30 times, each against a fresh
+# .seq-claims directory and sequence hint, so a stale claim or leftover inode
+# from an earlier round can never explain a later round's result, and stop at
+# the first round that actually reproduces a duplicate.
+for race_round in $(seq 1 30); do
+  rm -f -- "$STATE_ROOT/seq"
+  find "$FM_REMOTE_JOB_SEQ_CLAIMS" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+
+  SEQ_PIDS=()
+  for i in $(seq 1 20); do
+    CLAIMANT_LOG="$TMP_ROOT/claimant-$i.log"
+    : > "$CLAIMANT_LOG"
+    (
+      printf 'bashpid=%s\n' "$BASHPID" >> "$CLAIMANT_LOG"
+      fm_remote_job_next_seq > "$TMP_ROOT/seq-$i"
+    ) &
+    SEQ_PIDS+=("$!")
+  done
+  for pid in "${SEQ_PIDS[@]}"; do
+    wait "$pid" || fail "a concurrent sequence allocator failed"
+  done
+  SEQ_RESULTS=$(cat "$TMP_ROOT"/seq-* | sort -n)
+  SEQ_EXPECTED=$(seq 1 20)
+  if [ "$SEQ_RESULTS" != "$SEQ_EXPECTED" ]; then
+    {
+      printf -- '--- race round %s of 30 ---\n' "$race_round"
+      printf -- '--- process tree before the race ---\n%s\n' "$RACE_PS_SNAPSHOT"
+      printf -- '--- tool resolution ---\n%s\n' "$RACE_TOOL_RESOLUTION"
+      printf -- '--- claimed sequence results ---\n%s\n' "$SEQ_RESULTS"
+      for i in $(seq 1 20); do
+        printf -- '--- claimant %s log ---\n' "$i"
+        cat "$TMP_ROOT/claimant-$i.log"
+      done
+    } >&2
+    fail "concurrent sequence claims were not unique and monotonic on round $race_round of 30: $SEQ_RESULTS"
+  fi
 done
-for pid in "${SEQ_PIDS[@]}"; do
-  wait "$pid" || fail "a concurrent sequence allocator failed"
-done
-SEQ_RESULTS=$(cat "$TMP_ROOT"/seq-* | sort -n)
-SEQ_EXPECTED=$(seq 1 20)
-[ "$SEQ_RESULTS" = "$SEQ_EXPECTED" ] \
-  || fail "concurrent sequence claims were not unique and monotonic: $SEQ_RESULTS"
+unset -f mkdir
 [ "$(find "$STATE_ROOT/.seq-claims" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" = 20 ] \
   || fail "concurrent sequence allocations did not retain every durable claim"
 mkdir "$STATE_ROOT/.seq-claims/999998" "$STATE_ROOT/.seq-claims/999999"
