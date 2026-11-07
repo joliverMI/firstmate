@@ -177,6 +177,7 @@ Claude and grok use the slash form shown here; codex uses the same names with `$
 | `/bearings`        | Generate a concise four-section chat digest from bounded local fleet and registered-secondmate state, including registered remote-home ledgers; use `/bearings file` to also replace today's dated report in `data/`, use `/bearings lavish` to also build and arm the interactive fleet board, and add `include PRs` when live PR enrichment is wanted |
 | `/updatefirstmate` | Fast-forward the running firstmate and its secondmates from each checkout's own configured upstream, then persist and restart every live mate successfully left on the target commit - including already-current homes - with an honest re-read nudge only when restart cannot be proven |
 | `/stow`            | Sweep the session for uncaptured durable knowledge, persist the open work records this session knows are unfiled or now wrong, curate tiered startup memory with decay and cold archival, enforce each home's budget or surface the required decision, cascade to registered second mates, and report what is safe to reset |
+| `/grill-me`        | Relentlessly interview you to stress-test a plan or design before you commit to it, round by round, until nothing is left silently assumed; firstmate and the secondmate captains it talks to directly carry this, workers never grill you yourself (vendored from [mattpocock/skills](https://github.com/mattpocock/skills), MIT) |
 
 Bearings invocation examples:
 
