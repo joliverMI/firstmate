@@ -166,6 +166,14 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/grill-me/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/grilling/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/harness-adapters/SKILL.md",
       "audience": "agent-runtime"
     },
