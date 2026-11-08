@@ -4,7 +4,7 @@ How firstmate works, in depth.
 
 The [README](../README.md) carries the high-level diagram and a short synopsis.
 This document expands every part of it.
-firstmate's always-loaded operating contract and routing index for conditional procedures is [`AGENTS.md`](../AGENTS.md); this is the human-facing companion.
+firstmate's supervisor contract and routing index for conditional procedures is [`AGENTS.md`](../AGENTS.md); this is the human-facing companion.
 
 ## Event-driven supervision
 
@@ -68,7 +68,8 @@ The explicit resolution is written by the actor that answers, not the busy worke
 This home's answerer close, pending-reply escalation close, and captain-held transfer use the provenance-guarded append owned by `bin/fm-wake-lib.sh`, so they advance the watcher marker only across their own bytes when all earlier bytes were already announced; pending or interleaved foreign bytes fail toward an ordinary wake.
 A turn-ended-only queue row omits its historical status annotation when that status file exactly matches the same seen marker.
 Any direct or remaining historical annotation prints every status line unread at the presentation cursor instead of replaying only the latest line.
-`bin/fm-crew-state.sh <id>` is the cheap current-state read for an actionable heartbeat review: it attributes an active or terminal no-mistakes run under the shared run-attribution contract, then keeps that run-step authoritative even if the pane has closed.
+`bin/fm-crew-state.sh <id>` is the cheap current-state read for an actionable heartbeat review: it attributes an active or terminal no-mistakes run under the shared run-attribution contract, then keeps that run-step authoritative even if the pane has closed, except that a `blocked:` event reporting a refused or missing daemon socket outranks a potentially stale active run record.
+For other daemon, timeout, or unreachability claims, a running or fixing run with recent pipeline-reported activity supersedes the event and names reattachment as the recovery instead of surfacing a false block.
 [`bin/fm-nm-run-lib.sh`](../bin/fm-nm-run-lib.sh)'s header owns the exact branch, head, pipeline-custody, and newest-first attribution rules.
 A run head the task copy cannot resolve locally is attributed only when the pipeline's own runs ledger proves it is an active continuation of the submitted head, so a pipeline fix round never reads as an older failed run.
 During no-mistakes' `ci` monitor phase, it also reads the ci step log tail because `axi status` reports both "still waiting on checks" and "checks green, waiting on merge" as `ci,running`.
@@ -204,7 +205,7 @@ Codex App support is recorded in `docs/codex-app-backend.md`; it is not selectab
 ## Worktrees, not branches in your checkout
 
 Crewmates never intentionally touch your project clone; [treehouse](https://github.com/kunchenguid/treehouse) pools clean worktrees for tmux, herdr, zellij, and cmux tasks, while Orca creates its own worktrees for `backend=orca`.
-For ship and scout work, `fm-spawn.sh` refuses to launch unless the resolved task path is a real git worktree root that is distinct from the project primary checkout.
+For ship and scout work, `fm-spawn.sh` refuses to launch unless the resolved task path is a real git worktree root that is distinct from the project primary checkout, including when the spawning project is itself a linked worktree.
 `fm-spawn.sh` also owns the base-freshness boundary for every fresh ship and scout: no worker starts until its clean task worktree matches the fetched tip of the development remote's resolved default branch (the branch's configured upstream, falling back to origin), and any unsafe or unverifiable base stops the spawn.
 Its header owns the exact refusal mechanics, while `tests/fm-spawn-pool-base-freshen.test.sh` owns the portable regression coverage.
 `validate_spawn_worktree` also cross-checks the resolved copy - the pool's answer on a fresh spawn, the task's own recorded worktree on a relaunch - against every other task this home still tracks, and refuses rather than accepting a path another tracked task's record already claims.
@@ -217,7 +218,7 @@ That trade is deliberate, because a stuck refusal is recoverable and silently sh
 Such a stale claim comes from `fm-teardown.sh`, which returns a worktree to the pool well before it removes that task's meta and deliberately retains the record at several of its bail-out points; correcting that ordering, reclaiming a confirmed-dead holder's copy, and the two unexplored leads for the original report (other backends' own worktree-detection pollers, and timing under real disk load that a synthetic pool cannot reproduce) are each deferred to their own work rather than bolted onto this guard.
 It also comes from a terminal restart, because the pool treats a copy as free once no process is left inside it: stopping and reprovisioning a session kills every task pane's shell at once, so every tracked task's copy becomes reusable while every record survives, and the first spawn afterwards is handed one of those copies and refuses until the record naming it is retired.
 `tests/fm-backend-herdr-presentation-e2e.test.sh` restarts a real session repeatedly while keeping its own fixtures tracked, so it reinstates one holder process per still-recorded copy after each restart to keep the pool's view consistent with the records it maintains.
-The same header owns this refusal's exact mechanics and its source-specific recovery hints, while `tests/fm-spawn-pool-worktree-collision.test.sh` owns the regression coverage for both the refusal and for the legitimate reuse of a copy a finished task's teardown genuinely retired.
+The same header owns this refusal's exact mechanics and its source-specific recovery hints, while `tests/fm-spawn-pool-worktree-collision.test.sh` owns the regression coverage for both the refusal and for the legitimate reuse of a copy a finished task's teardown genuinely retired, and `tests/fm-control-relaunch.test.sh` owns the regression coverage for preserving the recorded copy on relaunch.
 
 The firstmate repo has one extra exposure because it can dispatch crewmates to work on itself.
 Its operating checkout (`FM_ROOT`) and the disposable crewmate worktrees are all linked git worktrees of the same repository, so the valid discriminator is branch state, not whether the checkout is linked.
@@ -294,7 +295,7 @@ The session-start bootstrap step keeps valid dispatch configuration silent unles
 When the file exists, `fm-spawn.sh` refuses crewmate and scout launches without an explicit harness, so `config/crew-harness` is only automatic when no dispatch profile file is active.
 Secondmate launches are exempt because they resolve the secondmate harness and any optional secondmate model or effort tokens instead.
 Unsupported effort values are still recorded in task meta when passed to `fm-spawn.sh`, but the launch template omits any effort flag that the selected harness does not accept.
-That keeps spawn launch compatible across claude, codex, opencode, pi, pi-signed, grok, kimi, cursor, and muse while preserving the requested profile for later audit.
+That keeps spawn launch compatible across claude, codex, opencode, pi, pi-signed, grok, kimi, cursor, gemini, muse, and rovo while preserving the requested profile for later audit.
 
 ## Optional secondmates
 
@@ -335,7 +336,7 @@ For a local route, an explicit per-spawn harness or raw launch command does not 
 Remote routes accept verified harness adapters only and reject raw launch commands.
 `config/crew-harness` remains the crewmate harness and is inherited into secondmate homes.
 `config/crew-dispatch.json` is inherited too; secondmates use the same natural-language dispatch profiles when spawning their own crewmates.
-The [`secondmate-provisioning` skill](../.agents/skills/secondmate-provisioning/SKILL.md) owns the complete inherited-local-material allowlist and propagation contract.
+The [`secondmate-provisioning` skill](../.agents/skills/secondmate-provisioning/SKILL.md) owns the inherited-local-material propagation contract and points to the implementation's item declaration.
 
 The `data/secondmates.md` line contract is owned by the [`secondmate-provisioning` skill](../.agents/skills/secondmate-provisioning/SKILL.md#routing-table), and the secondmate environment variables are documented in [configuration.md](configuration.md).
 
@@ -366,7 +367,8 @@ Every GitHub refusal states what it could not observe as plainly as what it did,
 A confirmed merge leaves a durable role-routed outcome instead of living only in the merging agent's memory, and [`bin/fm-merge-outcome-lib.sh`](../bin/fm-merge-outcome-lib.sh)'s header owns its destination, shape, identity, normal-case deduplication, and at-least-once recovery.
 The same emitter handles a merge firstmate performed and one its poll detected, while the watcher immediately delivers the emitter's local actionable poll row.
 Teardown is fail-closed for ship worktrees: dirty worktrees refuse, and committed work must be landed before the worktree is returned.
-[`bin/fm-teardown.sh`](../bin/fm-teardown.sh)'s header owns the landed-work proofs, PR-discovery fallback, and stale-lock recovery procedure.
+Before the worktree is returned, teardown concludes the task's own no-mistakes run when it is parked at a gate, including a run whose head the task copy cannot resolve - the shared runs-ledger continuation proof is the only recognition for that case, so cleanup never orphans a parked run the pipeline advanced past the submitted head.
+[`bin/fm-teardown.sh`](../bin/fm-teardown.sh)'s header owns the landed-work proofs, PR-discovery fallback, pre-teardown run conclusion, and stale-lock recovery procedure.
 
 ## Optional Relay
 
@@ -416,7 +418,7 @@ The [Relay configuration reference](configuration.md#promised-public-replies-sta
 
 Durable project-intrinsic agent knowledge lives in each project's committed `AGENTS.md`, with `CLAUDE.md` as a real `@AGENTS.md` import pointer.
 Ship briefs prompt crewmates to create or update those files through the normal delivery path; `data/projects.md` stays a thin private registry.
-Each project `AGENTS.md` carries a short `## Maintaining this file` self-governance section; `bin/fm-ensure-agents-md.sh` owns the canonical wording and injects it idempotently when creating the skeleton, promoting an existing `CLAUDE.md`, or reconciling an existing `AGENTS.md` that still lacks it.
+Each project `AGENTS.md` carries self-governance guidance; [`bin/fm-ensure-agents-md.sh`](../bin/fm-ensure-agents-md.sh) owns the canonical wording and idempotent insertion, while its header and help document the explicit mark for equivalent project-owned guidance.
 It refuses a case-variant real memory file such as a lowercase `agents.md`, so the pointer's `@AGENTS.md` import resolves to a real `AGENTS.md` on a case-sensitive filesystem, and surfaces the mismatch for manual reconciliation.
 The full ownership rule - what is project-intrinsic versus fleet-private, and how firstmate keeps the two apart without writing into project clones - is owned by [`AGENTS.md`](../AGENTS.md) (project and knowledge management).
 

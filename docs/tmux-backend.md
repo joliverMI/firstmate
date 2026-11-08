@@ -48,7 +48,7 @@ Verify setup by spawning a small task and confirming its `fm-<id>` window appear
 
 A target-existence check proves only that the pane exists.
 The deeper tmux agent-liveness probe first verifies exact window membership, then reads process names to distinguish a running harness from a bare idle shell.
-It classifies recognized Claude, Codex, OpenCode, Pi, pi-signed, Grok, Kimi, Cursor, and Muse process identities as `alive`, common shells as `dead`, an authoritatively absent window as `missing`, unreadable state as `unreadable`, and every other process as `ambiguous`.
+It classifies recognized Claude, Codex, OpenCode, Pi, pi-signed, Grok, Kimi, Cursor, Muse, and Rovo process identities as `alive`, common shells as `dead`, an authoritatively absent window as `missing`, unreadable state as `unreadable`, and every other process as `ambiguous`.
 Only `dead` and `missing` authorize recovery because a false dead result could launch a duplicate agent.
 
 Existence itself is resolved through `fm_backend_tmux_exact_target_named`, the name-only resolver window removal shares, rather than a second unpinned lookup: tmux resolves a target-session by prefix exactly like it resolves a target-window, so an unpinned `list-windows -t "$session"` let a dead `dead-sess:fm-1` fall through to a live prefix-colliding `dead-sess-2`'s own window inventory and read that sibling's process under the dead session's label, reporting a nonexistent endpoint `alive`.

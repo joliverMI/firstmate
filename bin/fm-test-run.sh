@@ -225,7 +225,7 @@ family_for_basename() {
     fm-composer-ghost.test.sh|fm-composer-lib.test.sh|\
     fm-crew-state.test.sh|fm-captain-hold-lifecycle.test.sh|\
     fm-documentation-audiences.test.sh|fm-ensure-agents-md.test.sh|fm-grok-harness.test.sh|\
-    fm-kimi-harness.test.sh|fm-muse-harness.test.sh|fm-herdr-lab.test.sh|fm-lint.test.sh|\
+    fm-kimi-harness.test.sh|fm-muse-harness.test.sh|fm-rovo-harness.test.sh|fm-herdr-lab.test.sh|fm-lint.test.sh|\
     fm-lint-workflows.test.sh|\
     fm-operational-input.test.sh|fm-pi-primary-types.test.sh|\
     fm-harness-adapter-references.test.sh|\
@@ -285,9 +285,10 @@ family_for_basename() {
     fm-cursor-primary-live-e2e.test.sh|\
     fm-grok-stop-live-e2e.test.sh|fm-harness-adapter-instructions-live-e2e.test.sh|\
     fm-harness-liveness-drift-live-e2e.test.sh|\
-    fm-muse-signals-live-e2e.test.sh|\
+    fm-muse-signals-live-e2e.test.sh|fm-rovo-signals-live-e2e.test.sh|\
     fm-herdr-version-floor-live-e2e.test.sh|\
     fm-opencode-primary-live-e2e.test.sh|fm-pi-branch-live-e2e.test.sh|\
+    fm-pi-branch-responsiveness-live-e2e.test.sh|\
     fm-pi-primary-live-e2e.test.sh|\
     fm-sessionstart-hook-live-e2e.test.sh|fm-sessionstart-instruction-refresh-live-e2e.test.sh|\
     fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh|\
@@ -625,6 +626,7 @@ tests/fm-peek-remote.test.sh 890
 tests/fm-pending-reply.test.sh 23106
 tests/fm-pi-branch-extension.test.sh 21698
 tests/fm-pi-branch-live-e2e.test.sh 20
+tests/fm-pi-branch-responsiveness-live-e2e.test.sh 21
 tests/fm-pi-primary-live-e2e.test.sh 19
 tests/fm-pi-watch-extension.test.sh 35707
 tests/fm-pr-check-destination.test.sh 4484
@@ -632,8 +634,8 @@ tests/fm-pr-check-security.test.sh 166985
 tests/fm-pr-destination-guard.test.sh 1603
 tests/fm-procevent-quota.test.sh 3976
 tests/fm-procevent-river.test.sh 26589
-tests/fm-procevent-when.test.sh 16896
 tests/fm-procevent.test.sh 68320
+tests/fm-procevent-when.test.sh 16896
 tests/fm-project-origin.test.sh 116
 tests/fm-public-followup.test.sh 87879
 tests/fm-quota-array-dispatch-live-e2e.test.sh 19
@@ -662,10 +664,10 @@ tests/fm-send-resolve-key.test.sh 19617
 tests/fm-send-secondmate-marker-herdr-e2e.test.sh 70
 tests/fm-send-secondmate-marker.test.sh 5839
 tests/fm-session-lock-ancestry.test.sh 1299
-tests/fm-session-start.test.sh 161628
 tests/fm-sessionstart-hook-live-e2e.test.sh 21
 tests/fm-sessionstart-instruction-refresh-live-e2e.test.sh 19
 tests/fm-sessionstart-nudge.test.sh 67249
+tests/fm-session-start.test.sh 161628
 tests/fm-shared-captain-inheritance.test.sh 4839
 tests/fm-spawn-dispatch-profile.test.sh 65131
 tests/fm-spawn-pool-base-freshen.test.sh 41159
@@ -696,13 +698,14 @@ tests/fm-voice-relay.test.sh 31187
 tests/fm-wake-daemon-lifecycle-e2e.test.sh 7533
 tests/fm-wake-drain-open-decisions-cursor.test.sh 18964
 tests/fm-wake-drain-open-decisions.test.sh 6316
+tests/fm-wake-drain-outcome-backstop.test.sh 15182
 tests/fm-wake-drain-unread-status.test.sh 27416
 tests/fm-wake-queue.test.sh 60033
 tests/fm-watch-arm.test.sh 46784
 tests/fm-watch-checkpoint.test.sh 5596
+tests/fm-watcher-lock.test.sh 62442
 tests/fm-watch-recovery-loop.test.sh 58844
 tests/fm-watch-triage.test.sh 247968
-tests/fm-watcher-lock.test.sh 62442
 EOF
 }
 
@@ -1270,6 +1273,35 @@ families_for_changed_path() {
       ;;
     bin/fm-quota-choose.sh)
       printf '%s\n' "__script__:fm-quota-choose.test.sh"
+      ;;
+    .pi/extensions/fm-branch-supervision.ts|.pi/extensions/lib/fm-async-exec.ts|\
+    .pi/extensions/lib/fm-branch-dispatch.ts)
+      # The portable suites that actually load these files, named one by one.
+      # Left unmapped, a Pi extension library resolves through the reference
+      # scan, which widens to each referencing suite's WHOLE family - and
+      # these suites sit in four different families, so that pulls in dozens
+      # of suites with nothing to do with Pi.
+      printf '%s\n' __script__:fm-pi-branch-extension.test.sh
+      printf '%s\n' __script__:fm-pi-watch-extension.test.sh
+      printf '%s\n' __script__:fm-calm-pi-extension.test.sh
+      printf '%s\n' __script__:fm-watch-recovery-loop.test.sh
+      printf '%s\n' __script__:fm-wake-queue.test.sh
+      printf '%s\n' __script__:fm-pi-primary-types.test.sh
+      # Whether an arriving outcome still lets the captain type is a fact only
+      # a real Pi TUI can answer, so the live guards are selected too.
+      printf '%s\n' live-harness-optin
+      ;;
+    .pi/extensions/lib/fm-operational-input.ts)
+      # The same rule for the operational-input library, whose reach is wider:
+      # every Pi extension that classifies or encodes operational text.
+      printf '%s\n' __script__:fm-pi-branch-extension.test.sh
+      printf '%s\n' __script__:fm-pi-watch-extension.test.sh
+      printf '%s\n' __script__:fm-calm-pi-extension.test.sh
+      printf '%s\n' __script__:fm-watch-recovery-loop.test.sh
+      printf '%s\n' __script__:fm-turnend-guard.test.sh
+      printf '%s\n' __script__:fm-sessionstart-nudge.test.sh
+      printf '%s\n' __script__:fm-pi-primary-types.test.sh
+      printf '%s\n' live-harness-optin
       ;;
     bin/fm-sessionstart-run.sh|.claude/settings.json|.codex/hooks.json|\
     .pi/extensions/fm-primary-turnend-guard.ts)
