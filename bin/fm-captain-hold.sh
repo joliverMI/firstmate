@@ -974,9 +974,9 @@ write_resolution_record() {  # <task-id> <mode> <shown-body>
 
 close_answered() {  # <task-id> <release-0-or-1>
   if [ "$2" = 1 ]; then
-    tasks_axi unhold "$1" >/dev/null
+    tasks_axi unhold "$1" >/dev/null || fail "could not release captain-held task $1"
   else
-    tasks_axi "done" "$1" >/dev/null
+    tasks_axi "done" "$1" >/dev/null || fail "could not close answered captain-held task $1"
   fi
   retire_await_watch "$1"
 }

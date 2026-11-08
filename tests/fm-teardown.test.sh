@@ -1346,6 +1346,7 @@ test_legacy_record_rolls_the_stamp_back_when_the_marker_write_fails() {
   seed_backlog_in_flight "$case_dir"
   wt_commit "$case_dir" "landed legacy work"
   add_fork_with_pushed_branch "$case_dir"
+  add_gh_pr_closed "$case_dir"
   before=$(cksum "$case_dir/state/task-x1.meta" | awk '{print $1, $2}')
 
   set +e
@@ -1399,6 +1400,7 @@ test_retained_legacy_stamp_still_faces_the_endpoint_gate() {
   seed_backlog_in_flight "$case_dir"
   wt_commit "$case_dir" "landed legacy work"
   add_fork_with_pushed_branch "$case_dir"
+  add_gh_pr_closed "$case_dir"
   add_failing_truncate_perl "$case_dir"
 
   set +e
