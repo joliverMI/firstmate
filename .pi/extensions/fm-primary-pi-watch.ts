@@ -1096,6 +1096,10 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.on?.("before_agent_start", (event) => {
+    // A custom-message-triggered run carries no raw user prompt, so it can
+    // never match a watcher wake (those are always delivered as real user
+    // messages).
+    if (event.messageType !== "user") return;
     consumeWake(generation, event.prompt);
   });
   pi.on?.("message_start", (event) => {

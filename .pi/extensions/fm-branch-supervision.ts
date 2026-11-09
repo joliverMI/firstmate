@@ -1491,6 +1491,9 @@ ${context.command}
     // getEntries() here loses the captain request that the next wake may answer.
     // Stage it verbatim and remember the future persisted index for turn_end's
     // duplicate suppression. Operational extension injections are not dialog.
+    // A custom-message-triggered run (pi.sendMessage with triggerTurn) carries
+    // no raw user prompt and is never genuine captain dialog.
+    if (event.messageType !== "user") return;
     const prompt = event.prompt.trim();
     if (!prompt || isOperationalUserText(prompt)) return;
     const file = currentMainSession.getSessionFile() ?? "";
