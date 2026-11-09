@@ -24,7 +24,6 @@ pass() { printf 'ok - %s\n' "$1"; }
 
 command -v tmux >/dev/null 2>&1 || { echo "skip: tmux not found"; exit 0; }
 BASH_BIN=$(command -v bash) || { echo "skip: bash not found"; exit 0; }
-SLEEP_BIN=$(command -v sleep) || { echo "skip: sleep not found"; exit 0; }
 
 REAL_TMUX=$(command -v tmux)
 SOCKET="fm-liveness-$$"
@@ -76,9 +75,9 @@ ln -s "$BASH_BIN" "$LAB/bin/pi"
 ln -s "$BASH_BIN" "$LAB/bin/notaharness"
 # omp (Oh My Pi) is a single binary whose live process name is the bare word
 # `omp`; the two decoys are the substrings an unanchored glob would misread.
-ln -s "$SLEEP_BIN" "$LAB/bin/omp"
-ln -s "$SLEEP_BIN" "$LAB/bin/ompd"
-ln -s "$SLEEP_BIN" "$LAB/bin/comp"
+ln -s "$BASH_BIN" "$LAB/bin/omp"
+ln -s "$BASH_BIN" "$LAB/bin/ompd"
+ln -s "$BASH_BIN" "$LAB/bin/comp"
 # muse's installed binary is muse-bin-<version>: the launcher execs it, so the
 # version is the LIVE process name and it changes on every auto-update. Unlike
 # Claude Code's version-named binary there is no `muse` path component to fall
@@ -244,13 +243,13 @@ pass "tmux liveness: unrelated muse-containing command names stay ambiguous"
 # `omp`, with no path component to fall back on, so the anchored name is the
 # only signal and the two decoys prove it never widens into a substring match.
 
-new_window omp "$LAB/bin/omp" 900
+new_window omp "$LAB/bin/omp" -c "read -r -t 900 <> '$LAB/hold.fifo'"
 wait_for_state "$SESSION:omp" alive \
   || fail "omp's bare binary name must classify alive"
 pass "tmux liveness: omp's bare binary name classifies alive"
 
 for decoy in ompd comp; do
-  new_window "decoy-$decoy" "$LAB/bin/$decoy" 900
+  new_window "decoy-$decoy" "$LAB/bin/$decoy" -c "read -r -t 900 <> '$LAB/hold.fifo'"
   wait_for_state "$SESSION:decoy-$decoy" ambiguous \
     || fail "'$decoy' merely contains 'omp' and must not classify as a live agent pane"
 done
