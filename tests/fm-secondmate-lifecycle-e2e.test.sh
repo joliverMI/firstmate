@@ -157,7 +157,7 @@ phase_send() {
   body=$(bash -c '. "$1"; fm_task_inbox_body "$2"' _ "$ROOT/bin/fm-task-inbox-lib.sh" "$record")
   assert_contains "$body" '[fm-from-firstmate]' "the inbox request was not marked as from-firstmate"
   assert_contains "$body" 'route this work' "the original request text did not survive the marker"
-  assert_grep 'send-keys -t @2 -l Firstmate instruction waiting:' "$LOG" "send did not ring the window recorded in this home's meta (exactly resolved)"
+  assert_grep 'send-keys -t @2 -l : Firstmate instruction waiting:' "$LOG" "send did not ring the window recorded in this home's meta (exactly resolved)"
   assert_no_grep 'route this work' "$LOG" "send typed the payload instead of only the doorbell"
   assert_no_grep 'send-keys -t @1' "$LOG" "send targeted a foreign same-named window"
   assert_no_grep 'send-keys -t =other-session:=fm-design' "$LOG" "send targeted a foreign same-named window"

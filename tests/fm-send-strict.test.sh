@@ -147,7 +147,7 @@ test_exact_lane_id_send_still_works() {
     "$SEND" mpf-lane-m8 "lost dispatch" >/dev/null 2>"$err"; rc=$?
   expect_code 0 "$rc" "exact task id send should succeed when metadata exists"
   got=$(cat "$log")
-  assert_contains "$got" "target=@1 literal=1 arg=Firstmate instruction waiting" \
+  assert_contains "$got" "target=@1 literal=1 arg=: Firstmate instruction waiting" \
     "exact id should ring the doorbell at the meta target's own resolved window id"
   assert_contains "$got" "target=@1 literal=0 arg=Enter" "exact id should submit the doorbell to that same resolved window id"
   grep -qF 'lost dispatch' "$home/state/mpf-lane-m8.inbox/001.msg" \
@@ -240,7 +240,7 @@ test_healthy_fm_id_send_still_works() {
     "$SEND" fm-lane-ok "hello captain" >/dev/null 2>"$err"; rc=$?
   expect_code 0 "$rc" "healthy fm-id send should succeed"
   got=$(cat "$log")
-  assert_contains "$got" "target=@1 literal=1 arg=Firstmate instruction waiting" \
+  assert_contains "$got" "target=@1 literal=1 arg=: Firstmate instruction waiting" \
     "healthy send should ring the doorbell at the meta target's own resolved window id"
   assert_contains "$got" "target=@1 literal=0 arg=Enter" "healthy send should submit the doorbell to that same resolved window id"
   grep -qF 'hello captain' "$home/state/lane-ok.inbox/001.msg" \
