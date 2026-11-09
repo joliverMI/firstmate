@@ -592,6 +592,10 @@ if [ "\${1:-}" = display-message ]; then
   printf '%s\n' '$dir/other-directory'
   exit 0
 fi
+if [ "\${1:-}" = list-windows ]; then
+  printf '%s %s\n' '@1' 'fm-$id'
+  exit 0
+fi
 printf 'tmux' >> "\${FM_RUNTIME_LOG:?}"
 printf ' <%s>' "\$@" >> "\${FM_RUNTIME_LOG:?}"
 printf '\n' >> "\${FM_RUNTIME_LOG:?}"
@@ -605,7 +609,12 @@ SH
   run_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr" \
     || fail "teardown refused its recorded endpoint after it changed directory: $(cat "$dir/stderr")"
   assert_absent "$dir/home/state/$id.meta" "moved-endpoint teardown left the task record"
-  grep -Fq "tmux <kill-window> <-t> <=firstmate:=fm-$id>" "$dir/runtime.log" \
+  # fm_backend_tmux_kill resolves the recorded window's own id through
+  # fm_backend_tmux_exact_target_named rather than handing tmux a hand-built
+  # `=session:=window` pin, which tmux's `.`-splitting target parser can
+  # misread (see bin/backends/tmux.sh); the fake list-windows above hands back
+  # that id for the recorded window name.
+  grep -Fq "tmux <kill-window> <-t> <@1>" "$dir/runtime.log" \
     || fail "moved-endpoint teardown did not stop the exact recorded worker: $(cat "$dir/runtime.log")"
   grep -Fq "treehouse <return>" "$dir/runtime.log" \
     || fail "moved-endpoint teardown did not return its uncontested pool slot: $(cat "$dir/runtime.log")"

@@ -321,7 +321,7 @@ test_empty_origin_config_section_refuses_pool() {
   out=$(run_spawn "$id" --mode no-mistakes --yolo off)
   status=$?
   [ "$status" -ne 0 ] || fail "spawn succeeded despite an empty origin configuration section"
-  assert_contains "$out" "could not fetch origin" \
+  assert_contains "$out" "no origin remote" \
     "spawn did not refuse an empty origin configuration section as unusable"
   [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$before" ] \
     || fail "spawn moved HEAD after finding an empty origin configuration section"

@@ -330,7 +330,7 @@ test_hook_blocks_registered_check_only_home() {
     || fail "could not register the custom check under test"
   out=$(run_hook "$dir" false); status=$?
   expect_code 2 "$status" "hook must block when a check-only home has no watcher"
-  assert_contains "$out" "1 custom check(s) registered" "block reason must identify the registered-check supervision need"
+  assert_contains "$out" "1 registered custom check(s)" "block reason must identify the registered-check supervision need"
   assert_contains "$out" "$REQUIRED_REASON" "block reason must contain the exact required instruction"
   pass "fm-turnend-guard: non-Claude path blocks a registered-check-only home"
 }
@@ -486,7 +486,7 @@ test_hook_x_mode_only_blocks_in_default_mode() {
 
 test_hook_registered_check_only_blocks_with_check_banner() {
   local dir out status
-  dir=$(make_primary_dir "$TMP_ROOT/hook-check-only")
+  dir=$(make_primary_dir "$TMP_ROOT/hook-check-only-banner")
   register_custom_check "$dir/state" issue-comments
   out=$(run_hook "$dir" false); status=$?
   expect_code 2 "$status" "default hook mode must block a registered-check-only blind turn"
