@@ -477,6 +477,9 @@ EOF
 # Portable parallel shard 1: LPT balance of the proven-isolated set using the
 # current concurrent-proof durations in docs/fm-test-isolation-proof.json.
 # Execution order is longest first so wall-clock stays near the balanced sum.
+# fm-lint.test.sh moved to shard 2 (below): the 2026-08-20 proof recorded it at
+# 9766ms, but it has since grown to ~90-100s in CI, which alone was most of why
+# this shard's real wall clock drifted far past the proof's balanced estimate.
 list_portable_parallel_1() {
   cat <<'EOF'
 tests/fm-x-mode.test.sh
@@ -485,7 +488,6 @@ tests/fm-captain-hold-lifecycle.test.sh
 tests/fm-test-run.test.sh
 tests/fm-composer-ghost.test.sh
 tests/fm-grok-harness.test.sh
-tests/fm-lint.test.sh
 tests/fm-pi-primary-types.test.sh
 tests/fm-review-diff.test.sh
 tests/fm-brief.test.sh
@@ -501,6 +503,7 @@ tests/fm-arm-pretool-check.test.sh
 tests/fm-crew-state.test.sh
 tests/fm-herdr-lab.test.sh
 tests/fm-pr-merge.test.sh
+tests/fm-lint.test.sh
 tests/fm-send-popup-settle.test.sh
 tests/fm-tmux-submit-busy.test.sh
 tests/fm-send-settle.test.sh
