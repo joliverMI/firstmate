@@ -542,7 +542,7 @@ export default function (pi: ExtensionAPI) {
 
   // Pi consumed a main follow-up: an idle main at before_agent_start, a
   // streaming main at the user message_start that joins the running run.
-  function consumeWake(owner: SessionGeneration, text: string): void {
+  function consumeWake(owner: SessionGeneration, text: string | undefined): void {
     for (const [token, wake] of owner.unconsumedWakes) {
       if (wake.content !== text) continue;
       owner.unconsumedWakes.delete(token);
@@ -1096,7 +1096,11 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.on?.("before_agent_start", (event) => {
-    consumeWake(generation, event.prompt);
+    // A custom-message-triggered run carries no raw user prompt, so it can
+    // never match a watcher wake (those are always delivered as real user
+    // messages). Still call consumeWake unconditionally so every run reaches
+    // it; only the .prompt read is narrowed.
+    consumeWake(generation, event.messageType === "custom" ? undefined : event.prompt);
   });
   pi.on?.("message_start", (event) => {
     if (event.message.role !== "user") return;

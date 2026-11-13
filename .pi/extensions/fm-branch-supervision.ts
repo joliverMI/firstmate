@@ -1491,6 +1491,9 @@ ${context.command}
     // getEntries() here loses the captain request that the next wake may answer.
     // Stage it verbatim and remember the future persisted index for turn_end's
     // duplicate suppression. Operational extension injections are not dialog.
+    // A custom-message-triggered run (pi.sendMessage with triggerTurn) carries
+    // no raw user prompt and is never genuine captain dialog.
+    if (event.messageType === "custom") return;
     const prompt = event.prompt.trim();
     if (!prompt || isOperationalUserText(prompt)) return;
     const file = currentMainSession.getSessionFile() ?? "";
@@ -1977,6 +1980,28 @@ ${context.command}
     return shell;
   };
 
+  // Mirrors Pi's stock fallback header (render-utils.js formatToolCallWithArgs):
+  // title, then `key=value` pairs collapsed or `key: value` lines expanded, so
+  // calm-off stays byte-identical to stock instead of dropping the tool's args.
+  const formatOutcomesToolCallHeader = (
+    title: string,
+    args: unknown,
+    theme: Parameters<NonNullable<ToolDefinition["renderCall"]>>[1],
+    expanded: boolean,
+  ): string => {
+    const header = theme.fg("toolTitle", theme.bold(title));
+    if (args == null) return header;
+    const entries =
+      typeof args === "object" && !Array.isArray(args) ? Object.entries(args as Record<string, unknown>) : [["args", args]];
+    if (entries.length === 0) return header;
+    if (expanded) {
+      const lines = entries.map(([key, value]) => `  ${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`);
+      return `${header}\n${theme.fg("muted", lines.join("\n"))}`;
+    }
+    const pairs = entries.map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(" ");
+    return `${header} ${theme.fg("muted", pairs)}`;
+  };
+
   pi.registerTool?.({
     name: "fm_branch_outcomes",
     label: "Read supervision branch outcomes",
@@ -1987,11 +2012,11 @@ ${context.command}
       recent: Type.Optional(Type.Number({ description: "How many most-recent outcomes to read (default 20)" })),
     }),
     renderShell: "self",
-    renderCall: (_args, theme, context) => {
+    renderCall: (args, theme, context) => {
       if (calmPresentation.stockExportRendering) throw new Error("Use Pi stock export rendering");
       if (calmHides("assistant-tool-call")) return new Container();
       const shellState = context.state as OutcomesToolShellState;
-      shellState.call = new Text(theme.fg("toolTitle", theme.bold("fm_branch_outcomes")), 0, 0);
+      shellState.call = new Text(formatOutcomesToolCallHeader("fm_branch_outcomes", args, theme, context.expanded), 0, 0);
       return refreshOutcomesToolShell(shellState, theme, context);
     },
     renderResult: (result, options, theme, context) => {
@@ -2049,11 +2074,11 @@ ${context.command}
       through: Type.Number({ description: "The highest outcome sequence number this conversation has processed" }),
     }),
     renderShell: "self",
-    renderCall: (_args, theme, context) => {
+    renderCall: (args, theme, context) => {
       if (calmPresentation.stockExportRendering) throw new Error("Use Pi stock export rendering");
       if (calmHides("assistant-tool-call")) return new Container();
       const shellState = context.state as OutcomesToolShellState;
-      shellState.call = new Text(theme.fg("toolTitle", theme.bold("fm_branch_processed")), 0, 0);
+      shellState.call = new Text(formatOutcomesToolCallHeader("fm_branch_processed", args, theme, context.expanded), 0, 0);
       return refreshOutcomesToolShell(shellState, theme, context);
     },
     renderResult: (result, _options, theme, context) => {
